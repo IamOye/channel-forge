@@ -1,0 +1,10 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.pyc
+data/raw/
+data/processed/*.db
+logs/
+.claude/settings.local.json
+CLAUDE.local.md

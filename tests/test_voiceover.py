@@ -1,0 +1,270 @@
+"""
+Tests for src/media/voiceover.py
+
+All external calls (httpx, mutagen, subprocess, filesystem) are mocked.
+"""
+
+import subprocess
+from pathlib import Path
+from unittest.mock import MagicMock, patch, mock_open
+
+import pytest
+
+from src.media.voiceover import (
+    DEFAULT_VOICE,
+    MIN_DURATION_SECONDS,
+    MAX_DURATION_SECONDS,
+    VOICE_MAP,
+    VOICE_SETTINGS,
+    VoiceoverGenerator,
+    VoiceoverResult,
+)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+SAMPLE_SCRIPT = {
+    "hook":      "Most people ignore this secret.",
+    "statement": "Stoics mastered their reactions.",
+    "twist":     "Modern life rewired your brain.",
+    "question":  "What would you change today?",
+}
+
+
+def _make_gen(api_key: str = "fake") -> VoiceoverGenerator:
+    return VoiceoverGenerator(api_key=api_key)
+
+
+# ---------------------------------------------------------------------------
+# VoiceoverResult
+# ---------------------------------------------------------------------------
+
+class TestVoiceoverResult:
+    def _make(self, **kw) -> VoiceoverResult:
+        defaults = dict(
+            topic_id="test_001",
+            audio_path="data/raw/test_001_voice.mp3",
+            voice_name="Adam",
+            voice_id="pNInz6obpgDQGcFmaJgB",
+            duration_seconds=13.0,
+            is_valid=True,
+            validation_errors=[],
+        )
+        defaults.update(kw)
+        return VoiceoverResult(**defaults)
+
+    def test_generated_at_auto_set(self) -> None:
+        r = self._make()
+        assert r.generated_at != ""
+
+    def test_to_dict_has_all_keys(self) -> None:
+        r = self._make()
+        d = r.to_dict()
+        for key in ("topic_id", "audio_path", "voice_name", "voice_id",
+                    "duration_seconds", "is_valid", "validation_errors", "generated_at"):
+            assert key in d
+
+
+# ---------------------------------------------------------------------------
+# VoiceoverGenerator._select_voice
+# ---------------------------------------------------------------------------
+
+class TestSelectVoice:
+    def test_money_returns_adam(self) -> None:
+        name, vid = VoiceoverGenerator._select_voice("money")
+        assert name == "Adam"
+        assert vid == VOICE_MAP["money"][1]
+
+    def test_career_returns_josh(self) -> None:
+        name, _ = VoiceoverGenerator._select_voice("career")
+        assert name == "Josh"
+
+    def test_success_returns_rachel(self) -> None:
+        name, _ = VoiceoverGenerator._select_voice("success")
+        assert name == "Rachel"
+
+    def test_unknown_returns_default(self) -> None:
+        name, vid = VoiceoverGenerator._select_voice("unknown_category")
+        assert (name, vid) == DEFAULT_VOICE
+
+    def test_case_insensitive(self) -> None:
+        name, _ = VoiceoverGenerator._select_voice("MONEY")
+        assert name == "Adam"
+
+
+# ---------------------------------------------------------------------------
+# VoiceoverGenerator._build_text
+# ---------------------------------------------------------------------------
+
+class TestBuildText:
+    def test_joins_parts_in_order(self) -> None:
+        text = VoiceoverGenerator._build_text(SAMPLE_SCRIPT)
+        assert "Most people ignore this secret." in text
+        assert "Stoics mastered their reactions." in text
+        assert "What would you change today?" in text
+
+    def test_uses_full_script_key_if_present(self) -> None:
+        d = {"full_script": "This is the full text.", "hook": "ignored"}
+        text = VoiceoverGenerator._build_text(d)
+        assert text == "This is the full text."
+
+    def test_skips_empty_parts(self) -> None:
+        d = {"hook": "Hook text.", "statement": "", "twist": "Twist text.", "question": "Why?"}
+        text = VoiceoverGenerator._build_text(d)
+        assert "Hook text." in text
+        assert "Twist text." in text
+        # Double space would indicate empty part wasn't skipped
+        assert "  " not in text
+
+
+# ---------------------------------------------------------------------------
+# VoiceoverGenerator._validate_duration
+# ---------------------------------------------------------------------------
+
+class TestValidateDuration:
+    def test_valid_duration_no_errors(self) -> None:
+        errors = VoiceoverGenerator._validate_duration(13.0)
+        assert errors == []
+
+    def test_exactly_at_min_passes(self) -> None:
+        errors = VoiceoverGenerator._validate_duration(MIN_DURATION_SECONDS)
+        assert errors == []
+
+    def test_exactly_at_max_passes(self) -> None:
+        errors = VoiceoverGenerator._validate_duration(MAX_DURATION_SECONDS)
+        assert errors == []
+
+    def test_below_min_error(self) -> None:
+        errors = VoiceoverGenerator._validate_duration(5.0)
+        assert any("minimum" in e for e in errors)
+
+    def test_above_max_error(self) -> None:
+        errors = VoiceoverGenerator._validate_duration(20.0)
+        assert any("maximum" in e for e in errors)
+
+
+# ---------------------------------------------------------------------------
+# VoiceoverGenerator.generate (fully mocked)
+# ---------------------------------------------------------------------------
+
+class TestVoiceoverGeneratorGenerate:
+    def _mock_httpx_response(self, content: bytes = b"fake_mp3_audio") -> MagicMock:
+        resp = MagicMock()
+        resp.content = content
+        resp.raise_for_status = MagicMock()
+        return resp
+
+    def _mock_mp3(self, duration: float = 13.0) -> MagicMock:
+        info = MagicMock()
+        info.length = duration
+        mp3 = MagicMock()
+        mp3.info = info
+        return mp3
+
+    @patch("src.media.voiceover.subprocess.run")
+    @patch("src.media.voiceover.httpx.post")
+    def test_returns_valid_result(self, mock_post, mock_subprocess) -> None:
+        mock_post.return_value = self._mock_httpx_response()
+        mock_subprocess.return_value = MagicMock(returncode=0)
+
+        with patch("src.media.voiceover.VoiceoverGenerator._get_duration", return_value=13.0):
+            with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_bytes"):
+                gen = _make_gen()
+                result = gen.generate(SAMPLE_SCRIPT, topic_id="test_001", category="success")
+
+        assert isinstance(result, VoiceoverResult)
+        assert result.is_valid is True
+        assert result.voice_name == "Rachel"
+        assert result.topic_id == "test_001"
+        assert result.duration_seconds == 13.0
+
+    @patch("src.media.voiceover.subprocess.run")
+    @patch("src.media.voiceover.httpx.post")
+    def test_invalid_when_duration_too_short(self, mock_post, mock_subprocess) -> None:
+        mock_post.return_value = self._mock_httpx_response()
+        mock_subprocess.return_value = MagicMock(returncode=0)
+
+        with patch("src.media.voiceover.VoiceoverGenerator._get_duration", return_value=5.0):
+            with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_bytes"):
+                gen = _make_gen()
+                result = gen.generate(SAMPLE_SCRIPT, topic_id="short_001", category="money")
+
+        assert result.is_valid is False
+        assert any("minimum" in e for e in result.validation_errors)
+
+    @patch("src.media.voiceover.subprocess.run")
+    @patch("src.media.voiceover.httpx.post")
+    def test_invalid_when_duration_too_long(self, mock_post, mock_subprocess) -> None:
+        mock_post.return_value = self._mock_httpx_response()
+        mock_subprocess.return_value = MagicMock(returncode=0)
+
+        with patch("src.media.voiceover.VoiceoverGenerator._get_duration", return_value=25.0):
+            with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_bytes"):
+                gen = _make_gen()
+                result = gen.generate(SAMPLE_SCRIPT, topic_id="long_001", category="career")
+
+        assert result.is_valid is False
+        assert any("maximum" in e for e in result.validation_errors)
+
+    def test_raises_without_api_key(self) -> None:
+        gen = VoiceoverGenerator(api_key="")
+        with pytest.raises(ValueError, match="ELEVENLABS_API_KEY not set"):
+            gen.generate(SAMPLE_SCRIPT, topic_id="test", category="default")
+
+    @patch("src.media.voiceover.subprocess.run")
+    @patch("src.media.voiceover.httpx.post")
+    def test_uses_default_voice_for_unknown_category(self, mock_post, mock_subprocess) -> None:
+        mock_post.return_value = self._mock_httpx_response()
+        mock_subprocess.return_value = MagicMock(returncode=0)
+
+        with patch("src.media.voiceover.VoiceoverGenerator._get_duration", return_value=13.0):
+            with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_bytes"):
+                gen = _make_gen()
+                result = gen.generate(SAMPLE_SCRIPT, topic_id="def_001", category="unknown")
+
+        assert result.voice_name == DEFAULT_VOICE[0]
+
+    @patch("src.media.voiceover.subprocess.run")
+    @patch("src.media.voiceover.httpx.post")
+    def test_output_path_contains_topic_id(self, mock_post, mock_subprocess) -> None:
+        mock_post.return_value = self._mock_httpx_response()
+        mock_subprocess.return_value = MagicMock(returncode=0)
+
+        with patch("src.media.voiceover.VoiceoverGenerator._get_duration", return_value=13.0):
+            with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_bytes"):
+                gen = _make_gen()
+                result = gen.generate(SAMPLE_SCRIPT, topic_id="mytopic_042")
+
+        assert "mytopic_042" in result.audio_path
+        assert result.audio_path.endswith("_voice.mp3")
+
+    @patch("src.media.voiceover.subprocess.run")
+    @patch("src.media.voiceover.httpx.post")
+    def test_ffmpeg_failure_does_not_raise(self, mock_post, mock_subprocess) -> None:
+        mock_post.return_value = self._mock_httpx_response()
+        # Simulate ffmpeg not found
+        mock_subprocess.side_effect = FileNotFoundError("ffmpeg not found")
+
+        with patch("src.media.voiceover.VoiceoverGenerator._get_duration", return_value=13.0):
+            with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_bytes"):
+                gen = _make_gen()
+                # Should not raise — ffmpeg errors are caught and logged
+                result = gen.generate(SAMPLE_SCRIPT, topic_id="noffmpeg_001")
+
+        assert isinstance(result, VoiceoverResult)
+
+    @patch("src.media.voiceover.subprocess.run")
+    @patch("src.media.voiceover.httpx.post")
+    def test_to_dict_is_serialisable(self, mock_post, mock_subprocess) -> None:
+        import json
+        mock_post.return_value = self._mock_httpx_response()
+        mock_subprocess.return_value = MagicMock(returncode=0)
+
+        with patch("src.media.voiceover.VoiceoverGenerator._get_duration", return_value=12.0):
+            with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_bytes"):
+                gen = _make_gen()
+                result = gen.generate(SAMPLE_SCRIPT, topic_id="serial_001")
+
+        assert len(json.dumps(result.to_dict())) > 10
