@@ -36,18 +36,19 @@ _MODEL_ID = "eleven_turbo_v2"
 VOICE_MAP: dict[str, tuple[str, str]] = {
     "money":   ("Adam",   "pNInz6obpgDQGcFmaJgB"),
     "career":  ("Josh",   "TxGEqnHWrfWFTfGW9XjX"),
-    "success": ("Rachel", "21m00Tcm4TlvDq8ikWAM"),
+    "success": ("Josh",   "TxGEqnHWrfWFTfGW9XjX"),
 }
 DEFAULT_VOICE: tuple[str, str] = ("Adam", "pNInz6obpgDQGcFmaJgB")
 
 VOICE_SETTINGS = {
-    "stability":        0.65,
-    "similarity_boost": 0.80,
+    "stability":        0.40,
+    "similarity_boost": 0.85,
     "style":            0.30,
+    "use_speaker_boost": True,
 }
 
 MIN_DURATION_SECONDS = 10.0
-MAX_DURATION_SECONDS = 16.0
+MAX_DURATION_SECONDS = 18.0
 
 # -14 LUFS is the YouTube recommended integrated loudness level
 TARGET_LUFS = -14.0
@@ -218,7 +219,13 @@ class VoiceoverGenerator:
         """
         Normalize audio to TARGET_LUFS using ffmpeg loudnorm filter.
         Overwrites the file in place via a temp file.
+        Skipped silently if ffmpeg is not installed.
         """
+        import shutil
+        if not shutil.which("ffmpeg"):
+            logger.debug("ffmpeg not found — skipping loudness normalization")
+            return
+
         temp_path = audio_path.with_suffix(".norm.mp3")
         cmd = [
             "ffmpeg", "-y",

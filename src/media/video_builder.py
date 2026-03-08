@@ -27,11 +27,12 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-CANVAS_WIDTH   = 1080
-CANVAS_HEIGHT  = 1920
-OVERLAY_OPACITY = 0.45
-FPS            = 30
-OUTPUT_DIR     = Path("data/output")
+CANVAS_WIDTH       = 1080
+CANVAS_HEIGHT      = 1920
+OVERLAY_OPACITY    = 0.45
+FPS                = 30
+OUTPUT_DIR         = Path("data/output")
+CROSSFADE_DURATION = 0.3   # seconds of overlap between consecutive b-roll clips
 
 # Script section timing — mirrors caption_renderer.CAPTION_TIMINGS
 SECTION_TIMINGS: list[tuple[str, float, float]] = [
@@ -113,7 +114,7 @@ class VideoBuilder:
         topic_id: str,
         script_dict: dict[str, str],
         audio_path: str | Path,
-        stock_video_path: str | Path,
+        stock_video_path: str | Path | list[str | Path],
     ) -> BuildResult:
         """
         Build and export the final video MP4.
@@ -122,15 +123,22 @@ class VideoBuilder:
             topic_id:          Unique identifier used in output filename.
             script_dict:       Dict with keys hook, statement, twist, question.
             audio_path:        Path to the voiceover MP3.
-            stock_video_path:  Path to the stock footage MP4.
+            stock_video_path:  Path (or list of paths) to stock footage MP4(s).
+                               When a list is supplied the clips are concatenated
+                               with CROSSFADE_DURATION crossfades between them.
 
         Returns:
             BuildResult with output path and validation status.
         """
-        audio_path       = Path(audio_path)
-        stock_video_path = Path(stock_video_path)
+        audio_path = Path(audio_path)
 
-        errors = self._validate_inputs(audio_path, stock_video_path)
+        # Normalise to list — single path is wrapped for uniform handling
+        if isinstance(stock_video_path, (str, Path)):
+            stock_paths = [Path(stock_video_path)]
+        else:
+            stock_paths = [Path(p) for p in stock_video_path]
+
+        errors = self._validate_inputs(audio_path, stock_paths)
         if errors:
             return BuildResult(
                 topic_id=topic_id,
@@ -143,9 +151,11 @@ class VideoBuilder:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         output_path = self.output_dir / f"{topic_id}_final.mp4"
 
-        logger.info("Building video for topic_id=%s", topic_id)
+        logger.info(
+            "Building video for topic_id=%s (%d clip(s))", topic_id, len(stock_paths)
+        )
 
-        final_clip = self._assemble(script_dict, audio_path, stock_video_path)
+        final_clip = self._assemble(script_dict, audio_path, stock_paths)
 
         final_clip.write_videofile(
             str(output_path),
@@ -173,25 +183,55 @@ class VideoBuilder:
         self,
         script_dict: dict[str, str],
         audio_path: Path,
-        stock_video_path: Path,
+        stock_paths: list[Path],
     ):
-        """Compose video layers and return a CompositeVideoClip."""
+        """Compose video layers and return a CompositeVideoClip.
+
+        When multiple stock paths are provided the clips are trimmed to equal
+        durations and joined with CROSSFADE_DURATION crossfades.
+        """
         from moviepy import (  # moviepy v2
             AudioFileClip,
             ColorClip,
             CompositeVideoClip,
             VideoFileClip,
+            concatenate_videoclips,
         )
+        import moviepy.video.fx as vfx
         from src.media.caption_renderer import CaptionRenderer
 
-        # 1. Load and trim stock video to VIDEO_DURATION
-        stock = (
-            VideoFileClip(str(stock_video_path))
-            .subclipped(0, VIDEO_DURATION)
-            .resized((self.canvas_width, self.canvas_height))
-        )
+        n = len(stock_paths)
+        # Each clip's trimmed duration so the total equals VIDEO_DURATION after
+        # crossfade overlap: total = n*D - (n-1)*CROSSFADE  →  D = (total + (n-1)*cf) / n
+        per_clip_dur = (VIDEO_DURATION + (n - 1) * CROSSFADE_DURATION) / n
 
-        # 2. Dark overlay
+        # 1. Build per-clip background segments with fade effects
+        bg_clips = []
+        for i, path in enumerate(stock_paths):
+            clip = (
+                VideoFileClip(str(path))
+                .subclipped(0, per_clip_dur)
+                .resized((self.canvas_width, self.canvas_height))
+            )
+            effects = []
+            if i > 0:
+                effects.append(vfx.CrossFadeIn(CROSSFADE_DURATION))
+            if i < n - 1:
+                effects.append(vfx.CrossFadeOut(CROSSFADE_DURATION))
+            if effects:
+                clip = clip.with_effects(effects)
+            bg_clips.append(clip)
+
+        # 2. Concatenate — negative padding creates the crossfade overlap
+        if n == 1:
+            bg = bg_clips[0]
+        else:
+            bg = concatenate_videoclips(
+                bg_clips, padding=-CROSSFADE_DURATION, method="compose"
+            )
+        bg = bg.subclipped(0, VIDEO_DURATION)
+
+        # 3. Dark overlay
         overlay = (
             ColorClip(
                 size=(self.canvas_width, self.canvas_height),
@@ -201,18 +241,18 @@ class VideoBuilder:
             .with_duration(VIDEO_DURATION)
         )
 
-        # 3. Captions
+        # 4. Captions
         renderer = CaptionRenderer(
             canvas_width=self.canvas_width,
             canvas_height=self.canvas_height,
         )
         caption_clips = renderer.render(script_dict)
 
-        # 4. Audio
+        # 5. Audio
         audio = AudioFileClip(str(audio_path)).subclipped(0, VIDEO_DURATION)
 
-        # 5. Compose everything
-        layers = [stock, overlay] + caption_clips
+        # 6. Compose everything
+        layers = [bg, overlay] + caption_clips
         final = (
             CompositeVideoClip(layers, size=(self.canvas_width, self.canvas_height))
             .with_audio(audio)
@@ -221,10 +261,11 @@ class VideoBuilder:
         return final
 
     @staticmethod
-    def _validate_inputs(audio_path: Path, stock_video_path: Path) -> list[str]:
+    def _validate_inputs(audio_path: Path, stock_paths: list[Path]) -> list[str]:
         errors: list[str] = []
         if not audio_path.exists():
             errors.append(f"audio file not found: {audio_path}")
-        if not stock_video_path.exists():
-            errors.append(f"stock video not found: {stock_video_path}")
+        for p in stock_paths:
+            if not p.exists():
+                errors.append(f"stock video not found: {p}")
         return errors

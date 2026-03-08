@@ -50,6 +50,22 @@ DB_PATH = Path("data/processed/channel_forge.db")
 # ---------------------------------------------------------------------------
 
 @dataclass
+class _MultiFetchResult:
+    """Internal result wrapping multiple Pixabay stock video paths."""
+
+    video_paths: list[str]
+    is_valid: bool
+    validation_errors: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "video_paths":        self.video_paths,
+            "is_valid":           self.is_valid,
+            "validation_errors":  self.validation_errors,
+        }
+
+
+@dataclass
 class StepResult:
     """Outcome of a single pipeline step."""
 
@@ -202,21 +218,21 @@ class ProductionPipeline:
 
         audio_path = voice_result.audio_path
 
-        # --- Step 4: Stock video ---
+        # --- Step 4: Stock video(s) ---
         fetch_result = self._run_step(
             "pixabay", steps, errors,
-            lambda: self._run_pixabay(topic_id, category),
+            lambda: self._run_pixabay(topic_id, script_dict, category),
         )
         if fetch_result is None or not fetch_result.is_valid:
             errors.append(f"pixabay failed: {getattr(fetch_result, 'validation_errors', [])}")
             return self._fail(topic_id, keyword, steps, errors)
 
-        stock_video_path = fetch_result.video_path
+        stock_video_paths = fetch_result.video_paths
 
         # --- Step 5: Video build ---
         build_result = self._run_step(
             "video_build", steps, errors,
-            lambda: self._run_video_builder(topic_id, script_dict, audio_path, stock_video_path),
+            lambda: self._run_video_builder(topic_id, script_dict, audio_path, stock_video_paths),
         )
         if build_result is None or not build_result.is_valid:
             errors.append(f"video_build failed: {getattr(build_result, 'validation_errors', [])}")
@@ -279,13 +295,21 @@ class ProductionPipeline:
         gen = VoiceoverGenerator(api_key=self.elevenlabs_api_key)
         return gen.generate(script_dict=script_dict, topic_id=topic_id, category=category)
 
-    def _run_pixabay(self, topic_id: str, category: str):
+    def _run_pixabay(self, topic_id: str, script_dict: dict, category: str) -> _MultiFetchResult:
         from src.media.pixabay_fetcher import PixabayFetcher
         fetcher = PixabayFetcher(api_key=self.pixabay_api_key)
-        return fetcher.fetch(topic_id=topic_id, category=category)
+        phrases = self._extract_broll_keywords(script_dict, count=4)
+        paths = fetcher.fetch_multiple(topic_id=topic_id, keywords_list=phrases, count=4)
+        if not paths:
+            return _MultiFetchResult(
+                video_paths=[],
+                is_valid=False,
+                validation_errors=["no stock videos found for any b-roll phrase"],
+            )
+        return _MultiFetchResult(video_paths=paths, is_valid=True)
 
     def _run_video_builder(
-        self, topic_id: str, script_dict: dict, audio_path: str, stock_path: str
+        self, topic_id: str, script_dict: dict, audio_path: str, stock_paths: list[str]
     ):
         from src.media.video_builder import VideoBuilder
         builder = VideoBuilder()
@@ -293,8 +317,67 @@ class ProductionPipeline:
             topic_id=topic_id,
             script_dict=script_dict,
             audio_path=audio_path,
-            stock_video_path=stock_path,
+            stock_video_path=stock_paths,
         )
+
+    def _extract_broll_keywords(self, script_dict: dict, count: int = 4) -> list[str]:
+        """Use Claude to derive visually concrete Pixabay search phrases from the script.
+
+        Splits the script into 4 parts (hook/statement/twist/question) and asks
+        Claude to suggest one 2–3 word search query per part that a stock video
+        camera could actually film.  Falls back to generic phrases if the API
+        call fails.
+        """
+        import json as _json
+        import anthropic
+
+        parts = [
+            ("hook",      script_dict.get("hook", "")),
+            ("statement", script_dict.get("statement", "")),
+            ("twist",     script_dict.get("twist", "")),
+            ("question",  script_dict.get("question", "")),
+        ]
+        parts_text = "\n".join(
+            f"Part {i+1} ({label}): {text}" for i, (label, text) in enumerate(parts) if text
+        )
+
+        prompt = (
+            f"Given this video script split into 4 parts:\n{parts_text}\n\n"
+            "Suggest 4 Pixabay video search queries (2–3 words each) that visually "
+            "represent what is being described in each part. "
+            "Rules:\n"
+            "- Visually concrete: things a camera can actually film\n"
+            "- Short (2–3 words max)\n"
+            "- No abstract concepts like 'success', 'mindset', 'inequality'\n"
+            "- Match what is being SAID in that part of the script\n"
+            "Return a JSON array only, no explanation: "
+            '[\"query1\",\"query2\",\"query3\",\"query4\"]'
+        )
+
+        try:
+            client = anthropic.Anthropic(api_key=self.anthropic_api_key)
+            message = client.messages.create(
+                model="claude-sonnet-4-5",
+                max_tokens=128,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            raw = message.content[0].text.strip()
+            # Strip markdown fences if present
+            if raw.startswith("```"):
+                raw = raw.split("```")[1]
+                if raw.startswith("json"):
+                    raw = raw[4:]
+            phrases = _json.loads(raw.strip())
+            if isinstance(phrases, list) and phrases:
+                logger.info("Claude b-roll phrases: %s", phrases)
+                return [str(p) for p in phrases[:count]]
+        except Exception as exc:
+            logger.warning("Claude b-roll extraction failed (%s) — using fallback", exc)
+
+        # Fallback: generic category-based phrases
+        from src.media.pixabay_fetcher import KEYWORD_MAP
+        base = KEYWORD_MAP.get("default")
+        return (base * count)[:count]
 
     def _run_metadata(self, keyword: str, script: str):
         from src.content.metadata_generator import MetadataGenerator

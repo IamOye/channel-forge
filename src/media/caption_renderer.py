@@ -26,11 +26,34 @@ CAPTION_TIMINGS: list[tuple[str, float, float]] = [
     ("question",  10.0, 13.5),
 ]
 
-CAPTION_FONT      = "Impact"
+CAPTION_FONT_CANDIDATES = ["Impact", "Arial-Bold", "Arial", None]
 CAPTION_FONT_SIZE = 72
 CAPTION_COLOR     = "white"
 CAPTION_STROKE_COLOR = "black"
 CAPTION_STROKE_WIDTH = 3
+
+
+def _resolve_font() -> str | None:
+    """Return the first font from CAPTION_FONT_CANDIDATES that Pillow can open.
+
+    Tries each candidate by rendering a tiny probe TextClip; falls back to
+    None (moviepy's built-in default) if nothing else works.
+    """
+    try:
+        from moviepy import TextClip  # lazy — avoid import at module load
+    except Exception:
+        return None
+
+    for font in CAPTION_FONT_CANDIDATES:
+        try:
+            TextClip(text="A", font=font, font_size=12, color="white")
+            logger.debug("Caption font resolved: %s", font)
+            return font
+        except Exception:
+            logger.debug("Caption font unavailable: %s", font)
+            continue
+
+    return None
 
 # Vertical position — 65% from the top of the frame
 CAPTION_Y_RATIO = 0.65
@@ -88,7 +111,8 @@ class CaptionRenderer:
     Args:
         canvas_width:  Video canvas width in pixels (default 1080).
         canvas_height: Video canvas height in pixels (default 1920).
-        font:          Font name passed to moviepy TextClip (default Impact).
+        font:          Font name passed to moviepy TextClip. Defaults to None,
+                       which triggers auto-detection (Impact → Arial-Bold → Arial → None).
         font_size:     Font size in pixels.
         y_ratio:       Vertical position of captions as fraction of canvas height (0–1).
     """
@@ -97,13 +121,13 @@ class CaptionRenderer:
         self,
         canvas_width: int = 1080,
         canvas_height: int = 1920,
-        font: str = CAPTION_FONT,
+        font: str | None = None,
         font_size: int = CAPTION_FONT_SIZE,
         y_ratio: float = CAPTION_Y_RATIO,
     ) -> None:
         self.canvas_width  = canvas_width
         self.canvas_height = canvas_height
-        self.font          = font
+        self.font          = font if font is not None else _resolve_font()
         self.font_size     = font_size
         self.y_ratio       = y_ratio
 

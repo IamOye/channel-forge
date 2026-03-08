@@ -176,6 +176,58 @@ class PixabayFetcher:
             is_valid=True,
         )
 
+    def fetch_multiple(
+        self,
+        topic_id: str,
+        keywords_list: list[str],
+        count: int = 4,
+    ) -> list[str]:
+        """
+        Fetch multiple stock videos — one per keyword phrase — and return local paths.
+
+        Args:
+            topic_id: Unique identifier used in output filenames
+                      (e.g. "stoic_001" → "stoic_001_stock_0.mp4", …).
+            keywords_list: Keyword phrases to search; one video per phrase.
+            count: Maximum number of clips to fetch (uses first `count` phrases).
+
+        Returns:
+            List of local file paths. May be shorter than count if some
+            keyword phrases return no results or duplicate video IDs.
+
+        Raises:
+            ValueError: If PIXABAY_API_KEY is not configured.
+        """
+        if not self.api_key:
+            raise ValueError("PIXABAY_API_KEY not set")
+
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        paths: list[str] = []
+        seen_ids: set[int] = set()
+
+        for i, phrase in enumerate(keywords_list[:count]):
+            video = self._query_api(phrase)
+            if video is None:
+                logger.warning("No video found for phrase=%r (clip %d)", phrase, i)
+                continue
+            if video.pixabay_id in seen_ids:
+                logger.debug(
+                    "Duplicate pixabay_id=%d skipped for phrase=%r",
+                    video.pixabay_id, phrase,
+                )
+                continue
+
+            seen_ids.add(video.pixabay_id)
+            output_path = self.output_dir / f"{topic_id}_stock_{i}.mp4"
+            self._download_video(video.download_url, output_path)
+            logger.info(
+                "Fetched clip %d: pixabay_id=%d → %s",
+                len(paths), video.pixabay_id, output_path,
+            )
+            paths.append(str(output_path))
+
+        return paths
+
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
@@ -195,7 +247,8 @@ class PixabayFetcher:
             "q":           query,
             "video_type":  "film",
             "orientation": "vertical",
-            "per_page":    20,
+            "per_page":    50,
+            "min_width":   1080,
         }
         try:
             resp = httpx.get(_PIXABAY_API_URL, params=params, timeout=15.0)
@@ -210,19 +263,20 @@ class PixabayFetcher:
             if duration < self.min_duration:
                 continue
 
-            # Prefer the largest available video size
             videos_dict = hit.get("videos", {})
-            url = self._best_url(videos_dict)
+            url, width, height = self._best_url(videos_dict)
             if not url:
+                continue
+
+            # Skip videos that don't meet the minimum width after size selection
+            if width < 1080:
                 continue
 
             return PixabayVideo(
                 pixabay_id=hit.get("id", 0),
                 duration=duration,
-                width=hit.get("videos", {}).get("large", {}).get("width", 0)
-                      or hit.get("videos", {}).get("medium", {}).get("width", 0),
-                height=hit.get("videos", {}).get("large", {}).get("height", 0)
-                       or hit.get("videos", {}).get("medium", {}).get("height", 0),
+                width=width,
+                height=height,
                 download_url=url,
                 page_url=hit.get("pageURL", ""),
                 tags=hit.get("tags", ""),
@@ -230,14 +284,18 @@ class PixabayFetcher:
         return None
 
     @staticmethod
-    def _best_url(videos_dict: dict) -> str:
-        """Pick the best quality download URL from Pixabay videos dict."""
+    def _best_url(videos_dict: dict) -> tuple[str, int, int]:
+        """Pick the largest available download URL from Pixabay videos dict.
+
+        Returns:
+            (url, width, height) — all empty/zero if nothing found.
+        """
         for quality in ("large", "medium", "small", "tiny"):
             entry = videos_dict.get(quality, {})
             url = entry.get("url", "")
             if url:
-                return url
-        return ""
+                return url, int(entry.get("width", 0)), int(entry.get("height", 0))
+        return "", 0, 0
 
     @staticmethod
     def _download_video(url: str, output_path: Path) -> None:
