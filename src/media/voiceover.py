@@ -41,14 +41,13 @@ VOICE_MAP: dict[str, tuple[str, str]] = {
 DEFAULT_VOICE: tuple[str, str] = ("Adam", "pNInz6obpgDQGcFmaJgB")
 
 VOICE_SETTINGS = {
-    "stability":        0.40,
+    "stability":        0.35,   # lower = more expressive delivery
     "similarity_boost": 0.85,
-    "style":            0.30,
+    "style":            0.40,   # higher = more natural style variation
     "use_speaker_boost": True,
 }
 
 MIN_DURATION_SECONDS = 10.0
-MAX_DURATION_SECONDS = 18.0
 
 # -14 LUFS is the YouTube recommended integrated loudness level
 TARGET_LUFS = -14.0
@@ -259,13 +258,10 @@ class VoiceoverGenerator:
 
     @staticmethod
     def _validate_duration(duration: float) -> list[str]:
-        errors: list[str] = []
+        """Validate duration — only enforces a minimum; no upper bound.
+
+        The video length will extend to match the full voiceover duration.
+        """
         if duration < MIN_DURATION_SECONDS:
-            errors.append(
-                f"duration {duration:.1f}s is below minimum {MIN_DURATION_SECONDS}s"
-            )
-        elif duration > MAX_DURATION_SECONDS:
-            errors.append(
-                f"duration {duration:.1f}s exceeds maximum {MAX_DURATION_SECONDS}s"
-            )
-        return errors
+            return [f"duration {duration:.1f}s is below minimum {MIN_DURATION_SECONDS}s"]
+        return []

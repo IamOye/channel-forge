@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 _MODEL = "claude-sonnet-4-5"
 
-_SYSTEM_PROMPT = """You are a YouTube SEO specialist who writes viral metadata for Shorts.
+_SYSTEM_PROMPT = """You are a YouTube SEO specialist who writes viral metadata for Shorts targeting high-CPM English-speaking audiences in the US, UK, Canada, and Australia.
 
 Given a topic and a short script, generate:
 1. title: SEO-optimised YouTube title
@@ -50,14 +50,25 @@ Given a topic and a short script, generate:
    - Each starts with #
    - No spaces within a hashtag (use CamelCase for multi-word)
    - Must include #Shorts
-   - Mix: broad (e.g. #Motivation) and specific (e.g. #StoicWisdom)
+   - Use location-neutral English finance/self-improvement terms
+   - REQUIRED tags to choose from: #personalfinance, #wealthbuilding,
+     #financialfreedom, #moneyadvice, #investing, #financialtips,
+     #moneymindset, #buildwealth, #investingforbeginners, #moneytips
+   - DO NOT include any regional or country-specific tags
+     (e.g. NO #Nigeria, #Africa, #Naira, #Lagos or similar)
+   - Mix: broad (e.g. #Motivation) and specific (e.g. #PersonalFinance)
    - All lowercase except for CamelCase and #Shorts
+
+4. cta_product: The exact name of the free product being offered in the CTA
+   (copied verbatim from the input). If no product is provided, return an
+   empty string.
 
 Respond ONLY with a JSON object, no markdown:
 {
   "title": "...",
   "description": "...",
-  "hashtags": ["#Shorts", "#tag2", ...]
+  "hashtags": ["#Shorts", "#tag2", ...],
+  "cta_product": "..."
 }"""
 
 # ---------------------------------------------------------------------------
@@ -86,6 +97,7 @@ class MetadataResult:
     description: str
     hashtags: list[str]          # exactly 15 strings starting with #
     is_valid: bool
+    cta_product: str = ""        # free product name referenced in the CTA
     validation_errors: list[str] = field(default_factory=list)
     generated_at: str = ""
     raw_response: str = ""
@@ -101,6 +113,7 @@ class MetadataResult:
             "description": self.description,
             "hashtags": self.hashtags,
             "hashtags_string": " ".join(self.hashtags),
+            "cta_product": self.cta_product,
             "is_valid": self.is_valid,
             "validation_errors": self.validation_errors,
             "generated_at": self.generated_at,
@@ -136,22 +149,26 @@ class MetadataGenerator:
     # Public API
     # ------------------------------------------------------------------
 
-    def generate(self, topic: str, script: str) -> MetadataResult:
+    def generate(self, topic: str, script: str, cta_product: str = "") -> MetadataResult:
         """
-        Generate title, description, and hashtags for a YouTube Shorts video.
+        Generate title, description, hashtags, and cta_product for a YouTube Shorts video.
 
         Args:
             topic: The video topic or keyword.
             script: The full script text (used for SEO context).
+            cta_product: Name of the free product offered in the CTA
+                         (e.g. "Wealth Systems Blueprint PDF"). Passed to Claude
+                         so it can echo it back in the cta_product field.
 
         Returns:
-            MetadataResult with title, description, hashtags, and validation status.
+            MetadataResult with title, description, hashtags, cta_product,
+            and validation status.
 
         Raises:
             ValueError: If ANTHROPIC_API_KEY is not configured.
         """
         client = self._get_client()
-        prompt = self._build_prompt(topic, script)
+        prompt = self._build_prompt(topic, script, cta_product)
 
         logger.info("Generating metadata for topic='%s'", topic)
 
@@ -190,14 +207,17 @@ class MetadataGenerator:
             self._client = anthropic.Anthropic(api_key=self.api_key)
         return self._client
 
-    def _build_prompt(self, topic: str, script: str) -> str:
+    def _build_prompt(self, topic: str, script: str, cta_product: str = "") -> str:
         # Truncate script to first 300 chars to stay within context budget
         script_preview = script[:300].strip()
-        return (
-            f"Topic: {topic}\n\n"
-            f"Script:\n{script_preview}\n\n"
-            "Generate the YouTube metadata now."
-        )
+        lines = [
+            f"Topic: {topic}",
+            f"\nScript:\n{script_preview}",
+        ]
+        if cta_product:
+            lines.append(f"\nFree product for CTA: {cta_product}")
+        lines.append("\nGenerate the YouTube metadata now.")
+        return "\n".join(lines)
 
     def _parse_response(self, raw: str) -> dict[str, Any]:
         """Parse Claude JSON response; return safe empty dict on failure."""
@@ -221,12 +241,13 @@ class MetadataGenerator:
                     for h in data.get("hashtags", [])
                     if str(h).strip()
                 ],
+                "cta_product": str(data.get("cta_product", "")).strip(),
             }
         except Exception as exc:
             logger.error(
                 "Failed to parse metadata JSON: %s | raw=%s", exc, raw[:200]
             )
-            return {"title": "", "description": "", "hashtags": []}
+            return {"title": "", "description": "", "hashtags": [], "cta_product": ""}
 
     def _build_result(
         self, topic: str, parsed: dict[str, Any], raw: str
@@ -235,6 +256,7 @@ class MetadataGenerator:
         title       = parsed.get("title", "")
         description = parsed.get("description", "")
         hashtags    = parsed.get("hashtags", [])
+        cta_product = parsed.get("cta_product", "")
 
         errors = self._validate(title, description, hashtags)
 
@@ -243,6 +265,7 @@ class MetadataGenerator:
             title=title,
             description=description,
             hashtags=hashtags,
+            cta_product=cta_product,
             is_valid=len(errors) == 0,
             validation_errors=errors,
             raw_response=raw,

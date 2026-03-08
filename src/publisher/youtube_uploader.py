@@ -181,12 +181,29 @@ class YouTubeUploader:
     # ------------------------------------------------------------------
 
     def _load_credentials(self):
-        """Load OAuth2 credentials from {credentials_dir}/{channel_key}_token.json."""
+        """Load OAuth2 credentials from the token file for this channel.
+
+        Lookup order:
+          1. .credentials/{channel_key}_token.json  (channel-specific)
+          2. .credentials/default_token.json        (fallback)
+        """
         from google.oauth2.credentials import Credentials  # lazy import
 
         token_path = self.credentials_dir / f"{self.channel_key}_token.json"
+        logger.info("Loading credentials: checking %s", token_path.resolve())
         if not token_path.exists():
-            raise FileNotFoundError(f"Credentials file not found: {token_path}")
+            fallback = self.credentials_dir / "default_token.json"
+            if fallback.exists():
+                logger.debug(
+                    "Channel token not found (%s) — falling back to %s",
+                    token_path.name, fallback.name,
+                )
+                token_path = fallback
+            else:
+                raise FileNotFoundError(
+                    f"Credentials file not found: {token_path} "
+                    f"(also tried {fallback})"
+                )
 
         with open(token_path) as f:
             data = json.load(f)

@@ -27,17 +27,17 @@ def _make_hit(
     url: str = "https://cdn.pixabay.com/video/sample.mp4",
     tags: str = "nature landscape",
 ) -> dict:
-    """Build a minimal Pixabay API hit dict."""
+    """Build a minimal Pixabay API hit dict with portrait (1080x1920) dimensions."""
     return {
-        "id":      vid_id,
+        "id":       vid_id,
         "duration": duration,
-        "pageURL": f"https://pixabay.com/videos/{vid_id}/",
-        "tags":    tags,
+        "pageURL":  f"https://pixabay.com/videos/{vid_id}/",
+        "tags":     tags,
         "videos": {
-            "large":  {"url": url, "width": 1920, "height": 1080},
-            "medium": {"url": url, "width": 1280, "height": 720},
-            "small":  {"url": url, "width": 640,  "height": 360},
-            "tiny":   {"url": url, "width": 320,  "height": 180},
+            "large":  {"url": url, "width": 1080, "height": 1920},
+            "medium": {"url": url, "width": 720,  "height": 1280},
+            "small":  {"url": url, "width": 360,  "height": 640},
+            "tiny":   {"url": url, "width": 180,  "height": 320},
         },
     }
 
@@ -58,8 +58,8 @@ class TestPixabayVideo:
         v = PixabayVideo(
             pixabay_id=42,
             duration=15,
-            width=1920,
-            height=1080,
+            width=1080,
+            height=1920,
             download_url="https://example.com/vid.mp4",
             page_url="https://pixabay.com/videos/42/",
             tags="nature",
@@ -87,7 +87,7 @@ class TestFetchResult:
             assert key in d
 
     def test_to_dict_with_video_meta(self) -> None:
-        meta = PixabayVideo(1, 15, 1920, 1080, "url", "page", "tags")
+        meta = PixabayVideo(1, 15, 1080, 1920, "url", "page", "tags")
         r = FetchResult(topic_id="t1", video_path="/data/raw/t1_stock.mp4",
                         video_meta=meta, is_valid=True)
         d = r.to_dict()
@@ -102,17 +102,24 @@ class TestFetchResult:
 class TestBestUrl:
     def test_prefers_large(self) -> None:
         videos = {
-            "large":  {"url": "large_url"},
-            "medium": {"url": "medium_url"},
+            "large":  {"url": "large_url", "width": 1080, "height": 1920},
+            "medium": {"url": "medium_url", "width": 720, "height": 1280},
         }
-        assert PixabayFetcher._best_url(videos) == "large_url"
+        url, w, h = PixabayFetcher._best_url(videos)
+        assert url == "large_url"
+        assert w == 1080
+        assert h == 1920
 
     def test_falls_back_to_medium(self) -> None:
-        videos = {"medium": {"url": "medium_url"}}
-        assert PixabayFetcher._best_url(videos) == "medium_url"
+        videos = {"medium": {"url": "medium_url", "width": 720, "height": 1280}}
+        url, w, h = PixabayFetcher._best_url(videos)
+        assert url == "medium_url"
 
     def test_returns_empty_when_no_url(self) -> None:
-        assert PixabayFetcher._best_url({}) == ""
+        url, w, h = PixabayFetcher._best_url({})
+        assert url == ""
+        assert w == 0
+        assert h == 0
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +128,7 @@ class TestBestUrl:
 
 class TestPixabayFetcherFetch:
     @patch("src.media.pixabay_fetcher.httpx.get")
-    @patch("src.media.pixabay_fetcher.PixabayFetcher._download_video")
+    @patch("src.media.pixabay_fetcher.PixabayFetcher._download_verified", return_value=True)
     def test_returns_valid_result(self, mock_dl, mock_get) -> None:
         mock_get.return_value = _mock_api_response([_make_hit()])
         with patch("pathlib.Path.mkdir"):
@@ -150,7 +157,7 @@ class TestPixabayFetcherFetch:
         hit_ok    = _make_hit(vid_id=2, duration=20)  # ok
         mock_get.return_value = _mock_api_response([hit_short, hit_ok])
 
-        with patch("src.media.pixabay_fetcher.PixabayFetcher._download_video"):
+        with patch("src.media.pixabay_fetcher.PixabayFetcher._download_verified", return_value=True):
             with patch("pathlib.Path.mkdir"):
                 fetcher = PixabayFetcher(api_key="fake", min_duration=10)
                 result = fetcher.fetch(topic_id="dur_test", category="default")
@@ -175,7 +182,7 @@ class TestPixabayFetcherFetch:
         assert any("no suitable" in e for e in result.validation_errors)
 
     @patch("src.media.pixabay_fetcher.httpx.get")
-    @patch("src.media.pixabay_fetcher.PixabayFetcher._download_video")
+    @patch("src.media.pixabay_fetcher.PixabayFetcher._download_verified", return_value=True)
     def test_uses_keyword_map_for_category(self, mock_dl, mock_get) -> None:
         mock_get.return_value = _mock_api_response([_make_hit()])
         with patch("pathlib.Path.mkdir"):
@@ -183,13 +190,13 @@ class TestPixabayFetcherFetch:
             fetcher.fetch(topic_id="kw_test", category="money")
 
         # The query param should contain one of the money keywords
-        call_kwargs = mock_get.call_args[1]
+        call_kwargs = mock_get.call_args_list[0][1]
         query_used = call_kwargs["params"]["q"]
         expected_keywords = KEYWORD_MAP["money"]
         assert any(phrase == query_used for phrase in expected_keywords)
 
     @patch("src.media.pixabay_fetcher.httpx.get")
-    @patch("src.media.pixabay_fetcher.PixabayFetcher._download_video")
+    @patch("src.media.pixabay_fetcher.PixabayFetcher._download_verified", return_value=True)
     def test_unknown_category_falls_back_to_default(self, mock_dl, mock_get) -> None:
         mock_get.return_value = _mock_api_response([_make_hit()])
         with patch("pathlib.Path.mkdir"):
@@ -199,7 +206,7 @@ class TestPixabayFetcherFetch:
         assert result.is_valid is True
 
     @patch("src.media.pixabay_fetcher.httpx.get")
-    @patch("src.media.pixabay_fetcher.PixabayFetcher._download_video")
+    @patch("src.media.pixabay_fetcher.PixabayFetcher._download_verified", return_value=True)
     def test_to_dict_is_serialisable(self, mock_dl, mock_get) -> None:
         import json as _json
         mock_get.return_value = _mock_api_response([_make_hit()])

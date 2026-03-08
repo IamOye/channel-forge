@@ -458,7 +458,7 @@ class TestMainDispatcher:
         with patch("main.cmd_produce", return_value=0) as mock_produce:
             result = main(["produce", "--topic", "stoic tips"])
 
-        mock_produce.assert_called_once_with("stoic tips")
+        mock_produce.assert_called_once_with("stoic tips", "money_debate")
         assert result == 0
 
     def test_test_pipeline_dispatched(self) -> None:

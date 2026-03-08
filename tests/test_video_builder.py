@@ -74,27 +74,27 @@ class TestValidateInputs:
         video = tmp_path / "stock.mp4"
         audio.write_bytes(b"audio")
         video.write_bytes(b"video")
-        errors = VideoBuilder._validate_inputs(audio, video)
+        errors = VideoBuilder._validate_inputs(audio, [video])
         assert errors == []
 
     def test_missing_audio_error(self, tmp_path) -> None:
         audio = tmp_path / "missing_voice.mp3"
         video = tmp_path / "stock.mp4"
         video.write_bytes(b"video")
-        errors = VideoBuilder._validate_inputs(audio, video)
+        errors = VideoBuilder._validate_inputs(audio, [video])
         assert any("audio" in e for e in errors)
 
     def test_missing_video_error(self, tmp_path) -> None:
         audio = tmp_path / "voice.mp3"
         video = tmp_path / "missing_stock.mp4"
         audio.write_bytes(b"audio")
-        errors = VideoBuilder._validate_inputs(audio, video)
+        errors = VideoBuilder._validate_inputs(audio, [video])
         assert any("stock" in e for e in errors)
 
     def test_both_missing_returns_two_errors(self, tmp_path) -> None:
         audio = tmp_path / "missing_a.mp3"
         video = tmp_path / "missing_v.mp4"
-        errors = VideoBuilder._validate_inputs(audio, video)
+        errors = VideoBuilder._validate_inputs(audio, [video])
         assert len(errors) == 2
 
 
@@ -131,7 +131,7 @@ class TestVideoBuildBuild:
         mock_caption_renderer = MagicMock()
         mock_caption_renderer.return_value.render.return_value = []
 
-        with patch("src.media.video_builder.VideoBuilder._assemble", return_value=mock_clip):
+        with patch("src.media.video_builder.VideoBuilder._assemble", return_value=(mock_clip, 15.0)):
             with patch("pathlib.Path.mkdir"):
                 builder = VideoBuilder(output_dir=tmp_path)
                 result = builder.build(
@@ -178,7 +178,7 @@ class TestVideoBuildBuild:
         assert result.is_valid is False
         assert any("stock" in e for e in result.validation_errors)
 
-    def test_duration_is_video_duration_constant(self, tmp_path) -> None:
+    def test_duration_matches_audio(self, tmp_path) -> None:
         audio = tmp_path / "voice.mp3"
         stock = tmp_path / "stock.mp4"
         audio.write_bytes(b"a" * 50_000)
@@ -186,12 +186,12 @@ class TestVideoBuildBuild:
 
         mock_clip = self._make_mock_clip()
 
-        with patch("src.media.video_builder.VideoBuilder._assemble", return_value=mock_clip):
+        with patch("src.media.video_builder.VideoBuilder._assemble", return_value=(mock_clip, 15.0)):
             with patch("pathlib.Path.mkdir"):
                 builder = VideoBuilder(output_dir=tmp_path)
                 result = builder.build("dur_test", SCRIPT, str(audio), str(stock))
 
-        assert result.duration_seconds == VIDEO_DURATION
+        assert result.duration_seconds == 15.0
 
     def test_canvas_dimensions_passed_to_assemble(self, tmp_path) -> None:
         audio = tmp_path / "voice.mp3"
@@ -201,7 +201,7 @@ class TestVideoBuildBuild:
 
         mock_clip = self._make_mock_clip()
 
-        with patch("src.media.video_builder.VideoBuilder._assemble", return_value=mock_clip) as mock_assemble:
+        with patch("src.media.video_builder.VideoBuilder._assemble", return_value=(mock_clip, 15.0)) as mock_assemble:
             with patch("pathlib.Path.mkdir"):
                 builder = VideoBuilder(output_dir=tmp_path, canvas_width=720, canvas_height=1280)
                 builder.build("dim_test", SCRIPT, str(audio), str(stock))
@@ -218,7 +218,7 @@ class TestVideoBuildBuild:
 
         mock_clip = self._make_mock_clip()
 
-        with patch("src.media.video_builder.VideoBuilder._assemble", return_value=mock_clip):
+        with patch("src.media.video_builder.VideoBuilder._assemble", return_value=(mock_clip, 15.0)):
             with patch("pathlib.Path.mkdir"):
                 builder = VideoBuilder(output_dir=tmp_path)
                 result = builder.build("serial_001", SCRIPT, str(audio), str(stock))

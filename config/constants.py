@@ -117,6 +117,16 @@ PIXABAY_KEYWORD_MAP: dict[str, str] = {
 }
 
 # ---------------------------------------------------------------------------
+# CTA products (category → free resource name offered in script/metadata)
+# ---------------------------------------------------------------------------
+
+PRODUCTS: dict[str, str] = {
+    "money":   "Wealth Systems Blueprint PDF",
+    "career":  "Salary Escape Blueprint PDF",
+    "success": "Success Myths Exposed PDF",
+}
+
+# ---------------------------------------------------------------------------
 # Script limits
 # ---------------------------------------------------------------------------
 

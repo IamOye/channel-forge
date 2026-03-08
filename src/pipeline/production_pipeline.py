@@ -177,6 +177,9 @@ class ProductionPipeline:
         category = topic_item.get("category", "default")
         score    = float(topic_item.get("score", 0.0))
 
+        from config.constants import PRODUCTS
+        cta_product = PRODUCTS.get(category, "")
+
         logger.info("Pipeline start: topic_id=%s keyword='%s'", topic_id, keyword)
 
         steps: list[StepResult] = []
@@ -195,7 +198,7 @@ class ProductionPipeline:
         # --- Step 2: Script ---
         script_result = self._run_step(
             "script", steps, errors,
-            lambda: self._run_script_generator(keyword, hook_text),
+            lambda: self._run_script_generator(keyword, hook_text, cta_product),
         )
         if script_result is None:
             return self._fail(topic_id, keyword, steps, errors)
@@ -243,7 +246,7 @@ class ProductionPipeline:
         # --- Step 6: Metadata ---
         meta_result = self._run_step(
             "metadata", steps, errors,
-            lambda: self._run_metadata(keyword, script_result.full_script),
+            lambda: self._run_metadata(keyword, script_result.full_script, cta_product),
         )
         if meta_result is None:
             return self._fail(topic_id, keyword, steps, errors)
@@ -285,10 +288,10 @@ class ProductionPipeline:
         gen = HookGenerator(api_key=self.anthropic_api_key)
         return gen.generate(topic=keyword, score=score, emotion=category)
 
-    def _run_script_generator(self, keyword: str, hook_text: str):
+    def _run_script_generator(self, keyword: str, hook_text: str, cta_product: str = ""):
         from src.content.script_generator import ScriptGenerator
         gen = ScriptGenerator(api_key=self.anthropic_api_key)
-        return gen.generate(topic=keyword, hook=hook_text)
+        return gen.generate(topic=keyword, hook=hook_text, cta_product=cta_product)
 
     def _run_voiceover(self, topic_id: str, script_dict: dict, category: str):
         from src.media.voiceover import VoiceoverGenerator
@@ -342,16 +345,25 @@ class ProductionPipeline:
         )
 
         prompt = (
-            f"Given this video script split into 4 parts:\n{parts_text}\n\n"
-            "Suggest 4 Pixabay video search queries (2–3 words each) that visually "
-            "represent what is being described in each part. "
-            "Rules:\n"
-            "- Visually concrete: things a camera can actually film\n"
-            "- Short (2–3 words max)\n"
-            "- No abstract concepts like 'success', 'mindset', 'inequality'\n"
-            "- Match what is being SAID in that part of the script\n"
-            "Return a JSON array only, no explanation: "
-            '[\"query1\",\"query2\",\"query3\",\"query4\"]'
+            f"You are a video director choosing b-roll footage for a 4-part script.\n\n"
+            f"Script (4 equal time segments):\n{parts_text}\n\n"
+            "For each segment, choose ONE Pixabay search phrase (2–3 words) that a "
+            "camera crew could actually film on location. The phrase must represent the "
+            "single most visually concrete action or object from that segment.\n\n"
+            "STRICT RULES:\n"
+            "- Prefer human actions over static objects: "
+            "\"man counting cash\" beats \"money\"\n"
+            "- No abstract nouns: ban 'success', 'wealth', 'mindset', 'inequality', "
+            "'freedom', 'passive income'\n"
+            "- No animals unless the script explicitly mentions animals\n"
+            "- Must be filmable in real life (no metaphors, no concepts)\n"
+            "- 2–3 words only\n\n"
+            "EXAMPLES:\n"
+            "BAD: \"passive income sleeping\", \"dog napping\", \"money abstract\"\n"
+            "GOOD: \"investor checking portfolio\", \"businessman reading financial report\", "
+            "\"entrepreneur on laptop\", \"luxury apartment interior\"\n\n"
+            "Return a JSON array only, no explanation, no markdown:\n"
+            '[\"phrase1\",\"phrase2\",\"phrase3\",\"phrase4\"]'
         )
 
         try:
@@ -379,10 +391,10 @@ class ProductionPipeline:
         base = KEYWORD_MAP.get("default")
         return (base * count)[:count]
 
-    def _run_metadata(self, keyword: str, script: str):
+    def _run_metadata(self, keyword: str, script: str, cta_product: str = ""):
         from src.content.metadata_generator import MetadataGenerator
         gen = MetadataGenerator(api_key=self.anthropic_api_key)
-        return gen.generate(topic=keyword, script=script)
+        return gen.generate(topic=keyword, script=script, cta_product=cta_product)
 
     def _run_uploader(self, topic_id: str, video_path: str, metadata: dict):
         from src.publisher.youtube_uploader import YouTubeUploader

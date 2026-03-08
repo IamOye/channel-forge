@@ -13,7 +13,6 @@ import pytest
 from src.media.voiceover import (
     DEFAULT_VOICE,
     MIN_DURATION_SECONDS,
-    MAX_DURATION_SECONDS,
     VOICE_MAP,
     VOICE_SETTINGS,
     VoiceoverGenerator,
@@ -81,9 +80,9 @@ class TestSelectVoice:
         name, _ = VoiceoverGenerator._select_voice("career")
         assert name == "Josh"
 
-    def test_success_returns_rachel(self) -> None:
+    def test_success_returns_josh(self) -> None:
         name, _ = VoiceoverGenerator._select_voice("success")
-        assert name == "Rachel"
+        assert name == "Josh"
 
     def test_unknown_returns_default(self) -> None:
         name, vid = VoiceoverGenerator._select_voice("unknown_category")
@@ -132,17 +131,14 @@ class TestValidateDuration:
         errors = VoiceoverGenerator._validate_duration(MIN_DURATION_SECONDS)
         assert errors == []
 
-    def test_exactly_at_max_passes(self) -> None:
-        errors = VoiceoverGenerator._validate_duration(MAX_DURATION_SECONDS)
-        assert errors == []
-
     def test_below_min_error(self) -> None:
         errors = VoiceoverGenerator._validate_duration(5.0)
         assert any("minimum" in e for e in errors)
 
-    def test_above_max_error(self) -> None:
-        errors = VoiceoverGenerator._validate_duration(20.0)
-        assert any("maximum" in e for e in errors)
+    def test_long_duration_passes(self) -> None:
+        # No upper bound — video extends to match full voiceover length
+        errors = VoiceoverGenerator._validate_duration(30.0)
+        assert errors == []
 
 
 # ---------------------------------------------------------------------------
@@ -176,7 +172,7 @@ class TestVoiceoverGeneratorGenerate:
 
         assert isinstance(result, VoiceoverResult)
         assert result.is_valid is True
-        assert result.voice_name == "Rachel"
+        assert result.voice_name == "Josh"
         assert result.topic_id == "test_001"
         assert result.duration_seconds == 13.0
 
@@ -196,7 +192,8 @@ class TestVoiceoverGeneratorGenerate:
 
     @patch("src.media.voiceover.subprocess.run")
     @patch("src.media.voiceover.httpx.post")
-    def test_invalid_when_duration_too_long(self, mock_post, mock_subprocess) -> None:
+    def test_valid_when_duration_long(self, mock_post, mock_subprocess) -> None:
+        # No upper bound — long voiceovers are valid; video extends to match
         mock_post.return_value = self._mock_httpx_response()
         mock_subprocess.return_value = MagicMock(returncode=0)
 
@@ -205,8 +202,8 @@ class TestVoiceoverGeneratorGenerate:
                 gen = _make_gen()
                 result = gen.generate(SAMPLE_SCRIPT, topic_id="long_001", category="career")
 
-        assert result.is_valid is False
-        assert any("maximum" in e for e in result.validation_errors)
+        assert result.is_valid is True
+        assert result.duration_seconds == 25.0
 
     def test_raises_without_api_key(self) -> None:
         gen = VoiceoverGenerator(api_key="")

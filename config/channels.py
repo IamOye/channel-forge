@@ -14,6 +14,8 @@ class ChannelConfig:
 
     channel_key: str        # Matches .credentials/{channel_key}_token.json
     name: str               # Human-readable channel name
+    channel_id: str = ""            # YouTube channel ID (UC…)
+    handle: str = ""                # YouTube handle (@…)
     category: str = "success"       # Default content category
     daily_quota: int = 3            # Max uploads per day
     timezone: str = "Africa/Lagos"
@@ -41,6 +43,15 @@ CHANNELS: list[ChannelConfig] = [
         name="Career Accelerator",
         category="career",
         daily_quota=2,
+        timezone="Africa/Lagos",
+    ),
+    ChannelConfig(
+        channel_key="money_debate",
+        name="Money Heresy",
+        channel_id="UC9nKSmjC4g9QEEbPHVQEh6g",
+        handle="@moneyheresy",
+        category="money",
+        daily_quota=3,
         timezone="Africa/Lagos",
     ),
 ]

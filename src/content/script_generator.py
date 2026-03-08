@@ -40,11 +40,16 @@ _MODEL = "claude-sonnet-4-5"
 _SYSTEM_PROMPT = """You are a YouTube Shorts scriptwriter who specialises in viral
 15-second videos. You write tight, conversational scripts — no filler, no fluff.
 
-Given a topic and an opening hook, generate a 4-part script:
+Given a topic, an opening hook, and a free product name, generate a 4-part script:
   1. hook      (~2s, 8–12 words)  — use the provided hook verbatim
   2. statement (~4s, 15–20 words) — bold claim or surprising insight
   3. twist     (~4s, 15–20 words) — the unexpected flip or deeper truth
   4. question  (~3s, 8–12 words)  — ends with a question mark, drives comments
+     The last 1–2 sentences of the question MUST include a natural CTA that:
+     - References the free product by name
+     - Asks viewers to "follow and comment YES below"
+     - Sounds conversational, not salesy
+     Example: "Want my free Wealth Systems Blueprint PDF? Follow and drop YES in the comments."
 
 Rules:
 - Total word count across all 4 parts MUST be under 75 words
@@ -169,13 +174,16 @@ class ScriptGenerator:
     # Public API
     # ------------------------------------------------------------------
 
-    def generate(self, topic: str, hook: str) -> ScriptResult:
+    def generate(self, topic: str, hook: str, cta_product: str = "") -> ScriptResult:
         """
         Generate a 4-part 15-second script for the given topic and hook.
 
         Args:
             topic: The video topic or keyword.
             hook: The opening hook line (from HookGenerator or custom).
+            cta_product: Name of the free product to reference in the CTA
+                         (e.g. "Wealth Systems Blueprint PDF"). If empty,
+                         no product-specific CTA is included.
 
         Returns:
             ScriptResult with all parts, full_script, word_count, and
@@ -185,7 +193,7 @@ class ScriptGenerator:
             ValueError: If ANTHROPIC_API_KEY is not configured.
         """
         client = self._get_client()
-        prompt = self._build_prompt(topic, hook)
+        prompt = self._build_prompt(topic, hook, cta_product)
 
         logger.info("Generating script for topic='%s'", topic)
 
@@ -221,12 +229,15 @@ class ScriptGenerator:
             self._client = anthropic.Anthropic(api_key=self.api_key)
         return self._client
 
-    def _build_prompt(self, topic: str, hook: str) -> str:
-        return (
-            f"Topic: {topic}\n"
-            f"Hook (use verbatim): {hook}\n\n"
-            "Write the 4-part script now."
-        )
+    def _build_prompt(self, topic: str, hook: str, cta_product: str = "") -> str:
+        lines = [
+            f"Topic: {topic}",
+            f"Hook (use verbatim): {hook}",
+        ]
+        if cta_product:
+            lines.append(f"Free product for CTA: {cta_product}")
+        lines.append("\nWrite the 4-part script now.")
+        return "\n".join(lines)
 
     def _parse_parts(self, raw: str) -> dict[str, str]:
         """

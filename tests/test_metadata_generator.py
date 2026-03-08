@@ -50,6 +50,7 @@ def _valid_payload() -> dict:
         "title": VALID_TITLE,
         "description": VALID_DESC,
         "hashtags": VALID_TAGS,
+        "cta_product": "Wealth Systems Blueprint PDF",
     }
 
 
@@ -78,7 +79,7 @@ class TestMetadataResult:
         r = self._make_result()
         d = r.to_dict()
         for key in ("topic", "title", "description", "hashtags",
-                    "hashtags_string", "is_valid", "validation_errors"):
+                    "hashtags_string", "cta_product", "is_valid", "validation_errors"):
             assert key in d
 
     def test_to_dict_hashtags_string_space_joined(self) -> None:
@@ -182,6 +183,7 @@ class TestParseResponse:
         assert parsed["title"] == ""
         assert parsed["description"] == ""
         assert parsed["hashtags"] == []
+        assert parsed["cta_product"] == ""
 
     def test_filters_empty_hashtag_strings(self) -> None:
         payload = _valid_payload()

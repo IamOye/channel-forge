@@ -11,6 +11,7 @@ Usage:
 
 import logging
 import os
+import shutil
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,7 +42,17 @@ KEYWORD_MAP: dict[str, list[str]] = {
     "default":    ["nature landscape", "cityscape abstract"],
 }
 
-MIN_VIDEO_DURATION_SECONDS = 10
+# Quality filters applied to every candidate before selection
+MIN_VIDEO_DURATION_SECONDS = 5          # reject very short clips
+MAX_VIDEO_DURATION_SECONDS = 30         # reject unnecessarily large files
+MIN_VIDEO_WIDTH = 1080                  # Full HD portrait minimum width
+MIN_VIDEO_HEIGHT = 1920                 # Full HD portrait minimum height
+MAX_FILE_SIZE_BYTES = 40 * 1024 * 1024  # 40 MB — skip large downloads
+MIN_FILE_SIZE_BYTES = 100 * 1024        # 100 KB — anything smaller is corrupt
+
+REQUEST_TIMEOUT = 30.0                  # seconds for API calls
+DOWNLOAD_TIMEOUT = 30.0                 # seconds for file downloads
+
 OUTPUT_DIR = Path("data/raw")
 
 
@@ -148,8 +159,11 @@ class PixabayFetcher:
         if not self.api_key:
             raise ValueError("PIXABAY_API_KEY not set")
 
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = self.output_dir / f"{topic_id}_stock.mp4"
+
         keywords = KEYWORD_MAP.get(category.lower(), KEYWORD_MAP["default"])
-        video = self._search_videos(keywords)
+        video = self._search_and_download(keywords, output_path)
 
         if video is None:
             return FetchResult(
@@ -160,15 +174,10 @@ class PixabayFetcher:
                 validation_errors=["no suitable video found on Pixabay"],
             )
 
-        output_path = self.output_dir / f"{topic_id}_stock.mp4"
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-
-        self._download_video(video.download_url, output_path)
         logger.info(
             "Downloaded stock video %s → %s (%ds)",
             video.pixabay_id, output_path, video.duration,
         )
-
         return FetchResult(
             topic_id=topic_id,
             video_path=str(output_path),
@@ -185,6 +194,11 @@ class PixabayFetcher:
         """
         Fetch multiple stock videos — one per keyword phrase — and return local paths.
 
+        For each phrase, all qualifying API candidates are tried in order until one
+        downloads successfully (passes size and corruption checks).  If every candidate
+        for a phrase fails, the last successfully downloaded clip is copied as a
+        fallback so the video always has enough b-roll.
+
         Args:
             topic_id: Unique identifier used in output filenames
                       (e.g. "stoic_001" → "stoic_001_stock_0.mp4", …).
@@ -192,8 +206,9 @@ class PixabayFetcher:
             count: Maximum number of clips to fetch (uses first `count` phrases).
 
         Returns:
-            List of local file paths. May be shorter than count if some
-            keyword phrases return no results or duplicate video IDs.
+            List of local file paths. Falls back to clip duplication so the
+            returned list length equals the number of phrases attempted (after
+            the first successful download).
 
         Raises:
             ValueError: If PIXABAY_API_KEY is not configured.
@@ -204,27 +219,46 @@ class PixabayFetcher:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         paths: list[str] = []
         seen_ids: set[int] = set()
+        last_good_path: str | None = None
 
         for i, phrase in enumerate(keywords_list[:count]):
-            video = self._query_api(phrase)
-            if video is None:
-                logger.warning("No video found for phrase=%r (clip %d)", phrase, i)
-                continue
-            if video.pixabay_id in seen_ids:
-                logger.debug(
-                    "Duplicate pixabay_id=%d skipped for phrase=%r",
-                    video.pixabay_id, phrase,
-                )
-                continue
-
-            seen_ids.add(video.pixabay_id)
             output_path = self.output_dir / f"{topic_id}_stock_{i}.mp4"
-            self._download_video(video.download_url, output_path)
-            logger.info(
-                "Fetched clip %d: pixabay_id=%d → %s",
-                len(paths), video.pixabay_id, output_path,
-            )
-            paths.append(str(output_path))
+            candidates = self._query_api(phrase)
+
+            downloaded = False
+            for video in candidates:
+                if video.pixabay_id in seen_ids:
+                    logger.debug(
+                        "Duplicate pixabay_id=%d skipped for phrase=%r",
+                        video.pixabay_id, phrase,
+                    )
+                    continue
+
+                ok = self._download_verified(video.download_url, output_path)
+                if ok:
+                    seen_ids.add(video.pixabay_id)
+                    paths.append(str(output_path))
+                    last_good_path = str(output_path)
+                    logger.info(
+                        "Fetched clip %d: pixabay_id=%d phrase=%r → %s",
+                        len(paths), video.pixabay_id, phrase, output_path,
+                    )
+                    downloaded = True
+                    break
+
+            if not downloaded:
+                if last_good_path is not None:
+                    shutil.copy2(last_good_path, output_path)
+                    paths.append(str(output_path))
+                    logger.warning(
+                        "No clip for phrase=%r — duplicated %s as fallback clip %d",
+                        phrase, last_good_path, i,
+                    )
+                else:
+                    logger.warning(
+                        "No clip for phrase=%r and no fallback clip available yet (clip %d skipped)",
+                        phrase, i,
+                    )
 
         return paths
 
@@ -232,35 +266,53 @@ class PixabayFetcher:
     # Private helpers
     # ------------------------------------------------------------------
 
-    def _search_videos(self, keywords: list[str]) -> PixabayVideo | None:
-        """Try each keyword phrase in order; return first suitable video or None."""
+    def _search_and_download(
+        self, keywords: list[str], output_path: Path
+    ) -> PixabayVideo | None:
+        """Try each keyword phrase; download the first verified candidate."""
         for phrase in keywords:
-            video = self._query_api(phrase)
-            if video is not None:
-                return video
+            for video in self._query_api(phrase):
+                if self._download_verified(video.download_url, output_path):
+                    return video
         return None
 
-    def _query_api(self, query: str) -> PixabayVideo | None:
-        """Query Pixabay API for portrait videos matching query."""
+    def _query_api(self, query: str) -> list[PixabayVideo]:
+        """Query Pixabay API and return all qualifying portrait video candidates.
+
+        Filters applied server-side:
+          - video_type=film (real footage only, no animation)
+          - orientation=vertical (portrait mode for Shorts)
+          - min_width=1080
+          - order=popular (highest quality score first)
+
+        Filters applied client-side:
+          - width  >= MIN_VIDEO_WIDTH  (1080)
+          - height >= MIN_VIDEO_HEIGHT (1920)
+          - duration in [MIN_VIDEO_DURATION_SECONDS, MAX_VIDEO_DURATION_SECONDS]
+
+        Returns an empty list on API error.
+        """
         params = {
             "key":         self.api_key,
             "q":           query,
             "video_type":  "film",
             "orientation": "vertical",
             "per_page":    50,
-            "min_width":   1080,
+            "min_width":   MIN_VIDEO_WIDTH,
+            "order":       "popular",
         }
         try:
-            resp = httpx.get(_PIXABAY_API_URL, params=params, timeout=15.0)
+            resp = httpx.get(_PIXABAY_API_URL, params=params, timeout=REQUEST_TIMEOUT)
             resp.raise_for_status()
             hits = resp.json().get("hits", [])
         except Exception as exc:
             logger.error("Pixabay API call failed for query=%r: %s", query, exc)
-            return None
+            return []
 
+        results: list[PixabayVideo] = []
         for hit in hits:
             duration = int(hit.get("duration", 0))
-            if duration < self.min_duration:
+            if duration < self.min_duration or duration > MAX_VIDEO_DURATION_SECONDS:
                 continue
 
             videos_dict = hit.get("videos", {})
@@ -268,11 +320,10 @@ class PixabayFetcher:
             if not url:
                 continue
 
-            # Skip videos that don't meet the minimum width after size selection
-            if width < 1080:
+            if width < MIN_VIDEO_WIDTH or height < MIN_VIDEO_HEIGHT:
                 continue
 
-            return PixabayVideo(
+            results.append(PixabayVideo(
                 pixabay_id=hit.get("id", 0),
                 duration=duration,
                 width=width,
@@ -280,8 +331,10 @@ class PixabayFetcher:
                 download_url=url,
                 page_url=hit.get("pageURL", ""),
                 tags=hit.get("tags", ""),
-            )
-        return None
+            ))
+
+        logger.debug("Query %r → %d qualifying candidates", query, len(results))
+        return results
 
     @staticmethod
     def _best_url(videos_dict: dict) -> tuple[str, int, int]:
@@ -298,10 +351,59 @@ class PixabayFetcher:
         return "", 0, 0
 
     @staticmethod
-    def _download_video(url: str, output_path: Path) -> None:
-        """Stream-download a video file to disk."""
-        with httpx.stream("GET", url, timeout=60.0, follow_redirects=True) as resp:
-            resp.raise_for_status()
-            with open(output_path, "wb") as f:
-                for chunk in resp.iter_bytes(chunk_size=65536):
-                    f.write(chunk)
+    def _download_verified(url: str, output_path: Path) -> bool:
+        """Download a video, checking size limits and file integrity.
+
+        Checks performed:
+          - Content-Length header < MAX_FILE_SIZE_BYTES (40 MB) before downloading
+          - Downloaded file size > MIN_FILE_SIZE_BYTES (100 KB) after download
+          - Downloaded file size < MAX_FILE_SIZE_BYTES (40 MB) after download
+
+        Returns:
+            True if the file was downloaded and passes all checks, False otherwise.
+            Partial or corrupt files are deleted before returning False.
+        """
+        try:
+            with httpx.stream(
+                "GET", url, timeout=DOWNLOAD_TIMEOUT, follow_redirects=True
+            ) as resp:
+                resp.raise_for_status()
+
+                # Pre-flight size check via Content-Length header
+                content_length = int(resp.headers.get("content-length", 0))
+                if content_length > MAX_FILE_SIZE_BYTES:
+                    logger.debug(
+                        "Skipping %s — Content-Length %dMB exceeds 40MB limit",
+                        url, content_length // (1024 * 1024),
+                    )
+                    return False
+
+                with open(output_path, "wb") as f:
+                    for chunk in resp.iter_bytes(chunk_size=65536):
+                        f.write(chunk)
+
+        except Exception as exc:
+            logger.warning("Download failed for %s: %s", url, exc)
+            output_path.unlink(missing_ok=True)
+            return False
+
+        # Post-download integrity checks
+        actual_size = output_path.stat().st_size
+
+        if actual_size < MIN_FILE_SIZE_BYTES:
+            logger.warning(
+                "Corrupt download (%d bytes < 100KB) — discarding: %s",
+                actual_size, output_path,
+            )
+            output_path.unlink(missing_ok=True)
+            return False
+
+        if actual_size > MAX_FILE_SIZE_BYTES:
+            logger.warning(
+                "Oversized download (%dMB > 40MB) — discarding: %s",
+                actual_size // (1024 * 1024), output_path,
+            )
+            output_path.unlink(missing_ok=True)
+            return False
+
+        return True

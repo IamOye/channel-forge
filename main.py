@@ -82,17 +82,23 @@ def cmd_crawl(url: str) -> int:
         return 1
 
 
-def cmd_produce(topic: str) -> int:
+def cmd_produce(topic: str, channel: str = "money_debate") -> int:
     """Produce one video end-to-end for the given topic text."""
-    logger.info("Producing video for topic: %s", topic)
+    from config.channels import CHANNELS  # resolve category from config
+
+    channel_cfg = next((c for c in CHANNELS if c.channel_key == channel), None)
+    category = channel_cfg.category if channel_cfg else "money"
+
+    logger.info("Producing video for topic=%r channel=%s category=%s", topic, channel, category)
+    print(f"Channel: {channel}  |  Category: {category}")
     try:
         from src.pipeline.production_pipeline import ProductionPipeline  # lazy
 
-        pipeline = ProductionPipeline()
+        pipeline = ProductionPipeline(youtube_channel_key=channel)
         result = pipeline.run({
             "topic_id": "cli_produce_001",
             "keyword":  topic,
-            "category": "success",
+            "category": category,
             "score":    80.0,
         })
         if result.is_valid:
@@ -294,6 +300,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--topic", required=True, metavar="TEXT",
         help='Topic text, e.g. "stoic morning routine"',
     )
+    produce_p.add_argument(
+        "--channel", default="money_debate", metavar="KEY",
+        help="Channel key to use for upload credentials (default: money_debate)",
+    )
 
     # test-pipeline
     sub.add_parser(
@@ -323,7 +333,7 @@ def main(argv: list[str] | None = None) -> int:
     dispatch = {
         "run":           lambda: cmd_run(),
         "crawl":         lambda: cmd_crawl(args.url),
-        "produce":       lambda: cmd_produce(args.topic),
+        "produce":       lambda: cmd_produce(args.topic, args.channel),
         "test-pipeline": lambda: cmd_test_pipeline(),
         "analytics":     lambda: cmd_analytics(),
         "optimize":      lambda: cmd_optimize(),

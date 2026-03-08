@@ -155,23 +155,25 @@ class VideoBuilder:
             "Building video for topic_id=%s (%d clip(s))", topic_id, len(stock_paths)
         )
 
-        final_clip = self._assemble(script_dict, audio_path, stock_paths)
+        final_clip, actual_duration = self._assemble(script_dict, audio_path, stock_paths)
 
         final_clip.write_videofile(
             str(output_path),
             fps=self.fps,
             codec="libx264",
             audio_codec="aac",
+            bitrate="8000k",
+            audio_bitrate="192k",
             logger=None,   # suppress moviepy progress bar
         )
         final_clip.close()
 
-        logger.info("Exported final video to %s", output_path)
+        logger.info("Exported final video to %s (%.1fs)", output_path, actual_duration)
 
         return BuildResult(
             topic_id=topic_id,
             output_path=str(output_path),
-            duration_seconds=VIDEO_DURATION,
+            duration_seconds=actual_duration,
             is_valid=True,
         )
 
@@ -184,11 +186,12 @@ class VideoBuilder:
         script_dict: dict[str, str],
         audio_path: Path,
         stock_paths: list[Path],
-    ):
-        """Compose video layers and return a CompositeVideoClip.
+    ) -> tuple:
+        """Compose video layers and return (CompositeVideoClip, actual_duration_seconds).
 
-        When multiple stock paths are provided the clips are trimmed to equal
-        durations and joined with CROSSFADE_DURATION crossfades.
+        Total video duration equals the full voiceover length — the audio is never
+        trimmed.  B-roll clips are divided into equal segments that together span
+        the full audio duration (with CROSSFADE_DURATION overlaps at each join).
         """
         from moviepy import (  # moviepy v2
             AudioFileClip,
@@ -200,19 +203,22 @@ class VideoBuilder:
         import moviepy.video.fx as vfx
         from src.media.caption_renderer import CaptionRenderer
 
-        n = len(stock_paths)
-        # Each clip's trimmed duration so the total equals VIDEO_DURATION after
-        # crossfade overlap: total = n*D - (n-1)*CROSSFADE  →  D = (total + (n-1)*cf) / n
-        per_clip_dur = (VIDEO_DURATION + (n - 1) * CROSSFADE_DURATION) / n
+        # 1. Load audio — read actual duration, never trim
+        audio = AudioFileClip(str(audio_path))
+        actual_duration = audio.duration
+        logger.info("Voiceover duration: %.2fs — video will match", actual_duration)
 
-        # 1. Build per-clip background segments with fade effects
+        n = len(stock_paths)
+        # Each clip's trimmed duration so that n clips with (n-1) crossfade overlaps
+        # total exactly actual_duration:
+        #   total = n * D - (n-1) * CROSSFADE  →  D = (total + (n-1) * cf) / n
+        per_clip_dur = (actual_duration + (n - 1) * CROSSFADE_DURATION) / n
+
+        # 2. Build per-clip background segments with crossfade effects
         bg_clips = []
         for i, path in enumerate(stock_paths):
-            clip = (
-                VideoFileClip(str(path))
-                .subclipped(0, per_clip_dur)
-                .resized((self.canvas_width, self.canvas_height))
-            )
+            raw = VideoFileClip(str(path)).subclipped(0, per_clip_dur)
+            clip = self._fit_clip(raw, self.canvas_width, self.canvas_height)
             effects = []
             if i > 0:
                 effects.append(vfx.CrossFadeIn(CROSSFADE_DURATION))
@@ -222,43 +228,72 @@ class VideoBuilder:
                 clip = clip.with_effects(effects)
             bg_clips.append(clip)
 
-        # 2. Concatenate — negative padding creates the crossfade overlap
+        # 3. Concatenate — negative padding creates the crossfade overlap
         if n == 1:
             bg = bg_clips[0]
         else:
             bg = concatenate_videoclips(
                 bg_clips, padding=-CROSSFADE_DURATION, method="compose"
             )
-        bg = bg.subclipped(0, VIDEO_DURATION)
+        bg = bg.subclipped(0, actual_duration)
 
-        # 3. Dark overlay
+        # 4. Dark overlay sized to full audio duration
         overlay = (
             ColorClip(
                 size=(self.canvas_width, self.canvas_height),
                 color=(0, 0, 0),
             )
             .with_opacity(self.overlay_opacity)
-            .with_duration(VIDEO_DURATION)
+            .with_duration(actual_duration)
         )
 
-        # 4. Captions
+        # 5. Captions (timings are relative to script sections, not video length)
         renderer = CaptionRenderer(
             canvas_width=self.canvas_width,
             canvas_height=self.canvas_height,
         )
         caption_clips = renderer.render(script_dict)
 
-        # 5. Audio
-        audio = AudioFileClip(str(audio_path)).subclipped(0, VIDEO_DURATION)
-
-        # 6. Compose everything
+        # 6. Compose everything — duration locked to full audio length
         layers = [bg, overlay] + caption_clips
         final = (
             CompositeVideoClip(layers, size=(self.canvas_width, self.canvas_height))
             .with_audio(audio)
-            .with_duration(VIDEO_DURATION)
+            .with_duration(actual_duration)
         )
-        return final
+        return final, actual_duration
+
+    @staticmethod
+    def _fit_clip(clip, target_w: int, target_h: int):
+        """Crop-to-fill: scale so both dimensions cover the target, then crop center.
+
+        - If the clip is already exactly target_w × target_h, return it unchanged.
+        - If wider than target_w (after height-fit scale), crop horizontally from center.
+        - Never stretches or distorts aspect ratio.
+        """
+        cw, ch = clip.size
+        if cw == target_w and ch == target_h:
+            return clip
+
+        # Scale up so the clip fully covers the canvas on both axes
+        scale = max(target_w / cw, target_h / ch)
+        new_w = round(cw * scale)
+        new_h = round(ch * scale)
+
+        if new_w < target_w:
+            logger.warning(
+                "Clip %dx%d is too narrow to fill %dx%d after scale — "
+                "resizing as fallback (may distort)",
+                cw, ch, target_w, target_h,
+            )
+            return clip.resized((target_w, target_h))
+
+        scaled = clip.resized((new_w, new_h))
+
+        # Crop the center region to exact canvas size
+        x1 = (new_w - target_w) / 2
+        y1 = (new_h - target_h) / 2
+        return scaled.cropped(x1=x1, y1=y1, x2=x1 + target_w, y2=y1 + target_h)
 
     @staticmethod
     def _validate_inputs(audio_path: Path, stock_paths: list[Path]) -> list[str]:
