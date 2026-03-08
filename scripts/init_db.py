@@ -27,7 +27,7 @@ LOGS_DIR = PROJECT_ROOT / "logs"
 
 
 # ---------------------------------------------------------------------------
-# Schema definitions
+# Schema definitions — Phases 1–10
 # ---------------------------------------------------------------------------
 
 TRENDS_DDL = """
@@ -111,8 +111,103 @@ CREATE INDEX IF NOT EXISTS idx_video_keyword ON video_ideas (keyword);
 CREATE INDEX IF NOT EXISTS idx_video_score   ON video_ideas (composite_score DESC);
 """
 
+# ---------------------------------------------------------------------------
+# Schema definitions — Phases 11–13
+# ---------------------------------------------------------------------------
+
+SCORED_TOPICS_DDL = """
+CREATE TABLE IF NOT EXISTS scored_topics (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    keyword     TEXT    NOT NULL,
+    category    TEXT    NOT NULL DEFAULT 'success',
+    score       REAL    NOT NULL DEFAULT 0,
+    source      TEXT    NOT NULL DEFAULT 'manual',
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_scored_keyword ON scored_topics (keyword);
+CREATE INDEX IF NOT EXISTS idx_scored_score   ON scored_topics (score DESC);
+"""
+
+UPLOADED_VIDEOS_DDL = """
+CREATE TABLE IF NOT EXISTS uploaded_videos (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    video_id    TEXT    NOT NULL UNIQUE,
+    channel_key TEXT    NOT NULL DEFAULT 'default',
+    topic_id    TEXT    NOT NULL DEFAULT '',
+    title       TEXT    NOT NULL DEFAULT '',
+    uploaded_at TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_uploaded_video   ON uploaded_videos (video_id);
+CREATE INDEX IF NOT EXISTS idx_uploaded_channel ON uploaded_videos (channel_key);
+"""
+
+VIDEO_METRICS_DDL = """
+CREATE TABLE IF NOT EXISTS video_metrics (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    video_id            TEXT    NOT NULL,
+    channel_key         TEXT    NOT NULL DEFAULT 'default',
+    views               INTEGER NOT NULL DEFAULT 0,
+    watch_time_minutes  REAL    NOT NULL DEFAULT 0,
+    likes               INTEGER NOT NULL DEFAULT 0,
+    comments            INTEGER NOT NULL DEFAULT 0,
+    shares              INTEGER NOT NULL DEFAULT 0,
+    impressions         INTEGER NOT NULL DEFAULT 0,
+    ctr                 REAL    NOT NULL DEFAULT 0,
+    subscribers_gained  INTEGER NOT NULL DEFAULT 0,
+    subscribers_lost    INTEGER NOT NULL DEFAULT 0,
+    engagement_rate     REAL    NOT NULL DEFAULT 0,
+    virality_score      REAL    NOT NULL DEFAULT 0,
+    tier                TEXT    NOT NULL DEFAULT 'F',
+    fetched_at          TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_metrics_video   ON video_metrics (video_id);
+CREATE INDEX IF NOT EXISTS idx_metrics_tier    ON video_metrics (tier);
+CREATE INDEX IF NOT EXISTS idx_metrics_fetched ON video_metrics (fetched_at);
+"""
+
+OPTIMIZATION_LOG_DDL = """
+CREATE TABLE IF NOT EXISTS optimization_log (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    winners_count     INTEGER NOT NULL DEFAULT 0,
+    losers_count      INTEGER NOT NULL DEFAULT 0,
+    topics_generated  INTEGER NOT NULL DEFAULT 0,
+    topics_injected   INTEGER NOT NULL DEFAULT 0,
+    pattern_analysis  TEXT    NOT NULL DEFAULT '',
+    is_valid          INTEGER NOT NULL DEFAULT 1,
+    error             TEXT    NOT NULL DEFAULT '',
+    run_at            TEXT    NOT NULL
+);
+"""
+
+PRODUCTION_RESULTS_DDL = """
+CREATE TABLE IF NOT EXISTS production_results (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    topic_id         TEXT    NOT NULL,
+    keyword          TEXT    NOT NULL,
+    category         TEXT    NOT NULL DEFAULT 'success',
+    hook             TEXT    NOT NULL DEFAULT '',
+    script           TEXT    NOT NULL DEFAULT '',
+    voiceover_path   TEXT    NOT NULL DEFAULT '',
+    video_path       TEXT    NOT NULL DEFAULT '',
+    youtube_video_id TEXT    NOT NULL DEFAULT '',
+    is_valid         INTEGER NOT NULL DEFAULT 0,
+    validation_errors TEXT   NOT NULL DEFAULT '[]',
+    created_at       TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_results_topic ON production_results (topic_id);
+CREATE INDEX IF NOT EXISTS idx_results_valid ON production_results (is_valid);
+"""
+
 # Unified main DB gets all tables
-MAIN_DDL_PARTS = [TRENDS_DDL, SAFETY_DDL, SCORES_DDL, TITLES_DDL, VIDEO_IDEAS_DDL]
+MAIN_DDL_PARTS = [
+    TRENDS_DDL, SAFETY_DDL, SCORES_DDL, TITLES_DDL, VIDEO_IDEAS_DDL,
+    SCORED_TOPICS_DDL, UPLOADED_VIDEOS_DDL, VIDEO_METRICS_DDL,
+    OPTIMIZATION_LOG_DDL, PRODUCTION_RESULTS_DDL,
+]
 
 
 # ---------------------------------------------------------------------------
@@ -155,8 +250,8 @@ def main() -> None:
     databases: dict[str, tuple[Path, list[str]]] = {
         "channel_forge.db": (DATA_DIR / "channel_forge.db", MAIN_DDL_PARTS),
         "trends.db":        (DATA_DIR / "trends.db",        [TRENDS_DDL]),
-        "safety.db":        (DATA_DIR / "safety.db",         [SAFETY_DDL]),
-        "scores.db":        (DATA_DIR / "scores.db",         [SCORES_DDL]),
+        "safety.db":        (DATA_DIR / "safety.db",        [SAFETY_DDL]),
+        "scores.db":        (DATA_DIR / "scores.db",        [SCORES_DDL]),
     }
 
     for name, (path, ddl_parts) in databases.items():
