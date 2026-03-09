@@ -115,6 +115,7 @@ class VideoBuilder:
         script_dict: dict[str, str],
         audio_path: str | Path,
         stock_video_path: str | Path | list[str | Path],
+        cta_overlay: str = "",
     ) -> BuildResult:
         """
         Build and export the final video MP4.
@@ -155,7 +156,9 @@ class VideoBuilder:
             "Building video for topic_id=%s (%d clip(s))", topic_id, len(stock_paths)
         )
 
-        final_clip, actual_duration = self._assemble(script_dict, audio_path, stock_paths)
+        final_clip, actual_duration = self._assemble(
+            script_dict, audio_path, stock_paths, cta_overlay=cta_overlay
+        )
 
         final_clip.write_videofile(
             str(output_path),
@@ -186,6 +189,7 @@ class VideoBuilder:
         script_dict: dict[str, str],
         audio_path: Path,
         stock_paths: list[Path],
+        cta_overlay: str = "",
     ) -> tuple:
         """Compose video layers and return (CompositeVideoClip, actual_duration_seconds).
 
@@ -252,7 +256,7 @@ class VideoBuilder:
             canvas_width=self.canvas_width,
             canvas_height=self.canvas_height,
         )
-        caption_clips = renderer.render(script_dict)
+        caption_clips = renderer.render(script_dict, cta_overlay=cta_overlay)
 
         # 6. Compose everything — duration locked to full audio length
         layers = [bg, overlay] + caption_clips

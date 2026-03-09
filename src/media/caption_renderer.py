@@ -32,6 +32,15 @@ CAPTION_COLOR     = "white"
 CAPTION_STROKE_COLOR = "black"
 CAPTION_STROKE_WIDTH = 3
 
+# CTA overlay (gold banner, last 3 seconds of video)
+CTA_FONT_SIZE    = 52
+CTA_TEXT_COLOR   = "black"
+CTA_BG_COLOR     = (201, 168, 76)   # gold #C9A84C
+CTA_OVERLAY_START = 10.5
+CTA_OVERLAY_END   = 13.5
+# Vertical position of CTA banner — 85% from top (near bottom)
+CTA_Y_RATIO = 0.85
+
 
 def _resolve_font() -> str | None:
     """Return the first font from CAPTION_FONT_CANDIDATES that Pillow can open.
@@ -168,12 +177,39 @@ class CaptionRenderer:
         logger.info("Built %d caption specs", len(specs))
         return specs
 
-    def render(self, script_dict: dict[str, str]) -> list:
+    def build_cta_spec(self, cta_overlay: str) -> CaptionClipSpec | None:
+        """
+        Build a CaptionClipSpec for the gold CTA overlay banner.
+
+        The banner appears during the last 3 seconds of the video
+        (CTA_OVERLAY_START → CTA_OVERLAY_END) near the bottom of the frame.
+
+        Args:
+            cta_overlay: Text to display (e.g. "FREE GUIDE — Link in Description").
+
+        Returns:
+            A CaptionClipSpec with section="cta_overlay", or None if text is empty.
+        """
+        if not cta_overlay.strip():
+            return None
+        y_pos = int(self.canvas_height * CTA_Y_RATIO)
+        return CaptionClipSpec(
+            section="cta_overlay",
+            text=cta_overlay,
+            start=CTA_OVERLAY_START,
+            end=CTA_OVERLAY_END,
+            x="center",
+            y=y_pos,
+        )
+
+    def render(self, script_dict: dict[str, str], cta_overlay: str = "") -> list:
         """
         Build and return a list of positioned, timed moviepy TextClip objects.
 
         Args:
             script_dict: Dict with keys hook, statement, twist, question.
+            cta_overlay: Optional CTA banner text for the last 3 seconds.
+                         Rendered with a gold background and black bold text.
 
         Returns:
             List of moviepy TextClip objects ready to be composited.
@@ -201,6 +237,27 @@ class CaptionRenderer:
                 .with_position((spec.x, spec.y))
             )
             clips.append(clip)
+
+        # CTA overlay banner (gold background, black text)
+        cta_spec = self.build_cta_spec(cta_overlay)
+        if cta_spec is not None:
+            cta_clip = (
+                TextClip(
+                    text=cta_spec.text,
+                    font=self.font,
+                    font_size=CTA_FONT_SIZE,
+                    color=CTA_TEXT_COLOR,
+                    bg_color=CTA_BG_COLOR,
+                    method="caption",
+                    size=(self.canvas_width - 80, None),
+                    text_align="center",
+                )
+                .with_start(cta_spec.start)
+                .with_duration(cta_spec.duration)
+                .with_position((cta_spec.x, cta_spec.y))
+            )
+            clips.append(cta_clip)
+            logger.debug("CTA overlay added at %.1fs–%.1fs", cta_spec.start, cta_spec.end)
 
         logger.info("Rendered %d caption clips", len(clips))
         return clips

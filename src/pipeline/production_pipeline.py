@@ -178,7 +178,9 @@ class ProductionPipeline:
         score    = float(topic_item.get("score", 0.0))
 
         from config.constants import PRODUCTS
-        cta_product = PRODUCTS.get(category, "")
+        _product    = PRODUCTS.get(category, {})
+        cta_script  = _product.get("cta_script", "")
+        cta_overlay = _product.get("cta_overlay", "")
 
         logger.info("Pipeline start: topic_id=%s keyword='%s'", topic_id, keyword)
 
@@ -198,7 +200,7 @@ class ProductionPipeline:
         # --- Step 2: Script ---
         script_result = self._run_step(
             "script", steps, errors,
-            lambda: self._run_script_generator(keyword, hook_text, cta_product),
+            lambda: self._run_script_generator(keyword, hook_text, cta_script),
         )
         if script_result is None:
             return self._fail(topic_id, keyword, steps, errors)
@@ -235,7 +237,7 @@ class ProductionPipeline:
         # --- Step 5: Video build ---
         build_result = self._run_step(
             "video_build", steps, errors,
-            lambda: self._run_video_builder(topic_id, script_dict, audio_path, stock_video_paths),
+            lambda: self._run_video_builder(topic_id, script_dict, audio_path, stock_video_paths, cta_overlay),
         )
         if build_result is None or not build_result.is_valid:
             errors.append(f"video_build failed: {getattr(build_result, 'validation_errors', [])}")
@@ -246,7 +248,7 @@ class ProductionPipeline:
         # --- Step 6: Metadata ---
         meta_result = self._run_step(
             "metadata", steps, errors,
-            lambda: self._run_metadata(keyword, script_result.full_script, cta_product),
+            lambda: self._run_metadata(keyword, script_result.full_script, category=category),
         )
         if meta_result is None:
             return self._fail(topic_id, keyword, steps, errors)
@@ -288,10 +290,10 @@ class ProductionPipeline:
         gen = HookGenerator(api_key=self.anthropic_api_key)
         return gen.generate(topic=keyword, score=score, emotion=category)
 
-    def _run_script_generator(self, keyword: str, hook_text: str, cta_product: str = ""):
+    def _run_script_generator(self, keyword: str, hook_text: str, cta_script: str = ""):
         from src.content.script_generator import ScriptGenerator
         gen = ScriptGenerator(api_key=self.anthropic_api_key)
-        return gen.generate(topic=keyword, hook=hook_text, cta_product=cta_product)
+        return gen.generate(topic=keyword, hook=hook_text, cta_script=cta_script)
 
     def _run_voiceover(self, topic_id: str, script_dict: dict, category: str):
         from src.media.voiceover import VoiceoverGenerator
@@ -312,7 +314,12 @@ class ProductionPipeline:
         return _MultiFetchResult(video_paths=paths, is_valid=True)
 
     def _run_video_builder(
-        self, topic_id: str, script_dict: dict, audio_path: str, stock_paths: list[str]
+        self,
+        topic_id: str,
+        script_dict: dict,
+        audio_path: str,
+        stock_paths: list[str],
+        cta_overlay: str = "",
     ):
         from src.media.video_builder import VideoBuilder
         builder = VideoBuilder()
@@ -321,6 +328,7 @@ class ProductionPipeline:
             script_dict=script_dict,
             audio_path=audio_path,
             stock_video_path=stock_paths,
+            cta_overlay=cta_overlay,
         )
 
     def _extract_broll_keywords(self, script_dict: dict, count: int = 4) -> list[str]:
@@ -391,10 +399,10 @@ class ProductionPipeline:
         base = KEYWORD_MAP.get("default")
         return (base * count)[:count]
 
-    def _run_metadata(self, keyword: str, script: str, cta_product: str = ""):
+    def _run_metadata(self, keyword: str, script: str, category: str = ""):
         from src.content.metadata_generator import MetadataGenerator
         gen = MetadataGenerator(api_key=self.anthropic_api_key)
-        return gen.generate(topic=keyword, script=script, cta_product=cta_product)
+        return gen.generate(topic=keyword, script=script, category=category)
 
     def _run_uploader(self, topic_id: str, video_path: str, metadata: dict):
         from src.publisher.youtube_uploader import YouTubeUploader

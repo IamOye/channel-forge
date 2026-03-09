@@ -10,6 +10,9 @@ from unittest.mock import MagicMock, patch
 from src.media.caption_renderer import (
     CAPTION_TIMINGS,
     CAPTION_Y_RATIO,
+    CTA_OVERLAY_END,
+    CTA_OVERLAY_START,
+    CTA_Y_RATIO,
     CaptionClipSpec,
     CaptionRenderer,
 )
@@ -113,6 +116,31 @@ class TestBuildSpecs:
         expected_y = int(1280 * CAPTION_Y_RATIO)
         for spec in specs:
             assert spec.y == expected_y
+
+
+# ---------------------------------------------------------------------------
+# CaptionRenderer.build_cta_spec
+# ---------------------------------------------------------------------------
+
+class TestBuildCtaSpec:
+    def test_returns_spec_with_correct_fields(self) -> None:
+        renderer = CaptionRenderer(canvas_height=1920)
+        spec = renderer.build_cta_spec("FREE GUIDE — Link in Description")
+        assert spec is not None
+        assert spec.section == "cta_overlay"
+        assert spec.text == "FREE GUIDE — Link in Description"
+        assert spec.start == CTA_OVERLAY_START
+        assert spec.end == CTA_OVERLAY_END
+        assert spec.x == "center"
+        assert spec.y == int(1920 * CTA_Y_RATIO)
+
+    def test_returns_none_for_empty_string(self) -> None:
+        renderer = CaptionRenderer()
+        assert renderer.build_cta_spec("") is None
+
+    def test_returns_none_for_whitespace_only(self) -> None:
+        renderer = CaptionRenderer()
+        assert renderer.build_cta_spec("   ") is None
 
 
 # ---------------------------------------------------------------------------

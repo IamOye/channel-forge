@@ -51,9 +51,10 @@ Given a topic and a short script, generate:
    - No spaces within a hashtag (use CamelCase for multi-word)
    - Must include #Shorts
    - Use location-neutral English finance/self-improvement terms
-   - REQUIRED tags to choose from: #personalfinance, #wealthbuilding,
-     #financialfreedom, #moneyadvice, #investing, #financialtips,
-     #moneymindset, #buildwealth, #investingforbeginners, #moneytips
+   - REQUIRED tags (must include all of these): #personalfinance, #wealthbuilding,
+     #financialfreedom, #moneyadvice, #moneytips, #financetok, #Shorts
+   - Additional tags to choose from: #investing, #financialtips,
+     #moneymindset, #buildwealth, #investingforbeginners
    - DO NOT include any regional or country-specific tags
      (e.g. NO #Nigeria, #Africa, #Naira, #Lagos or similar)
    - Mix: broad (e.g. #Motivation) and specific (e.g. #PersonalFinance)
@@ -149,16 +150,23 @@ class MetadataGenerator:
     # Public API
     # ------------------------------------------------------------------
 
-    def generate(self, topic: str, script: str, cta_product: str = "") -> MetadataResult:
+    def generate(
+        self,
+        topic: str,
+        script: str,
+        cta_product: str = "",
+        category: str = "",
+    ) -> MetadataResult:
         """
         Generate title, description, hashtags, and cta_product for a YouTube Shorts video.
 
         Args:
             topic: The video topic or keyword.
             script: The full script text (used for SEO context).
-            cta_product: Name of the free product offered in the CTA
-                         (e.g. "Wealth Systems Blueprint PDF"). Passed to Claude
-                         so it can echo it back in the cta_product field.
+            cta_product: Name of the free product offered in the CTA.
+            category: Channel category slug (e.g. "money"). When provided,
+                      the description is augmented with a Gumroad link block
+                      and required hashtags are force-inserted.
 
         Returns:
             MetadataResult with title, description, hashtags, cta_product,
@@ -183,6 +191,10 @@ class MetadataGenerator:
 
         parsed = self._parse_response(raw)
         result = self._build_result(topic, parsed, raw)
+
+        # Post-process with product info when category is known
+        if category:
+            result = self._apply_product_overrides(result, category)
 
         logger.info(
             "Metadata generated: title=%d chars, desc=%d chars, tags=%d, valid=%s",
@@ -270,6 +282,63 @@ class MetadataGenerator:
             validation_errors=errors,
             raw_response=raw,
         )
+
+    # Required tags forced into every video when a category is known
+    _REQUIRED_TAGS: list[str] = [
+        "#Shorts", "#personalfinance", "#financialfreedom",
+        "#wealthbuilding", "#moneyadvice", "#moneytips", "#financetok",
+    ]
+
+    def _apply_product_overrides(self, result: "MetadataResult", category: str) -> "MetadataResult":
+        """
+        Augment description with Gumroad block and ensure required hashtags are
+        present.  Only called when a channel category is provided.
+        """
+        from config.constants import PRODUCTS
+        product = PRODUCTS.get(category, {})
+
+        # --- Description: append Gumroad block ---
+        if product:
+            short_name  = product.get("short_name", "")
+            gumroad_url = product.get("gumroad_url", "")
+            desc = result.description
+            # Strip trailing suffix so we can re-append after the Gumroad block
+            if desc.endswith(DESCRIPTION_SUFFIX):
+                desc = desc[: -len(DESCRIPTION_SUFFIX)].rstrip()
+            result.description = (
+                f"{desc}\n\n"
+                f"FREE RESOURCE: {short_name}\n"
+                f"Download here: {gumroad_url}\n\n"
+                f"Follow @moneyheresy for weekly wealth truths. {DESCRIPTION_SUFFIX}"
+            )
+            result.cta_product = short_name
+
+        # --- Hashtags: force-insert required tags, keep total at 15 ---
+        required_lower = {t.lower() for t in self._REQUIRED_TAGS}
+        existing = list(result.hashtags)
+        non_required = [t for t in existing if t.lower() not in required_lower]
+        merged = list(self._REQUIRED_TAGS) + non_required
+        # Deduplicate while preserving order (required tags first)
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for tag in merged:
+            key = tag.lower()
+            if key not in seen:
+                seen.add(key)
+                deduped.append(tag)
+        # Trim or pad to exactly 15
+        result.hashtags = deduped[:15]
+        if len(result.hashtags) < 15:
+            # Pad with generic tags if Claude was stingy
+            for extra in ("#motivation", "#success", "#mindset",
+                          "#goals", "#hustle", "#money", "#wealth",
+                          "#finance"):
+                if len(result.hashtags) >= 15:
+                    break
+                if extra.lower() not in {t.lower() for t in result.hashtags}:
+                    result.hashtags.append(extra)
+
+        return result
 
     @staticmethod
     def _validate(

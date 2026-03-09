@@ -117,13 +117,41 @@ PIXABAY_KEYWORD_MAP: dict[str, str] = {
 }
 
 # ---------------------------------------------------------------------------
-# CTA products (category → free resource name offered in script/metadata)
+# CTA products (category → product config for script/metadata/overlay)
+# Set GUMROAD_URL_MONEY / GUMROAD_URL_CAREER / GUMROAD_URL_SUCCESS in .env
+# to replace the placeholder URLs before going live.
 # ---------------------------------------------------------------------------
 
-PRODUCTS: dict[str, str] = {
-    "money":   "Wealth Systems Blueprint PDF",
-    "career":  "Salary Escape Blueprint PDF",
-    "success": "Success Myths Exposed PDF",
+import os as _os
+
+PRODUCTS: dict[str, dict[str, str]] = {
+    "money": {
+        "name":       "The 5 Money Systems Millionaires Use While They Sleep",
+        "short_name": "Wealth Systems Blueprint",
+        "gumroad_url": _os.getenv(
+            "GUMROAD_URL_MONEY", "https://gumroad.com/l/placeholder1"
+        ),
+        "cta_script":  "Want my free Wealth Systems Blueprint? Follow and drop YES in the comments — link in description.",
+        "cta_overlay": "FREE GUIDE — Link in Description",
+    },
+    "career": {
+        "name":       "Salary Escape Blueprint — 3 Income Streams to Start This Weekend",
+        "short_name": "Salary Escape Blueprint",
+        "gumroad_url": _os.getenv(
+            "GUMROAD_URL_CAREER", "https://gumroad.com/l/placeholder2"
+        ),
+        "cta_script":  "Want my free Salary Escape Blueprint? Follow and drop YES in the comments — link in description.",
+        "cta_overlay": "FREE GUIDE — Link in Description",
+    },
+    "success": {
+        "name":       "Success Myths Exposed — The Beliefs Keeping You Broke",
+        "short_name": "Success Myths Guide",
+        "gumroad_url": _os.getenv(
+            "GUMROAD_URL_SUCCESS", "https://gumroad.com/l/placeholder3"
+        ),
+        "cta_script":  "Want my free Success Myths guide? Follow and drop YES in the comments — link in description.",
+        "cta_overlay": "FREE GUIDE — Link in Description",
+    },
 }
 
 # ---------------------------------------------------------------------------
