@@ -314,3 +314,148 @@ class TestMetadataGeneratorGenerate:
         result = gen.generate(topic="mindfulness tips", script="test")
 
         assert result.topic == "mindfulness tips"
+
+
+# ---------------------------------------------------------------------------
+# _apply_product_overrides — category URL injection and upsell
+# ---------------------------------------------------------------------------
+
+class TestApplyProductOverrides:
+    """
+    Tests _apply_product_overrides directly, bypassing the Claude API.
+    We construct a MetadataResult with a valid-looking description and verify
+    that the Gumroad block and upsell are injected correctly.
+    """
+
+    def _make_result(self) -> MetadataResult:
+        return MetadataResult(
+            topic="salary trap",
+            title=VALID_TITLE,
+            description=VALID_DESC,
+            hashtags=list(VALID_TAGS),
+            is_valid=True,
+        )
+
+    def _gen(self) -> MetadataGenerator:
+        return MetadataGenerator(api_key="")
+
+    # --- TASK 1: per-category URL injection ---
+
+    @patch("config.constants.PRODUCTS", {
+        "money": {
+            "short_name": "Wealth Systems Blueprint",
+            "gumroad_url": "https://gumroad.com/l/money-test",
+            "cta_script": "...",
+            "cta_overlay": "...",
+        }
+    })
+    def test_money_category_injects_money_url(self) -> None:
+        result = self._gen()._apply_product_overrides(self._make_result(), "money")
+        assert "https://gumroad.com/l/money-test" in result.description
+        assert result.cta_product == "Wealth Systems Blueprint"
+
+    @patch("config.constants.PRODUCTS", {
+        "career": {
+            "short_name": "Salary Escape Blueprint",
+            "gumroad_url": "https://gumroad.com/l/career-test",
+            "cta_script": "...",
+            "cta_overlay": "...",
+        }
+    })
+    def test_career_category_injects_career_url(self) -> None:
+        result = self._gen()._apply_product_overrides(self._make_result(), "career")
+        assert "https://gumroad.com/l/career-test" in result.description
+        assert result.cta_product == "Salary Escape Blueprint"
+
+    @patch("config.constants.PRODUCTS", {
+        "success": {
+            "short_name": "Success Myths Guide",
+            "gumroad_url": "https://gumroad.com/l/success-test",
+            "cta_script": "...",
+            "cta_overlay": "...",
+        }
+    })
+    def test_success_category_injects_success_url(self) -> None:
+        result = self._gen()._apply_product_overrides(self._make_result(), "success")
+        assert "https://gumroad.com/l/success-test" in result.description
+        assert result.cta_product == "Success Myths Guide"
+
+    @patch("config.constants.PRODUCTS", {
+        "money": {
+            "short_name": "Wealth Systems Blueprint",
+            "gumroad_url": "https://gumroad.com/l/money-test",
+            "cta_script": "...",
+            "cta_overlay": "...",
+        }
+    })
+    def test_money_url_not_in_career_result(self) -> None:
+        """money URL must NOT appear when category is unknown."""
+        result = self._gen()._apply_product_overrides(self._make_result(), "unknown")
+        assert "https://gumroad.com/l/money-test" not in result.description
+
+    # --- TASK 3: soft upsell every 5th video ---
+
+    _UPSELL = MetadataGenerator._UPSELL_LINE
+
+    @patch("config.constants.PRODUCTS", {
+        "money": {
+            "short_name": "Wealth Blueprint",
+            "gumroad_url": "https://gumroad.com/l/x",
+            "cta_script": "...",
+            "cta_overlay": "...",
+        }
+    })
+    def test_upsell_injected_on_5th_video(self) -> None:
+        result = self._gen()._apply_product_overrides(self._make_result(), "money", video_number=5)
+        assert self._UPSELL in result.description
+
+    @patch("config.constants.PRODUCTS", {
+        "money": {
+            "short_name": "Wealth Blueprint",
+            "gumroad_url": "https://gumroad.com/l/x",
+            "cta_script": "...",
+            "cta_overlay": "...",
+        }
+    })
+    def test_upsell_injected_on_10th_video(self) -> None:
+        result = self._gen()._apply_product_overrides(self._make_result(), "money", video_number=10)
+        assert self._UPSELL in result.description
+
+    @patch("config.constants.PRODUCTS", {
+        "money": {
+            "short_name": "Wealth Blueprint",
+            "gumroad_url": "https://gumroad.com/l/x",
+            "cta_script": "...",
+            "cta_overlay": "...",
+        }
+    })
+    def test_upsell_absent_on_non_5th_video(self) -> None:
+        for n in (1, 2, 3, 4, 6, 7, 8, 9):
+            result = self._gen()._apply_product_overrides(self._make_result(), "money", video_number=n)
+            assert self._UPSELL not in result.description, f"Upsell should not appear on video {n}"
+
+    @patch("config.constants.PRODUCTS", {
+        "money": {
+            "short_name": "Wealth Blueprint",
+            "gumroad_url": "https://gumroad.com/l/x",
+            "cta_script": "...",
+            "cta_overlay": "...",
+        }
+    })
+    def test_upsell_absent_when_video_number_zero(self) -> None:
+        """video_number=0 (default) must never trigger upsell."""
+        result = self._gen()._apply_product_overrides(self._make_result(), "money", video_number=0)
+        assert self._UPSELL not in result.description
+
+    @patch("config.constants.PRODUCTS", {
+        "money": {
+            "short_name": "Wealth Blueprint",
+            "gumroad_url": "https://gumroad.com/l/x",
+            "cta_script": "...",
+            "cta_overlay": "...",
+        }
+    })
+    def test_description_ends_with_suffix_after_upsell(self) -> None:
+        """Even with upsell, description must end with DESCRIPTION_SUFFIX."""
+        result = self._gen()._apply_product_overrides(self._make_result(), "money", video_number=5)
+        assert result.description.endswith(DESCRIPTION_SUFFIX)

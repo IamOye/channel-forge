@@ -172,10 +172,11 @@ class ProductionPipeline:
         Returns:
             PipelineResult with youtube_video_id on full success.
         """
-        topic_id = topic_item.get("topic_id", "unknown")
-        keyword  = topic_item.get("keyword", "")
-        category = topic_item.get("category", "default")
-        score    = float(topic_item.get("score", 0.0))
+        topic_id     = topic_item.get("topic_id", "unknown")
+        keyword      = topic_item.get("keyword", "")
+        category     = topic_item.get("category", "default")
+        score        = float(topic_item.get("score", 0.0))
+        video_number = int(topic_item.get("video_number", 0))
 
         from config.constants import PRODUCTS
         _product    = PRODUCTS.get(category, {})
@@ -259,7 +260,7 @@ class ProductionPipeline:
         # --- Step 6: Metadata ---
         meta_result = self._run_step(
             "metadata", steps, errors,
-            lambda: self._run_metadata(keyword, script_result.full_script, category=category),
+            lambda: self._run_metadata(keyword, script_result.full_script, category=category, video_number=video_number),
         )
         if meta_result is None:
             return self._fail(topic_id, keyword, steps, errors)
@@ -418,10 +419,10 @@ class ProductionPipeline:
         base = KEYWORD_MAP.get("default")
         return (base * count)[:count]
 
-    def _run_metadata(self, keyword: str, script: str, category: str = ""):
+    def _run_metadata(self, keyword: str, script: str, category: str = "", video_number: int = 0):
         from src.content.metadata_generator import MetadataGenerator
         gen = MetadataGenerator(api_key=self.anthropic_api_key)
-        return gen.generate(topic=keyword, script=script, category=category)
+        return gen.generate(topic=keyword, script=script, category=category, video_number=video_number)
 
     def _run_uploader(self, topic_id: str, video_path: str, metadata: dict):
         from src.publisher.youtube_uploader import YouTubeUploader

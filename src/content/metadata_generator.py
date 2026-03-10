@@ -156,6 +156,7 @@ class MetadataGenerator:
         script: str,
         cta_product: str = "",
         category: str = "",
+        video_number: int = 0,
     ) -> MetadataResult:
         """
         Generate title, description, hashtags, and cta_product for a YouTube Shorts video.
@@ -194,7 +195,7 @@ class MetadataGenerator:
 
         # Post-process with product info when category is known
         if category:
-            result = self._apply_product_overrides(result, category)
+            result = self._apply_product_overrides(result, category, video_number)
 
         logger.info(
             "Metadata generated: title=%d chars, desc=%d chars, tags=%d, valid=%s",
@@ -289,10 +290,20 @@ class MetadataGenerator:
         "#wealthbuilding", "#moneyadvice", "#moneytips", "#financetok",
     ]
 
-    def _apply_product_overrides(self, result: "MetadataResult", category: str) -> "MetadataResult":
+    _UPSELL_LINE: str = "Want the whole system built for you? Comment SYSTEM on any video."
+
+    def _apply_product_overrides(
+        self,
+        result: "MetadataResult",
+        category: str,
+        video_number: int = 0,
+    ) -> "MetadataResult":
         """
         Augment description with Gumroad block and ensure required hashtags are
         present.  Only called when a channel category is provided.
+
+        On every 5th video (video_number > 0 and video_number % 5 == 0) a soft
+        upsell line is appended before the follow line.
         """
         from config.constants import PRODUCTS
         product = PRODUCTS.get(category, {})
@@ -305,10 +316,17 @@ class MetadataGenerator:
             # Strip trailing suffix so we can re-append after the Gumroad block
             if desc.endswith(DESCRIPTION_SUFFIX):
                 desc = desc[: -len(DESCRIPTION_SUFFIX)].rstrip()
+
+            upsell_block = ""
+            if video_number > 0 and video_number % 5 == 0:
+                upsell_block = f"{self._UPSELL_LINE}\n\n"
+                logger.info("Soft upsell injected for video_number=%d", video_number)
+
             result.description = (
                 f"{desc}\n\n"
                 f"FREE RESOURCE: {short_name}\n"
                 f"Download here: {gumroad_url}\n\n"
+                f"{upsell_block}"
                 f"Follow @moneyheresy for weekly wealth truths. {DESCRIPTION_SUFFIX}"
             )
             result.cta_product = short_name
