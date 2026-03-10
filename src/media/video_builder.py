@@ -170,6 +170,7 @@ class VideoBuilder:
             audio_codec="aac",
             bitrate="8000k",
             audio_bitrate="192k",
+            ffmpeg_params=["-preset", "ultrafast"],
             logger=None,   # suppress moviepy progress bar
         )
         final_clip.close()

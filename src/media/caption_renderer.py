@@ -94,7 +94,7 @@ WORD_SHADOW_OFFSET   = 3               # px
 PILL_BG_COLOR        = (0, 0, 0, 140)   # Semi-transparent black ~55% opacity
 PILL_CORNER_RADIUS   = 12
 HIGHLIGHT_PAD_X      = 16              # left/right padding in gold pill
-HIGHLIGHT_PAD_Y      = 8               # top/bottom padding in gold pill
+HIGHLIGHT_PAD_Y      = 14              # top/bottom padding in gold pill
 WORD_GAP             = 12              # px gap between word pills
 WORD_MAX_PER_LINE    = 3
 WORD_CAPTION_Y_START = 0.68            # top of caption area (fraction of height)
@@ -416,14 +416,12 @@ class CaptionRenderer:
         cta_overlay: str = "",
         video_duration: float = 13.5,
     ) -> list:
-        """Pre-render word-by-word captions as per-word ImageClips.
+        """Pre-render word-by-word captions as a single VideoClip with binary search.
 
-        Renders one PIL frame per word (stable state after entrance animation)
-        rather than one PIL frame per video frame — making export ~10× faster.
-
-        Each ImageClip is active from the word's start_time until the next word
-        appears.  Previous words in the same line remain visible (white text);
-        the current word has a gold rounded-rect highlight (black text).
+        Renders one PIL frame per word (stable state after entrance animation),
+        then wraps them in a single VideoClip whose make_frame uses bisect to look
+        up the correct pre-baked frame at time t — keeping the compositor layer
+        count constant regardless of word count.
 
         Args:
             word_timestamps: List of {text, start_time, end_time} from ElevenLabs.
@@ -431,44 +429,56 @@ class CaptionRenderer:
             video_duration:  Total video duration in seconds.
 
         Returns:
-            List of timed, masked ImageClips — one per spoken word — plus an
-            optional CTA TextClip at the end.
+            List with one VideoClip (word captions) plus an optional CTA TextClip.
         """
+        import bisect
         import numpy as np
-        from moviepy import ImageClip, TextClip
+        from moviepy import TextClip, VideoClip
 
         grouped = _group_words(word_timestamps)
         font = _load_word_font(WORD_FONT_SIZE)
         W, H = self.canvas_width, self.canvas_height
 
-        clips: list = []
+        # Pre-render one stable frame per word state
+        states: list[tuple] = []   # (rgb_array uint8, alpha_array float64)
+        start_times: list[float] = []
 
-        for i, word in enumerate(grouped):
-            # Sample the stable state just after the entrance animation ends
+        for word in grouped:
             t_stable = word["start_time"] + WORD_ENTRANCE_DUR + 0.001
             img = _render_word_frame(t_stable, grouped, W, H, font)
             arr = np.array(img)
-
-            # Clip is active from this word's start until the next word appears
-            start    = word["start_time"]
-            end      = grouped[i + 1]["start_time"] if i + 1 < len(grouped) else video_duration
-            duration = max(0.01, end - start)
-
             rgb   = arr[:, :, :3].astype(np.uint8)
             alpha = (arr[:, :, 3] / 255.0).astype(np.float64)
+            states.append((rgb, alpha))
+            start_times.append(word["start_time"])
 
-            word_clip = (
-                ImageClip(rgb)
-                .with_start(start)
-                .with_duration(duration)
-                .with_mask(ImageClip(alpha, is_mask=True))
-            )
-            clips.append(word_clip)
+        # Blank frames returned before the first word starts
+        blank_rgb   = np.zeros((H, W, 3), dtype=np.uint8)
+        blank_alpha = np.zeros((H, W),    dtype=np.float64)
+
+        def make_frame(t: float) -> np.ndarray:
+            idx = bisect.bisect_right(start_times, t) - 1
+            if idx < 0 or idx >= len(states):
+                return blank_rgb
+            return states[idx][0]
+
+        def make_mask(t: float) -> np.ndarray:
+            idx = bisect.bisect_right(start_times, t) - 1
+            if idx < 0 or idx >= len(states):
+                return blank_alpha
+            return states[idx][1]
+
+        caption_clip = (
+            VideoClip(make_frame, duration=video_duration)
+            .with_mask(VideoClip(make_mask, duration=video_duration, is_mask=True))
+        )
 
         logger.info(
-            "Pre-rendered %d word caption ImageClips (%.1fs video)",
-            len(clips), video_duration,
+            "Pre-rendered %d word states into single VideoClip with binary search (%.1fs video)",
+            len(states), video_duration,
         )
+
+        clips: list = [caption_clip]
 
         # CTA overlay (gold TextClip banner, same as before)
         cta_spec = self.build_cta_spec(cta_overlay, video_duration=video_duration)

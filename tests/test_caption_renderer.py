@@ -277,27 +277,20 @@ class TestRenderWordByWord:
         ]
 
     def test_render_with_word_timestamps_returns_nonempty_list(self) -> None:
-        """render() with word_timestamps pre-renders one ImageClip per word."""
+        """render() with word_timestamps returns a single VideoClip (binary search) + no CTA."""
         words = self._make_word_timestamps()
 
-        mock_image_clip = MagicMock()
-        mock_image_clip.with_start.return_value = mock_image_clip
-        mock_image_clip.with_duration.return_value = mock_image_clip
-        mock_image_clip.with_mask.return_value = mock_image_clip
+        mock_video_clip = MagicMock()
+        mock_video_clip.with_mask.return_value = mock_video_clip
 
         mock_moviepy = MagicMock()
-        mock_moviepy.ImageClip.return_value = mock_image_clip
-
-        mock_numpy = MagicMock()
+        mock_moviepy.VideoClip.return_value = mock_video_clip
 
         # Font mock returns concrete integer bbox so PIL arithmetic works
         mock_font = MagicMock()
         mock_font.getbbox.return_value = (0, 0, 100, 68)
 
-        with patch.dict("sys.modules", {
-            "moviepy": mock_moviepy,
-            "numpy": mock_numpy,
-        }):
+        with patch.dict("sys.modules", {"moviepy": mock_moviepy}):
             with patch("src.media.caption_renderer._load_word_font", return_value=mock_font):
                 with patch("src.media.caption_renderer._render_word_frame") as mock_rwf:
                     import numpy as _np
@@ -310,8 +303,8 @@ class TestRenderWordByWord:
                     )
 
         assert isinstance(clips, list)
-        # One ImageClip per word (11 words, no CTA in this call)
-        assert len(clips) == len(words)
+        # Single VideoClip (binary search) with no CTA in this call
+        assert len(clips) == 1
 
     def test_render_without_word_timestamps_uses_text_clips(self) -> None:
         """Fallback path: no word_timestamps → same count as sections."""
