@@ -131,7 +131,7 @@ PRODUCTS: dict[str, dict[str, str]] = {
         "gumroad_url": _os.getenv(
             "GUMROAD_URL_MONEY", "https://gumroad.com/l/placeholder1"
         ),
-        "cta_script":  "Want my free Wealth Systems Blueprint? Follow and drop YES in the comments — link in description.",
+        "cta_script":  "Want to know exactly how the wealthy never work for money? Comment YES and I'll send you my free Wealth Systems Blueprint. Link in description.",
         "cta_overlay": "FREE GUIDE — Link in Description",
     },
     "career": {
@@ -140,7 +140,7 @@ PRODUCTS: dict[str, dict[str, str]] = {
         "gumroad_url": _os.getenv(
             "GUMROAD_URL_CAREER", "https://gumroad.com/l/placeholder2"
         ),
-        "cta_script":  "Want my free Salary Escape Blueprint? Follow and drop YES in the comments — link in description.",
+        "cta_script":  "Tired of your income having a ceiling? Comment YES and I'll send you my free Salary Escape Blueprint. Link in description.",
         "cta_overlay": "FREE GUIDE — Link in Description",
     },
     "success": {
@@ -149,7 +149,7 @@ PRODUCTS: dict[str, dict[str, str]] = {
         "gumroad_url": _os.getenv(
             "GUMROAD_URL_SUCCESS", "https://gumroad.com/l/placeholder3"
         ),
-        "cta_script":  "Want my free Success Myths guide? Follow and drop YES in the comments — link in description.",
+        "cta_script":  "Want to know why most people never build real wealth? Comment YES and I'll send you my free Success Myths guide. Link in description.",
         "cta_overlay": "FREE GUIDE — Link in Description",
     },
 }

@@ -223,6 +223,17 @@ class ProductionPipeline:
 
         audio_path = voice_result.audio_path
 
+        # Load word timestamps for caption sync and cut timing
+        word_timestamps: list[dict] = []
+        words_json_path = getattr(voice_result, "words_path", "")
+        if words_json_path:
+            import json as _json
+            try:
+                word_timestamps = _json.loads(Path(words_json_path).read_text(encoding="utf-8"))
+                logger.info("Loaded %d word timestamps from %s", len(word_timestamps), words_json_path)
+            except Exception as exc:
+                logger.warning("Could not load word timestamps: %s", exc)
+
         # --- Step 4: Stock video(s) ---
         fetch_result = self._run_step(
             "pixabay", steps, errors,
@@ -237,7 +248,7 @@ class ProductionPipeline:
         # --- Step 5: Video build ---
         build_result = self._run_step(
             "video_build", steps, errors,
-            lambda: self._run_video_builder(topic_id, script_dict, audio_path, stock_video_paths, cta_overlay),
+            lambda: self._run_video_builder(topic_id, script_dict, audio_path, stock_video_paths, cta_overlay, word_timestamps),
         )
         if build_result is None or not build_result.is_valid:
             errors.append(f"video_build failed: {getattr(build_result, 'validation_errors', [])}")
@@ -278,7 +289,7 @@ class ProductionPipeline:
             steps=steps,
         )
         self._save_to_db(result)
-        logger.info("Pipeline complete: topic_id=%s → %s", topic_id, result.youtube_url)
+        logger.info("Pipeline complete: topic_id=%s -> %s", topic_id, result.youtube_url)
         return result
 
     # ------------------------------------------------------------------
@@ -320,6 +331,7 @@ class ProductionPipeline:
         audio_path: str,
         stock_paths: list[str],
         cta_overlay: str = "",
+        word_timestamps: list[dict] | None = None,
     ):
         from src.media.video_builder import VideoBuilder
         builder = VideoBuilder()
@@ -329,6 +341,7 @@ class ProductionPipeline:
             audio_path=audio_path,
             stock_video_path=stock_paths,
             cta_overlay=cta_overlay,
+            word_timestamps=word_timestamps,
         )
 
     def _extract_broll_keywords(self, script_dict: dict, count: int = 4) -> list[str]:
@@ -353,24 +366,27 @@ class ProductionPipeline:
         )
 
         prompt = (
-            f"You are a video director choosing b-roll footage for a 4-part script.\n\n"
-            f"Script (4 equal time segments):\n{parts_text}\n\n"
-            "For each segment, choose ONE Pixabay search phrase (2–3 words) that a "
-            "camera crew could actually film on location. The phrase must represent the "
-            "single most visually concrete action or object from that segment.\n\n"
+            f"You are a video director selecting b-roll footage for a finance YouTube Short.\n\n"
+            f"Script (4 segments):\n{parts_text}\n\n"
+            "For each segment, generate ONE Pixabay search phrase (2-3 words).\n\n"
             "STRICT RULES:\n"
-            "- Prefer human actions over static objects: "
-            "\"man counting cash\" beats \"money\"\n"
-            "- No abstract nouns: ban 'success', 'wealth', 'mindset', 'inequality', "
-            "'freedom', 'passive income'\n"
-            "- No animals unless the script explicitly mentions animals\n"
-            "- Must be filmable in real life (no metaphors, no concepts)\n"
-            "- 2–3 words only\n\n"
-            "EXAMPLES:\n"
-            "BAD: \"passive income sleeping\", \"dog napping\", \"money abstract\"\n"
-            "GOOD: \"investor checking portfolio\", \"businessman reading financial report\", "
-            "\"entrepreneur on laptop\", \"luxury apartment interior\"\n\n"
-            "Return a JSON array only, no explanation, no markdown:\n"
+            "- Every search phrase MUST feature a human being\n"
+            "- Show the EMOTION or SITUATION from the script, not literal words\n"
+            "- NEVER suggest: animals, birds, nature, mountains, ocean, abstract,\n"
+            "  empty rooms, architecture without people, sky, clouds\n"
+            "- 2-3 words only\n"
+            "- Prefer shots with: human faces fully visible, people in full frame,\n"
+            "  subject centred, no partial cutoffs, avoid wide landscape shots\n\n"
+            "EMOTIONAL MAPPING (use as reference):\n"
+            "  earning money / salary -> 'person receiving paycheck', 'worker getting paid'\n"
+            "  boss / wealthy person -> 'confident businessman office', 'successful entrepreneur'\n"
+            "  working hard / long hours -> 'tired office worker', 'person working late night'\n"
+            "  passive income / sleeping -> 'person relaxing laptop income'\n"
+            "  financial freedom -> 'happy person financial success'\n"
+            "  debt / broke -> 'person worried bills', 'stressed person looking at phone'\n"
+            "  investment / growing money -> 'person reviewing investment portfolio'\n"
+            "  inequality / unfair system -> 'frustrated employee meeting', 'worker vs executive'\n\n"
+            "Return a JSON array of 4 search phrases only, no explanation, no markdown:\n"
             '[\"phrase1\",\"phrase2\",\"phrase3\",\"phrase4\"]'
         )
 

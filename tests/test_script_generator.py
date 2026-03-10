@@ -151,7 +151,7 @@ class TestValidate:
             statement=VALID_PARTS["statement"],
             twist=VALID_PARTS["twist"],
             question=VALID_PARTS["question"],
-            word_count=75,
+            word_count=MAX_WORDS,
         )
         assert any("word_count" in e for e in errors)
 
@@ -268,11 +268,11 @@ class TestScriptGeneratorGenerate:
 
     @patch("src.content.script_generator.anthropic.Anthropic")
     def test_invalid_when_word_count_over_limit(self, mock_cls) -> None:
-        # 26+26+26+9 = 87 words — clearly over the 75-word limit
+        # 50+50+50+9 = 159 words — clearly over the 140-word limit
         long_parts = {
-            "hook":      " ".join(["word"] * 26),
-            "statement": " ".join(["word"] * 26),
-            "twist":     " ".join(["word"] * 26),
+            "hook":      " ".join(["word"] * 50),
+            "statement": " ".join(["word"] * 50),
+            "twist":     " ".join(["word"] * 50),
             "question":  "Is this too long and over the limit?",
         }
         mock_client = MagicMock()

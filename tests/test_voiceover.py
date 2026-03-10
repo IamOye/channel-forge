@@ -19,6 +19,8 @@ from src.media.voiceover import (
     VoiceoverResult,
 )
 
+import base64 as _base64
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -147,8 +149,16 @@ class TestValidateDuration:
 
 class TestVoiceoverGeneratorGenerate:
     def _mock_httpx_response(self, content: bytes = b"fake_mp3_audio") -> MagicMock:
+        import base64
         resp = MagicMock()
-        resp.content = content
+        resp.json.return_value = {
+            "audio_base64": base64.b64encode(content).decode(),
+            "alignment": {
+                "characters": list("hello world"),
+                "character_start_times_seconds": [i * 0.05 for i in range(11)],
+                "character_end_times_seconds": [(i + 1) * 0.05 for i in range(11)],
+            },
+        }
         resp.raise_for_status = MagicMock()
         return resp
 
@@ -166,7 +176,7 @@ class TestVoiceoverGeneratorGenerate:
         mock_subprocess.return_value = MagicMock(returncode=0)
 
         with patch("src.media.voiceover.VoiceoverGenerator._get_duration", return_value=13.0):
-            with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_bytes"):
+            with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_bytes"), patch("pathlib.Path.write_text"):
                 gen = _make_gen()
                 result = gen.generate(SAMPLE_SCRIPT, topic_id="test_001", category="success")
 
@@ -183,7 +193,7 @@ class TestVoiceoverGeneratorGenerate:
         mock_subprocess.return_value = MagicMock(returncode=0)
 
         with patch("src.media.voiceover.VoiceoverGenerator._get_duration", return_value=5.0):
-            with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_bytes"):
+            with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_bytes"), patch("pathlib.Path.write_text"):
                 gen = _make_gen()
                 result = gen.generate(SAMPLE_SCRIPT, topic_id="short_001", category="money")
 
@@ -198,7 +208,7 @@ class TestVoiceoverGeneratorGenerate:
         mock_subprocess.return_value = MagicMock(returncode=0)
 
         with patch("src.media.voiceover.VoiceoverGenerator._get_duration", return_value=25.0):
-            with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_bytes"):
+            with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_bytes"), patch("pathlib.Path.write_text"):
                 gen = _make_gen()
                 result = gen.generate(SAMPLE_SCRIPT, topic_id="long_001", category="career")
 
@@ -217,7 +227,7 @@ class TestVoiceoverGeneratorGenerate:
         mock_subprocess.return_value = MagicMock(returncode=0)
 
         with patch("src.media.voiceover.VoiceoverGenerator._get_duration", return_value=13.0):
-            with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_bytes"):
+            with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_bytes"), patch("pathlib.Path.write_text"):
                 gen = _make_gen()
                 result = gen.generate(SAMPLE_SCRIPT, topic_id="def_001", category="unknown")
 
@@ -230,7 +240,7 @@ class TestVoiceoverGeneratorGenerate:
         mock_subprocess.return_value = MagicMock(returncode=0)
 
         with patch("src.media.voiceover.VoiceoverGenerator._get_duration", return_value=13.0):
-            with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_bytes"):
+            with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_bytes"), patch("pathlib.Path.write_text"):
                 gen = _make_gen()
                 result = gen.generate(SAMPLE_SCRIPT, topic_id="mytopic_042")
 
@@ -245,7 +255,7 @@ class TestVoiceoverGeneratorGenerate:
         mock_subprocess.side_effect = FileNotFoundError("ffmpeg not found")
 
         with patch("src.media.voiceover.VoiceoverGenerator._get_duration", return_value=13.0):
-            with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_bytes"):
+            with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_bytes"), patch("pathlib.Path.write_text"):
                 gen = _make_gen()
                 # Should not raise — ffmpeg errors are caught and logged
                 result = gen.generate(SAMPLE_SCRIPT, topic_id="noffmpeg_001")
@@ -260,8 +270,56 @@ class TestVoiceoverGeneratorGenerate:
         mock_subprocess.return_value = MagicMock(returncode=0)
 
         with patch("src.media.voiceover.VoiceoverGenerator._get_duration", return_value=12.0):
-            with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_bytes"):
+            with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_bytes"), patch("pathlib.Path.write_text"):
                 gen = _make_gen()
                 result = gen.generate(SAMPLE_SCRIPT, topic_id="serial_001")
 
         assert len(json.dumps(result.to_dict())) > 10
+
+    @patch("src.media.voiceover.subprocess.run")
+    @patch("src.media.voiceover.httpx.post")
+    def test_words_path_set_in_result(self, mock_post, mock_subprocess) -> None:
+        mock_post.return_value = self._mock_httpx_response()
+        mock_subprocess.return_value = MagicMock(returncode=0)
+
+        with patch("src.media.voiceover.VoiceoverGenerator._get_duration", return_value=13.0):
+            with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_bytes"), patch("pathlib.Path.write_text"):
+                gen = _make_gen()
+                result = gen.generate(SAMPLE_SCRIPT, topic_id="words_001", category="money")
+
+        assert result.words_path.endswith("_words.json")
+        assert "words_001" in result.words_path
+
+
+# ---------------------------------------------------------------------------
+# VoiceoverGenerator._extract_word_timestamps
+# ---------------------------------------------------------------------------
+
+class TestExtractWordTimestamps:
+    def test_extracts_words_from_alignment(self) -> None:
+        alignment = {
+            "characters": list("hi there"),
+            "character_start_times_seconds": [0.0, 0.1, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8],
+            "character_end_times_seconds":   [0.1, 0.2, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9],
+        }
+        words = VoiceoverGenerator._extract_word_timestamps(alignment)
+        assert len(words) == 2
+        assert words[0]["text"] == "hi"
+        assert words[1]["text"] == "there"
+        assert words[0]["start_time"] == 0.0
+        assert words[1]["start_time"] == 0.4
+
+    def test_returns_empty_for_empty_alignment(self) -> None:
+        words = VoiceoverGenerator._extract_word_timestamps({})
+        assert words == []
+
+    def test_single_word(self) -> None:
+        alignment = {
+            "characters": list("word"),
+            "character_start_times_seconds": [0.0, 0.1, 0.2, 0.3],
+            "character_end_times_seconds":   [0.1, 0.2, 0.3, 0.4],
+        }
+        words = VoiceoverGenerator._extract_word_timestamps(alignment)
+        assert len(words) == 1
+        assert words[0]["text"] == "word"
+        assert words[0]["end_time"] == 0.4

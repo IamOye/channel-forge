@@ -69,6 +69,201 @@ CAPTION_Y_RATIO = 0.65
 
 
 # ---------------------------------------------------------------------------
+# Word-by-word caption rendering constants
+# ---------------------------------------------------------------------------
+
+# Font size for word captions
+WORD_FONT_SIZE = 68
+
+# Search paths for bold font (tried in order)
+WORD_FONT_SEARCH_PATHS: list[str | None] = [
+    "C:/Windows/Fonts/arialbd.ttf",    # Arial Bold — Windows
+    "C:/Windows/Fonts/ariblk.ttf",     # Arial Black — Windows
+    "C:/Windows/Fonts/arial.ttf",      # Arial — Windows fallback
+    "/System/Library/Fonts/Arial Bold.ttf",                         # macOS
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf", # Linux
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",        # Linux alt
+    None,                               # Pillow default
+]
+
+HIGHLIGHT_COLOR      = (201, 168, 76)   # Gold #C9A84C
+HIGHLIGHT_TEXT_COLOR = (0, 0, 0)        # Black text on gold
+WORD_TEXT_COLOR      = (255, 255, 255)  # White text for previous words
+WORD_SHADOW_COLOR    = (0, 0, 0, 178)   # Black, ~70% opacity
+WORD_SHADOW_OFFSET   = 3               # px
+PILL_BG_COLOR        = (0, 0, 0, 140)   # Semi-transparent black ~55% opacity
+PILL_CORNER_RADIUS   = 12
+HIGHLIGHT_PAD_X      = 16              # left/right padding in gold pill
+HIGHLIGHT_PAD_Y      = 8               # top/bottom padding in gold pill
+WORD_GAP             = 12              # px gap between word pills
+WORD_MAX_PER_LINE    = 3
+WORD_CAPTION_Y_START = 0.68            # top of caption area (fraction of height)
+WORD_CAPTION_Y_END   = 0.85            # bottom of caption area
+WORD_ENTRANCE_DRIFT  = 4               # px upward drift on word entrance
+WORD_ENTRANCE_DUR    = 0.08            # seconds for entrance animation
+
+
+# ---------------------------------------------------------------------------
+# Word-caption PIL helpers
+# ---------------------------------------------------------------------------
+
+def _load_word_font(size: int = WORD_FONT_SIZE):
+    """Load a bold font for word captions, falling back through WORD_FONT_SEARCH_PATHS."""
+    try:
+        from PIL import ImageFont
+    except ImportError:
+        return None
+    for path in WORD_FONT_SEARCH_PATHS:
+        if path is None:
+            return ImageFont.load_default()
+        try:
+            return ImageFont.truetype(path, size)
+        except (IOError, OSError):
+            continue
+    return None
+
+
+def _group_words(words: list[dict], max_per_line: int = WORD_MAX_PER_LINE) -> list[dict]:
+    """Assign line_idx and idx_in_line to each word dict."""
+    return [
+        {**w, "word_idx": i, "line_idx": i // max_per_line, "idx_in_line": i % max_per_line}
+        for i, w in enumerate(words)
+    ]
+
+
+def _visible_at(t: float, grouped: list[dict]) -> tuple[int | None, list[dict]]:
+    """Return (current_word_idx, visible_words_in_line) at time t."""
+    current_idx: int | None = None
+    for w in grouped:
+        if w["start_time"] <= t:
+            current_idx = w["word_idx"]
+
+    if current_idx is None:
+        return None, []
+
+    current_line = grouped[current_idx]["line_idx"]
+    visible = [w for w in grouped
+               if w["line_idx"] == current_line and w["start_time"] <= t]
+    return current_idx, visible
+
+
+def _draw_rounded_rect(draw, bbox: tuple, radius: int, fill: tuple) -> None:
+    """Draw a filled rounded rectangle; uses Pillow's built-in when available."""
+    try:
+        draw.rounded_rectangle(bbox, radius=radius, fill=fill)
+    except AttributeError:
+        x1, y1, x2, y2 = bbox
+        r = min(radius, (x2 - x1) // 2, (y2 - y1) // 2)
+        draw.rectangle([x1 + r, y1, x2 - r, y2], fill=fill)
+        draw.rectangle([x1, y1 + r, x2, y2 - r], fill=fill)
+        for cx, cy in [(x1, y1), (x2 - 2*r, y1), (x1, y2 - 2*r), (x2 - 2*r, y2 - 2*r)]:
+            draw.ellipse([cx, cy, cx + 2*r, cy + 2*r], fill=fill)
+
+
+def _render_word_frame(
+    t: float,
+    grouped: list[dict],
+    canvas_w: int,
+    canvas_h: int,
+    font,
+) -> "Image.Image":
+    """Render a single word-caption frame as an RGBA PIL Image.
+
+    Previous words: white text, no individual background.
+    Current word: black text, gold rounded-rect background.
+    All previous words share one semi-transparent black pill.
+    New word: subtle 4 px upward drift during first WORD_ENTRANCE_DUR seconds.
+    """
+    from PIL import Image, ImageDraw
+
+    img = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
+    current_idx, visible = _visible_at(t, grouped)
+    if not visible:
+        return img
+
+    draw = ImageDraw.Draw(img)
+
+    # Measure each visible word
+    entries = []
+    for w in visible:
+        try:
+            bb = font.getbbox(w["text"])
+            tw, th = bb[2] - bb[0], bb[3] - bb[1]
+        except Exception:
+            tw, th = 60, WORD_FONT_SIZE
+
+        is_cur = (w["word_idx"] == current_idx)
+        elapsed = t - w["start_time"]
+        progress = min(1.0, elapsed / WORD_ENTRANCE_DUR) if is_cur else 1.0
+        y_drift = -int(WORD_ENTRANCE_DRIFT * (1.0 - progress))
+
+        entries.append({
+            "text":    w["text"],
+            "tw":      tw,
+            "th":      th,
+            "pill_w":  tw + 2 * HIGHLIGHT_PAD_X,
+            "pill_h":  th + 2 * HIGHLIGHT_PAD_Y,
+            "y_drift": y_drift,
+            "is_cur":  is_cur,
+        })
+
+    total_w = sum(e["pill_w"] for e in entries) + WORD_GAP * (len(entries) - 1)
+    max_pill_h = max(e["pill_h"] for e in entries)
+
+    # Vertical center of caption area
+    y_mid = int(canvas_h * (WORD_CAPTION_Y_START + WORD_CAPTION_Y_END) / 2)
+    x = (canvas_w - total_w) // 2
+
+    # Collect pill regions
+    prev_regions: list[tuple] = []
+    cur_region: tuple | None = None
+
+    for e in entries:
+        y_top = y_mid - e["pill_h"] // 2 + e["y_drift"]
+        region = (x, y_top, x + e["pill_w"], y_top + e["pill_h"], e)
+        if e["is_cur"]:
+            cur_region = region
+        else:
+            prev_regions.append(region)
+        x += e["pill_w"] + WORD_GAP
+
+    # Draw combined black pill behind all previous words
+    if prev_regions:
+        px1 = min(r[0] for r in prev_regions)
+        py1 = min(r[1] for r in prev_regions)
+        px2 = max(r[2] for r in prev_regions)
+        py2 = max(r[3] for r in prev_regions)
+        _draw_rounded_rect(draw, (px1, py1, px2, py2), PILL_CORNER_RADIUS, PILL_BG_COLOR)
+
+    # Draw gold pill behind current word
+    if cur_region:
+        rx1, ry1, rx2, ry2, _ = cur_region
+        _draw_rounded_rect(draw, (rx1, ry1, rx2, ry2), PILL_CORNER_RADIUS,
+                           (*HIGHLIGHT_COLOR, 255))
+
+    # Draw text for each word
+    x = (canvas_w - total_w) // 2
+    for e in entries:
+        y_top = y_mid - e["pill_h"] // 2 + e["y_drift"]
+        tx = x + HIGHLIGHT_PAD_X
+        ty = y_top + HIGHLIGHT_PAD_Y
+
+        if e["is_cur"]:
+            draw.text((tx, ty), e["text"], font=font,
+                      fill=(*HIGHLIGHT_TEXT_COLOR, 255))
+        else:
+            # Shadow
+            draw.text((tx + WORD_SHADOW_OFFSET, ty + WORD_SHADOW_OFFSET),
+                      e["text"], font=font, fill=WORD_SHADOW_COLOR)
+            draw.text((tx, ty), e["text"], font=font,
+                      fill=(*WORD_TEXT_COLOR, 255))
+
+        x += e["pill_w"] + WORD_GAP
+
+    return img
+
+
+# ---------------------------------------------------------------------------
 # Data model
 # ---------------------------------------------------------------------------
 
@@ -177,46 +372,182 @@ class CaptionRenderer:
         logger.info("Built %d caption specs", len(specs))
         return specs
 
-    def build_cta_spec(self, cta_overlay: str) -> CaptionClipSpec | None:
+    def build_cta_spec(
+        self,
+        cta_overlay: str,
+        video_duration: float | None = None,
+    ) -> CaptionClipSpec | None:
         """
         Build a CaptionClipSpec for the gold CTA overlay banner.
 
-        The banner appears during the last 3 seconds of the video
-        (CTA_OVERLAY_START → CTA_OVERLAY_END) near the bottom of the frame.
+        The banner appears during the last 3 seconds of the video.
+        When video_duration is supplied the timing is calculated dynamically
+        so the banner always lands at the end of the actual video length.
 
         Args:
-            cta_overlay: Text to display (e.g. "FREE GUIDE — Link in Description").
+            cta_overlay:    Text to display (e.g. "FREE GUIDE — Link in Description").
+            video_duration: Actual video length in seconds. If None, uses the
+                            default constants CTA_OVERLAY_START / CTA_OVERLAY_END.
 
         Returns:
             A CaptionClipSpec with section="cta_overlay", or None if text is empty.
         """
         if not cta_overlay.strip():
             return None
+        if video_duration is not None:
+            start = max(0.0, video_duration - 3.0)
+            end = video_duration
+        else:
+            start = CTA_OVERLAY_START
+            end = CTA_OVERLAY_END
         y_pos = int(self.canvas_height * CTA_Y_RATIO)
         return CaptionClipSpec(
             section="cta_overlay",
             text=cta_overlay,
-            start=CTA_OVERLAY_START,
-            end=CTA_OVERLAY_END,
+            start=start,
+            end=end,
             x="center",
             y=y_pos,
         )
 
-    def render(self, script_dict: dict[str, str], cta_overlay: str = "") -> list:
+    def _render_word_by_word(
+        self,
+        word_timestamps: list[dict],
+        cta_overlay: str = "",
+        video_duration: float = 13.5,
+    ) -> list:
+        """Pre-render word-by-word captions as per-word ImageClips.
+
+        Renders one PIL frame per word (stable state after entrance animation)
+        rather than one PIL frame per video frame — making export ~10× faster.
+
+        Each ImageClip is active from the word's start_time until the next word
+        appears.  Previous words in the same line remain visible (white text);
+        the current word has a gold rounded-rect highlight (black text).
+
+        Args:
+            word_timestamps: List of {text, start_time, end_time} from ElevenLabs.
+            cta_overlay:     Optional CTA banner text (rendered via TextClip as before).
+            video_duration:  Total video duration in seconds.
+
+        Returns:
+            List of timed, masked ImageClips — one per spoken word — plus an
+            optional CTA TextClip at the end.
+        """
+        import numpy as np
+        from moviepy import ImageClip, TextClip
+
+        grouped = _group_words(word_timestamps)
+        font = _load_word_font(WORD_FONT_SIZE)
+        W, H = self.canvas_width, self.canvas_height
+
+        clips: list = []
+
+        for i, word in enumerate(grouped):
+            # Sample the stable state just after the entrance animation ends
+            t_stable = word["start_time"] + WORD_ENTRANCE_DUR + 0.001
+            img = _render_word_frame(t_stable, grouped, W, H, font)
+            arr = np.array(img)
+
+            # Clip is active from this word's start until the next word appears
+            start    = word["start_time"]
+            end      = grouped[i + 1]["start_time"] if i + 1 < len(grouped) else video_duration
+            duration = max(0.01, end - start)
+
+            rgb   = arr[:, :, :3].astype(np.uint8)
+            alpha = (arr[:, :, 3] / 255.0).astype(np.float64)
+
+            word_clip = (
+                ImageClip(rgb)
+                .with_start(start)
+                .with_duration(duration)
+                .with_mask(ImageClip(alpha, is_mask=True))
+            )
+            clips.append(word_clip)
+
+        logger.info(
+            "Pre-rendered %d word caption ImageClips (%.1fs video)",
+            len(clips), video_duration,
+        )
+
+        # CTA overlay (gold TextClip banner, same as before)
+        cta_spec = self.build_cta_spec(cta_overlay, video_duration=video_duration)
+        if cta_spec is not None:
+            cta_clip = (
+                TextClip(
+                    text=cta_spec.text,
+                    font=self.font,
+                    font_size=CTA_FONT_SIZE,
+                    color=CTA_TEXT_COLOR,
+                    bg_color=CTA_BG_COLOR,
+                    method="caption",
+                    size=(self.canvas_width - 80, None),
+                    text_align="center",
+                )
+                .with_start(cta_spec.start)
+                .with_duration(cta_spec.duration)
+                .with_position((cta_spec.x, cta_spec.y))
+            )
+            clips.append(cta_clip)
+            logger.debug("CTA overlay added at %.1fs-%.1fs", cta_spec.start, cta_spec.end)
+
+        return clips
+
+    def render(
+        self,
+        script_dict: dict[str, str],
+        word_timestamps: list[dict] | None = None,
+        cta_overlay: str = "",
+        video_duration: float | None = None,
+    ) -> list:
         """
         Build and return a list of positioned, timed moviepy TextClip objects.
 
         Args:
-            script_dict: Dict with keys hook, statement, twist, question.
-            cta_overlay: Optional CTA banner text for the last 3 seconds.
-                         Rendered with a gold background and black bold text.
+            script_dict:    Dict with keys hook, statement, twist, question.
+            word_timestamps: Optional list of {text, start_time, end_time} dicts from
+                             ElevenLabs. When supplied, uses word-by-word PIL rendering
+                             with gold highlight on the current word. Falls back to
+                             section-level TextClips when None.
+            cta_overlay:    Optional CTA banner text for the last 3 seconds.
+                            Rendered with a gold background and black bold text.
+            video_duration: Actual video length in seconds. When supplied, caption
+                            timings are scaled proportionally so captions stay in sync
+                            with a longer voiceover, and the CTA banner lands in the
+                            final 3 seconds of the real video.
 
         Returns:
             List of moviepy TextClip objects ready to be composited.
         """
+        # Word-by-word rendering when timestamps are available
+        if word_timestamps:
+            dur = video_duration or (word_timestamps[-1]["end_time"] if word_timestamps else 13.5)
+            return self._render_word_by_word(
+                word_timestamps=word_timestamps,
+                cta_overlay=cta_overlay,
+                video_duration=dur,
+            )
+
         from moviepy import TextClip  # lazy import — moviepy v2
 
         specs = self.build_specs(script_dict)
+
+        # Scale caption timings proportionally when video is longer than the default
+        _default_dur = CAPTION_TIMINGS[-1][2]  # 13.5 s
+        if video_duration is not None and video_duration > _default_dur:
+            scale = video_duration / _default_dur
+            scaled: list[CaptionClipSpec] = []
+            for spec in specs:
+                scaled.append(CaptionClipSpec(
+                    section=spec.section,
+                    text=spec.text,
+                    start=round(spec.start * scale, 3),
+                    end=round(spec.end * scale, 3),
+                    x=spec.x,
+                    y=spec.y,
+                ))
+            specs = scaled
+
         clips = []
 
         for spec in specs:
@@ -239,7 +570,7 @@ class CaptionRenderer:
             clips.append(clip)
 
         # CTA overlay banner (gold background, black text)
-        cta_spec = self.build_cta_spec(cta_overlay)
+        cta_spec = self.build_cta_spec(cta_overlay, video_duration=video_duration)
         if cta_spec is not None:
             cta_clip = (
                 TextClip(

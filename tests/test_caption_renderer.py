@@ -15,6 +15,8 @@ from src.media.caption_renderer import (
     CTA_Y_RATIO,
     CaptionClipSpec,
     CaptionRenderer,
+    _group_words,
+    _visible_at,
 )
 
 
@@ -205,3 +207,124 @@ class TestRender:
             clips = renderer.render({})
 
         assert clips == []
+
+
+# ---------------------------------------------------------------------------
+# Module-level helper functions
+# ---------------------------------------------------------------------------
+
+class TestGroupWords:
+    def test_groups_into_lines_of_3(self) -> None:
+        words = [{"text": str(i), "start_time": float(i), "end_time": float(i)+0.5} for i in range(7)]
+        grouped = _group_words(words)
+        assert grouped[0]["line_idx"] == 0
+        assert grouped[2]["line_idx"] == 0
+        assert grouped[3]["line_idx"] == 1
+        assert grouped[6]["line_idx"] == 2
+
+    def test_word_idx_matches_input_order(self) -> None:
+        words = [{"text": "a", "start_time": 0.0, "end_time": 0.5},
+                 {"text": "b", "start_time": 0.5, "end_time": 1.0}]
+        grouped = _group_words(words)
+        assert grouped[0]["word_idx"] == 0
+        assert grouped[1]["word_idx"] == 1
+
+
+class TestVisibleAt:
+    def _make_grouped(self):
+        words = [
+            {"text": "hello", "start_time": 0.0, "end_time": 0.5},
+            {"text": "world", "start_time": 0.5, "end_time": 1.0},
+            {"text": "foo",   "start_time": 1.0, "end_time": 1.5},
+            {"text": "bar",   "start_time": 1.5, "end_time": 2.0},
+        ]
+        return _group_words(words)
+
+    def test_no_words_before_start(self) -> None:
+        grouped = self._make_grouped()
+        idx, visible = _visible_at(-0.1, grouped)
+        assert idx is None
+        assert visible == []
+
+    def test_first_word_visible_at_start(self) -> None:
+        grouped = self._make_grouped()
+        idx, visible = _visible_at(0.0, grouped)
+        assert idx == 0
+        assert len(visible) == 1
+        assert visible[0]["text"] == "hello"
+
+    def test_two_words_visible_in_same_group(self) -> None:
+        grouped = self._make_grouped()
+        idx, visible = _visible_at(0.6, grouped)
+        assert idx == 1
+        assert len(visible) == 2
+
+    def test_new_group_clears_previous(self) -> None:
+        grouped = self._make_grouped()
+        # "bar" (word_idx=3, line_idx=1) starts at t=1.5 — only "bar" visible in line 1
+        idx, visible = _visible_at(1.5, grouped)
+        assert idx == 3
+        assert len(visible) == 1
+        assert visible[0]["text"] == "bar"
+
+
+class TestRenderWordByWord:
+    def _make_word_timestamps(self) -> list[dict]:
+        words = "most people ignore this ancient secret stoics knew you control reactions".split()
+        return [
+            {"text": w, "start_time": i * 0.3, "end_time": (i + 1) * 0.3}
+            for i, w in enumerate(words)
+        ]
+
+    def test_render_with_word_timestamps_returns_nonempty_list(self) -> None:
+        """render() with word_timestamps pre-renders one ImageClip per word."""
+        words = self._make_word_timestamps()
+
+        mock_image_clip = MagicMock()
+        mock_image_clip.with_start.return_value = mock_image_clip
+        mock_image_clip.with_duration.return_value = mock_image_clip
+        mock_image_clip.with_mask.return_value = mock_image_clip
+
+        mock_moviepy = MagicMock()
+        mock_moviepy.ImageClip.return_value = mock_image_clip
+
+        mock_numpy = MagicMock()
+
+        # Font mock returns concrete integer bbox so PIL arithmetic works
+        mock_font = MagicMock()
+        mock_font.getbbox.return_value = (0, 0, 100, 68)
+
+        with patch.dict("sys.modules", {
+            "moviepy": mock_moviepy,
+            "numpy": mock_numpy,
+        }):
+            with patch("src.media.caption_renderer._load_word_font", return_value=mock_font):
+                with patch("src.media.caption_renderer._render_word_frame") as mock_rwf:
+                    import numpy as _np
+                    mock_rwf.return_value = _np.zeros((1920, 1080, 4), dtype=_np.uint8)
+                    renderer = CaptionRenderer()
+                    clips = renderer.render(
+                        script_dict=VALID_SCRIPT,
+                        word_timestamps=words,
+                        video_duration=3.3,
+                    )
+
+        assert isinstance(clips, list)
+        # One ImageClip per word (11 words, no CTA in this call)
+        assert len(clips) == len(words)
+
+    def test_render_without_word_timestamps_uses_text_clips(self) -> None:
+        """Fallback path: no word_timestamps → same count as sections."""
+        mock_clip = MagicMock()
+        mock_clip.with_start.return_value = mock_clip
+        mock_clip.with_duration.return_value = mock_clip
+        mock_clip.with_position.return_value = mock_clip
+
+        moviepy_mod = MagicMock()
+        moviepy_mod.TextClip.return_value = mock_clip
+
+        with patch.dict("sys.modules", {"moviepy": moviepy_mod}):
+            renderer = CaptionRenderer()
+            clips = renderer.render(VALID_SCRIPT)
+
+        assert len(clips) == 4

@@ -45,10 +45,16 @@ KEYWORD_MAP: dict[str, list[str]] = {
 # Quality filters applied to every candidate before selection
 MIN_VIDEO_DURATION_SECONDS = 5          # reject very short clips
 MAX_VIDEO_DURATION_SECONDS = 30         # reject unnecessarily large files
-MIN_VIDEO_WIDTH = 1080                  # Full HD portrait minimum width
-MIN_VIDEO_HEIGHT = 1920                 # Full HD portrait minimum height
+MIN_VIDEO_WIDTH = 1080                  # Full HD minimum width
+MIN_VIDEO_HEIGHT = 1080                 # Accept portrait AND landscape; scoring prefers portrait
 MAX_FILE_SIZE_BYTES = 40 * 1024 * 1024  # 40 MB — skip large downloads
 MIN_FILE_SIZE_BYTES = 100 * 1024        # 100 KB — anything smaller is corrupt
+
+# Composition scoring weights
+_SCORE_PORTRAIT_BONUS    = 2   # width < height
+_SCORE_IDEAL_RATIO_BONUS = 2   # ratio 0.5–0.6 (close to 9:16)
+_SCORE_GOOD_DURATION     = 1   # duration 8–20 s
+_SCORE_LANDSCAPE_PENALTY = -2  # width/height ratio > 1.5
 
 REQUEST_TIMEOUT = 30.0                  # seconds for API calls
 DOWNLOAD_TIMEOUT = 30.0                 # seconds for file downloads
@@ -175,7 +181,7 @@ class PixabayFetcher:
             )
 
         logger.info(
-            "Downloaded stock video %s → %s (%ds)",
+            "Downloaded stock video %s -> %s (%ds)",
             video.pixabay_id, output_path, video.duration,
         )
         return FetchResult(
@@ -240,7 +246,7 @@ class PixabayFetcher:
                     paths.append(str(output_path))
                     last_good_path = str(output_path)
                     logger.info(
-                        "Fetched clip %d: pixabay_id=%d phrase=%r → %s",
+                        "Fetched clip %d: pixabay_id=%d phrase=%r -> %s",
                         len(paths), video.pixabay_id, phrase, output_path,
                     )
                     downloaded = True
@@ -333,8 +339,35 @@ class PixabayFetcher:
                 tags=hit.get("tags", ""),
             ))
 
+        # Sort by composition score — portrait and 9:16 clips float to the top
+        results.sort(key=self._score_clip, reverse=True)
         logger.debug("Query %r → %d qualifying candidates", query, len(results))
         return results
+
+    @staticmethod
+    def _score_clip(video: "PixabayVideo") -> int:
+        """Compute a composition score for a candidate clip.
+
+        Higher score = better suited for 9:16 portrait frame.
+        Landscape clips are penalised but not excluded; _fit_clip will
+        centre-crop them correctly during video assembly.
+        """
+        score = 0
+        w, h, d = video.width, video.height, video.duration
+
+        if h > 0:
+            ratio = w / h
+            if w < h:                           # portrait orientation
+                score += _SCORE_PORTRAIT_BONUS
+            if 0.5 <= ratio <= 0.6:             # close to 9:16
+                score += _SCORE_IDEAL_RATIO_BONUS
+            if ratio > 1.5:                     # landscape
+                score += _SCORE_LANDSCAPE_PENALTY
+
+        if 8 <= d <= 20:
+            score += _SCORE_GOOD_DURATION
+
+        return score
 
     @staticmethod
     def _best_url(videos_dict: dict) -> tuple[str, int, int]:

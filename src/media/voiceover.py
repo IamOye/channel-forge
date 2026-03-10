@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _ELEVENLABS_API_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+_ELEVENLABS_API_URL_WITH_TIMESTAMPS = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/with-timestamps"
 _MODEL_ID = "eleven_turbo_v2"
 
 # ElevenLabs voice IDs for named voices
@@ -71,6 +72,7 @@ class VoiceoverResult:
     is_valid: bool
     validation_errors: list[str] = field(default_factory=list)
     generated_at: str = ""
+    words_path: str = ""
 
     def __post_init__(self) -> None:
         if not self.generated_at:
@@ -86,6 +88,7 @@ class VoiceoverResult:
             "is_valid":          self.is_valid,
             "validation_errors": self.validation_errors,
             "generated_at":      self.generated_at,
+            "words_path":        self.words_path,
         }
 
 
@@ -151,9 +154,15 @@ class VoiceoverGenerator:
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         # Call ElevenLabs API
-        audio_bytes = self._call_api(voice_id, text)
+        audio_bytes, word_timestamps = self._call_api(voice_id, text)
         output_path.write_bytes(audio_bytes)
         logger.info("Saved voiceover to %s (%d bytes)", output_path, len(audio_bytes))
+
+        # Save word timestamps JSON alongside the audio
+        import json as _json
+        words_path = self.output_dir / f"{topic_id}_words.json"
+        words_path.write_text(_json.dumps(word_timestamps, indent=2), encoding="utf-8")
+        logger.debug("Saved %d word timestamps to %s", len(word_timestamps), words_path)
 
         # Normalize audio loudness with ffmpeg
         self._normalize_audio(output_path)
@@ -170,6 +179,7 @@ class VoiceoverGenerator:
             duration_seconds=duration,
             is_valid=len(errors) == 0,
             validation_errors=errors,
+            words_path=str(words_path),
         )
         if errors:
             logger.warning("Voiceover validation errors: %s", errors)
@@ -197,22 +207,74 @@ class VoiceoverGenerator:
         ]
         return " ".join(p.strip() for p in parts if p.strip())
 
-    def _call_api(self, voice_id: str, text: str) -> bytes:
-        """POST to ElevenLabs TTS endpoint and return raw MP3 bytes."""
-        url = _ELEVENLABS_API_URL.format(voice_id=voice_id)
+    def _call_api(self, voice_id: str, text: str) -> tuple[bytes, list[dict]]:
+        """POST to ElevenLabs TTS with-timestamps endpoint; return (audio_bytes, word_timestamps)."""
+        import base64
+        url = _ELEVENLABS_API_URL_WITH_TIMESTAMPS.format(voice_id=voice_id)
         payload = {
-            "text":             text,
-            "model_id":         _MODEL_ID,
-            "voice_settings":   VOICE_SETTINGS,
+            "text":           text,
+            "model_id":       _MODEL_ID,
+            "voice_settings": VOICE_SETTINGS,
         }
         headers = {
             "xi-api-key":   self.api_key,
             "Content-Type": "application/json",
-            "Accept":       "audio/mpeg",
+            "Accept":       "application/json",
         }
         response = httpx.post(url, json=payload, headers=headers, timeout=30.0)
         response.raise_for_status()
-        return response.content
+        data = response.json()
+        audio_bytes = base64.b64decode(data["audio_base64"])
+        alignment = data.get("alignment", {})
+        word_timestamps = self._extract_word_timestamps(alignment)
+        return audio_bytes, word_timestamps
+
+    @staticmethod
+    def _extract_word_timestamps(alignment: dict) -> list[dict]:
+        """Extract word-level timestamps from ElevenLabs alignment data.
+
+        Args:
+            alignment: Dict with 'characters', 'character_start_times_seconds',
+                       'character_end_times_seconds' lists.
+
+        Returns:
+            List of dicts: [{text, start_time, end_time}, ...]
+        """
+        chars = alignment.get("characters", [])
+        starts = alignment.get("character_start_times_seconds", [])
+        ends = alignment.get("character_end_times_seconds", [])
+
+        if not chars:
+            return []
+
+        words: list[dict] = []
+        buf_chars: list[str] = []
+        buf_starts: list[float] = []
+        buf_ends: list[float] = []
+
+        def _flush():
+            if buf_chars:
+                words.append({
+                    "text":       "".join(buf_chars),
+                    "start_time": buf_starts[0],
+                    "end_time":   buf_ends[-1],
+                })
+                buf_chars.clear()
+                buf_starts.clear()
+                buf_ends.clear()
+
+        for i, ch in enumerate(chars):
+            s = starts[i] if i < len(starts) else 0.0
+            e = ends[i] if i < len(ends) else 0.0
+            if ch in (" ", "\n", "\t"):
+                _flush()
+            else:
+                buf_chars.append(ch)
+                buf_starts.append(s)
+                buf_ends.append(e)
+
+        _flush()
+        return words
 
     def _normalize_audio(self, audio_path: Path) -> None:
         """

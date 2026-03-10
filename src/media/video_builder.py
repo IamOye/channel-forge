@@ -116,6 +116,7 @@ class VideoBuilder:
         audio_path: str | Path,
         stock_video_path: str | Path | list[str | Path],
         cta_overlay: str = "",
+        word_timestamps: list[dict] | None = None,
     ) -> BuildResult:
         """
         Build and export the final video MP4.
@@ -157,7 +158,9 @@ class VideoBuilder:
         )
 
         final_clip, actual_duration = self._assemble(
-            script_dict, audio_path, stock_paths, cta_overlay=cta_overlay
+            script_dict, audio_path, stock_paths,
+            cta_overlay=cta_overlay,
+            word_timestamps=word_timestamps,
         )
 
         final_clip.write_videofile(
@@ -190,6 +193,7 @@ class VideoBuilder:
         audio_path: Path,
         stock_paths: list[Path],
         cta_overlay: str = "",
+        word_timestamps: list[dict] | None = None,
     ) -> tuple:
         """Compose video layers and return (CompositeVideoClip, actual_duration_seconds).
 
@@ -213,15 +217,39 @@ class VideoBuilder:
         logger.info("Voiceover duration: %.2fs — video will match", actual_duration)
 
         n = len(stock_paths)
-        # Each clip's trimmed duration so that n clips with (n-1) crossfade overlaps
-        # total exactly actual_duration:
-        #   total = n * D - (n-1) * CROSSFADE  →  D = (total + (n-1) * cf) / n
-        per_clip_dur = (actual_duration + (n - 1) * CROSSFADE_DURATION) / n
+
+        # Determine per-clip durations — use voiceover pause points when available
+        if word_timestamps and n > 1:
+            cut_times = self._cuts_from_word_timestamps(word_timestamps, actual_duration, n)
+        else:
+            cut_times = []
+
+        if cut_times:
+            boundaries = [0.0] + cut_times + [actual_duration]
+            # Add crossfade overlap so each raw segment covers its range plus one cf
+            raw_durations = [
+                (boundaries[i + 1] - boundaries[i]) + CROSSFADE_DURATION
+                for i in range(n)
+            ]
+            # Last clip: no trailing crossfade needed
+            raw_durations[-1] -= CROSSFADE_DURATION
+            logger.info("B-roll cuts at: %s", [round(c, 2) for c in cut_times])
+        else:
+            # Fallback: equal segments
+            per_clip_dur = (actual_duration + (n - 1) * CROSSFADE_DURATION) / n
+            raw_durations = [per_clip_dur] * n
 
         # 2. Build per-clip background segments with crossfade effects
         bg_clips = []
         for i, path in enumerate(stock_paths):
-            raw = VideoFileClip(str(path)).subclipped(0, per_clip_dur)
+            raw_clip = VideoFileClip(str(path))
+            needed = raw_durations[i]
+            if needed > raw_clip.duration:
+                # Loop the clip to cover the needed duration
+                loops = int(needed / raw_clip.duration) + 2
+                raw = concatenate_videoclips([raw_clip] * loops).subclipped(0, needed)
+            else:
+                raw = raw_clip.subclipped(0, needed)
             clip = self._fit_clip(raw, self.canvas_width, self.canvas_height)
             effects = []
             if i > 0:
@@ -256,7 +284,12 @@ class VideoBuilder:
             canvas_width=self.canvas_width,
             canvas_height=self.canvas_height,
         )
-        caption_clips = renderer.render(script_dict, cta_overlay=cta_overlay)
+        caption_clips = renderer.render(
+            script_dict,
+            word_timestamps=word_timestamps,
+            cta_overlay=cta_overlay,
+            video_duration=actual_duration,
+        )
 
         # 6. Compose everything — duration locked to full audio length
         layers = [bg, overlay] + caption_clips
@@ -308,3 +341,59 @@ class VideoBuilder:
             if not p.exists():
                 errors.append(f"stock video not found: {p}")
         return errors
+
+    @staticmethod
+    def _cuts_from_word_timestamps(
+        word_timestamps: list[dict],
+        audio_duration: float,
+        n_clips: int,
+        min_pause: float = 0.4,
+    ) -> list[float]:
+        """Find natural cut points using pauses between spoken words.
+
+        Pauses longer than min_pause seconds become candidate cut points.
+        Returns n_clips-1 cut times; falls back to equal splits if fewer
+        pause points than needed.
+
+        Args:
+            word_timestamps: [{text, start_time, end_time}, ...] from ElevenLabs.
+            audio_duration:  Total audio length in seconds.
+            n_clips:         Number of b-roll segments (cuts = n_clips - 1).
+            min_pause:       Minimum silence gap to consider a cut point.
+
+        Returns:
+            Sorted list of cut times (length n_clips - 1).
+        """
+        if n_clips <= 1 or not word_timestamps:
+            return []
+
+        needed = n_clips - 1
+
+        # Collect pause midpoints
+        pauses: list[float] = []
+        for i in range(len(word_timestamps) - 1):
+            gap = word_timestamps[i + 1]["start_time"] - word_timestamps[i]["end_time"]
+            if gap >= min_pause:
+                mid = (word_timestamps[i]["end_time"] + word_timestamps[i + 1]["start_time"]) / 2
+                pauses.append(mid)
+
+        if len(pauses) >= needed:
+            # Select `needed` pause points spread evenly
+            step = len(pauses) / needed
+            return sorted(pauses[int(i * step)] for i in range(needed))
+
+        # Pad with equal-interval cuts where pauses are scarce
+        equal_step = audio_duration / n_clips
+        cuts = list(pauses)
+        for k in range(1, n_clips):
+            candidate = k * equal_step
+            if not any(abs(candidate - c) < equal_step * 0.25 for c in cuts):
+                cuts.append(candidate)
+            if len(cuts) >= needed:
+                break
+
+        cuts.sort()
+        if len(cuts) < needed:
+            # Ultimate fallback
+            return [audio_duration * i / n_clips for i in range(1, n_clips)]
+        return cuts[:needed]

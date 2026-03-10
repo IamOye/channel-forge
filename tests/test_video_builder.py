@@ -224,3 +224,56 @@ class TestVideoBuildBuild:
                 result = builder.build("serial_001", SCRIPT, str(audio), str(stock))
 
         assert len(json.dumps(result.to_dict())) > 10
+
+
+# ---------------------------------------------------------------------------
+# VideoBuilder._cuts_from_word_timestamps
+# ---------------------------------------------------------------------------
+
+class TestCutsFromWordTimestamps:
+    def _make_words(self, texts_and_times):
+        return [
+            {"text": t, "start_time": s, "end_time": e}
+            for t, s, e in texts_and_times
+        ]
+
+    def test_returns_empty_for_single_clip(self) -> None:
+        words = self._make_words([("hello", 0.0, 0.5), ("world", 0.6, 1.0)])
+        cuts = VideoBuilder._cuts_from_word_timestamps(words, 10.0, 1)
+        assert cuts == []
+
+    def test_returns_empty_for_no_words(self) -> None:
+        cuts = VideoBuilder._cuts_from_word_timestamps([], 10.0, 2)
+        assert cuts == []
+
+    def test_uses_pause_point_when_available(self) -> None:
+        # Large gap between t=2.0 and t=3.0
+        words = self._make_words([
+            ("a", 0.0, 1.0),
+            ("b", 1.1, 2.0),
+            ("c", 3.0, 4.0),  # 1.0s pause before this word
+            ("d", 4.1, 5.0),
+        ])
+        cuts = VideoBuilder._cuts_from_word_timestamps(words, 5.0, 2, min_pause=0.4)
+        assert len(cuts) == 1
+        # Cut should be near midpoint of the 1.0s pause (2.0 to 3.0) = 2.5s
+        assert 1.5 < cuts[0] < 3.5
+
+    def test_falls_back_to_equal_splits_without_pauses(self) -> None:
+        # No pauses in the words
+        words = self._make_words([
+            ("a", 0.0, 0.9),
+            ("b", 0.9, 1.8),
+            ("c", 1.8, 2.7),
+        ])
+        cuts = VideoBuilder._cuts_from_word_timestamps(words, 4.0, 3, min_pause=0.4)
+        assert len(cuts) == 2
+        assert 0.0 < cuts[0] < cuts[1] < 4.0
+
+    def test_correct_count_for_4_clips(self) -> None:
+        words = self._make_words([
+            ("a", 0.0, 2.0), ("b", 3.0, 5.0), ("c", 6.0, 8.0), ("d", 9.0, 11.0)
+        ])
+        cuts = VideoBuilder._cuts_from_word_timestamps(words, 12.0, 4, min_pause=0.4)
+        assert len(cuts) == 3
+        assert cuts == sorted(cuts)

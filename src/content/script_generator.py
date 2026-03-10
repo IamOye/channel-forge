@@ -1,18 +1,15 @@
 """
 script_generator.py — ScriptGenerator
 
-Generates a 15-second YouTube Shorts script with exactly 4 timed parts,
-then validates word count and ending punctuation.
+Generates a 50-55 second YouTube Shorts script with 4 timed parts,
+following the Palki Sharma 7-part narrative formula packed into:
+  Hook       — Provocative opening (Part 1)
+  Statement  — Analogy/micro-story + fact/data point (Parts 2–3)
+  Twist      — Escalation + reframe (Parts 4–5)
+  Question   — Direct question to viewer + CTA (Parts 6–7)
 
-Script structure:
-  Hook       (2s)  — the attention-grabbing opener (from HookGenerator)
-  Statement  (4s)  — the core claim or insight
-  Twist      (4s)  — the unexpected angle or subversion
-  Question   (3s)  — the closing question that drives comments
-
-Total: ~13s of speech + 2s buffer = 15s.
-Word count must stay under 75 words.
-Script must end with a question mark.
+Target: 110–120 words for natural 50–55 second delivery.
+Script must contain at least one question mark.
 
 Usage:
     gen = ScriptGenerator()
@@ -37,20 +34,44 @@ logger = logging.getLogger(__name__)
 
 _MODEL = "claude-sonnet-4-5"
 
-_SYSTEM_PROMPT = """You are a YouTube Shorts scriptwriter who specialises in viral
-15-second videos. You write tight, conversational scripts — no filler, no fluff.
+_SYSTEM_PROMPT = """You are a YouTube Shorts scriptwriter in the style of Palki Sharma.
+You write punchy, conversational 50-55 second scripts for faceless finance channels.
+No fluff, no filler. Every sentence earns its place.
 
-Given a topic, an opening hook, and an exact CTA line, generate a 4-part script:
-  1. hook      (~2s, 8–12 words)  — use the provided hook verbatim
-  2. statement (~4s, 12–16 words) — bold claim or surprising insight
-  3. twist     (~4s, 12–16 words) — the unexpected flip or deeper truth
-  4. question  (~3s)              — use the EXACT CTA text provided, word for word.
-                                    Do NOT rephrase or improvise the CTA.
+Given a topic, an opening hook, and an exact CTA line, write a 4-part script that
+follows this 7-beat narrative arc:
 
-Rules:
-- hook + statement + twist MUST total 40 words or fewer
-- Total word count across all 4 parts MUST be under 75 words
-- Write in second person ("you", "your") where natural
+PART 1 — hook (15–20 words)
+Drop the viewer into tension immediately. State the uncomfortable truth bluntly.
+Use the provided hook verbatim.
+
+PART 2 — statement (35–45 words)
+Pack in beats 2 and 3:
+  Beat 2: A specific, relatable micro-scenario the viewer can picture themselves in.
+           Not a statistic — a situation. (2–3 sentences)
+  Beat 3: One sharp, credible number or fact that validates the tension. No fluff. (1 sentence)
+
+PART 3 — twist (30–40 words)
+Pack in beats 4 and 5:
+  Beat 4: Deepen the problem. Show it is worse than the viewer realised. (1–2 sentences)
+  Beat 5: The reframe — the insight moment that makes them feel they just learned something. (1–2 sentences)
+
+PART 4 — question (25–35 words)
+Pack in beats 6 and 7:
+  Beat 6: One personal, direct question that pulls the viewer in. (1 sentence, ends with ?)
+  Beat 7: The exact CTA text provided, word for word. Do NOT rephrase or improvise.
+
+WRITING RULES — follow these strictly:
+- Total word count across all 4 parts: 110–120 words
+- Never use em dashes (—) in the script body
+- Never use "it is worth noting", "in conclusion", "furthermore", "moreover"
+- Write as if talking to one specific person
+- Short sentences. Punchy. Direct.
+- No sentence longer than 20 words
+- Use "..." for a natural pause between thoughts
+- Use "!" for genuine emphasis only — maximum once per script
+- For shocked/surprised beats, write a very short fragment: "Wait. What?"
+- For tension build, use progressively shorter sentences
 - No hashtags, no emojis, no stage directions
 
 Respond ONLY with a JSON object, no markdown:
@@ -66,14 +87,14 @@ Respond ONLY with a JSON object, no markdown:
 # Validation constants
 # ---------------------------------------------------------------------------
 
-MAX_WORDS = 75
+MAX_WORDS = 150   # hard ceiling; target is 110–120 words
 REQUIRED_PARTS = ("hook", "statement", "twist", "question")
 
 PART_WORD_LIMITS = {
-    "hook":      (8, 15),
-    "statement": (12, 25),
-    "twist":     (12, 25),
-    "question":  (6, 15),
+    "hook":      (15, 25),
+    "statement": (35, 50),
+    "twist":     (30, 45),
+    "question":  (25, 40),
 }
 
 
@@ -159,7 +180,7 @@ class ScriptGenerator:
         self,
         api_key: str | None = None,
         model: str = _MODEL,
-        max_tokens: int = 400,
+        max_tokens: int = 800,
     ) -> None:
         self.api_key = api_key if api_key is not None else os.getenv("ANTHROPIC_API_KEY", "")
         self.model = model
@@ -317,13 +338,13 @@ class ScriptGenerator:
                 f"word_count={word_count} exceeds limit of {MAX_WORDS - 1}"
             )
 
-        # Script must end with a question mark
+        # Script must contain at least one question mark
         full = "\n".join(filter(None, [hook, statement, twist, question]))
-        if full and not full.rstrip().endswith("?"):
-            errors.append("script does not end with a question mark")
+        if full and "?" not in full:
+            errors.append("script does not contain a question mark")
 
-        # question part specifically must end with '?'
-        if question.strip() and not question.rstrip().endswith("?"):
-            errors.append("question part does not end with a question mark")
+        # question part must contain a question mark
+        if question.strip() and "?" not in question:
+            errors.append("question part does not contain a question mark")
 
         return errors

@@ -154,7 +154,7 @@ class YouTubeUploader:
             video_id = self._execute_upload(service, body, video_path)
             url = f"https://www.youtube.com/watch?v={video_id}"
 
-            logger.info("Upload complete: topic_id=%s → %s", topic_id, url)
+            logger.info("Upload complete: topic_id=%s -> %s", topic_id, url)
             return UploadResult(
                 topic_id=topic_id,
                 youtube_video_id=video_id,
