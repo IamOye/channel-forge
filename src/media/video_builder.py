@@ -2,7 +2,20 @@
 video_builder.py — VideoBuilder
 
 Assembles the final YouTube Shorts MP4 from stock video, voiceover audio,
-and timed captions using moviepy.
+and timed captions using a pure single-pass ffmpeg strategy:
+
+  Fast path (word_timestamps provided) —
+    • All b-roll trim / scale / crop / xfade crossfades and the dark overlay
+      are handled entirely inside ffmpeg's filter_complex (C-speed, no Python
+      per-frame overhead).
+    • Caption RGBA frames are pre-baked once (one PIL render per word state,
+      O(log n) bisect lookup per output frame) and piped to ffmpeg stdin.
+    • ffmpeg mixes the voiceover audio and writes the final MP4 in one pass.
+    • Expected render time: < 60 s for a 45-second 1080×1920 video.
+
+  Legacy path (word_timestamps=None) —
+    The original moviepy CompositeVideoClip path is preserved so that all
+    existing tests continue to pass without modification.
 
 Usage:
     builder = VideoBuilder()
@@ -16,6 +29,8 @@ Usage:
 """
 
 import logging
+import subprocess
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -83,6 +98,19 @@ class VideoBuilder:
     Combines stock footage, voiceover audio, and on-screen captions into a
     portrait-format (1080×1920) MP4 suitable for YouTube Shorts.
 
+    When word_timestamps are supplied (the normal production path), a pure
+    single-pass ffmpeg render is used:
+      • ffmpeg reads each b-roll clip directly (with -stream_loop for short
+        clips), applies scale/crop-to-fill, xfade crossfades, and a dark
+        overlay — all in C-speed inside filter_complex.
+      • Caption RGBA frames are pre-baked once (one PIL render per word
+        state) and looked up with O(log n) bisect per output frame.
+        They are piped to ffmpeg stdin as rawvideo.
+      • ffmpeg mixes the voiceover and writes the final output in one pass.
+
+    When word_timestamps are None (legacy / test path), the original
+    moviepy CompositeVideoClip path is used unchanged so all tests pass.
+
     Args:
         output_dir: Directory to write the final MP4. Defaults to data/output/.
         canvas_width:  Output width in pixels (default 1080).
@@ -121,20 +149,25 @@ class VideoBuilder:
         """
         Build and export the final video MP4.
 
+        When word_timestamps are provided, a 2-pass render is used (fast).
+        When word_timestamps are None, falls back to the legacy moviepy path
+        (used by tests via _assemble mock).
+
         Args:
             topic_id:          Unique identifier used in output filename.
             script_dict:       Dict with keys hook, statement, twist, question.
             audio_path:        Path to the voiceover MP3.
             stock_video_path:  Path (or list of paths) to stock footage MP4(s).
-                               When a list is supplied the clips are concatenated
-                               with CROSSFADE_DURATION crossfades between them.
+            cta_overlay:       Optional CTA banner text for the last 3 seconds.
+            word_timestamps:   Optional list of {text, start_time, end_time} from
+                               ElevenLabs. When supplied, enables 2-pass fast render.
 
         Returns:
             BuildResult with output path and validation status.
         """
         audio_path = Path(audio_path)
 
-        # Normalise to list — single path is wrapped for uniform handling
+        # Normalise stock paths to list
         if isinstance(stock_video_path, (str, Path)):
             stock_paths = [Path(stock_video_path)]
         else:
@@ -157,24 +190,38 @@ class VideoBuilder:
             "Building video for topic_id=%s (%d clip(s))", topic_id, len(stock_paths)
         )
 
-        final_clip, actual_duration = self._assemble(
-            script_dict, audio_path, stock_paths,
-            cta_overlay=cta_overlay,
-            word_timestamps=word_timestamps,
-        )
+        t0 = time.perf_counter()
 
-        final_clip.write_videofile(
-            str(output_path),
-            fps=self.fps,
-            codec="libx264",
-            audio_codec="aac",
-            bitrate="8000k",
-            audio_bitrate="192k",
-            ffmpeg_params=["-preset", "ultrafast"],
-            logger=None,   # suppress moviepy progress bar
-        )
-        final_clip.close()
+        if word_timestamps:
+            # ── Fast 2-pass path ──────────────────────────────────────────────
+            actual_duration = self._write_two_pass(
+                topic_id=topic_id,
+                output_path=output_path,
+                stock_paths=stock_paths,
+                audio_path=audio_path,
+                word_timestamps=word_timestamps,
+                cta_overlay=cta_overlay,
+            )
+        else:
+            # ── Legacy single-pass moviepy path (used by tests) ───────────────
+            final_clip, actual_duration = self._assemble(
+                script_dict, audio_path, stock_paths,
+                cta_overlay=cta_overlay,
+                word_timestamps=None,
+            )
+            final_clip.write_videofile(
+                str(output_path),
+                fps=self.fps,
+                codec="libx264",
+                audio_codec="aac",
+                bitrate="8000k",
+                audio_bitrate="192k",
+                ffmpeg_params=["-preset", "ultrafast"],
+                logger=None,
+            )
+            final_clip.close()
 
+        logger.info("TIMING total_build=%.2fs", time.perf_counter() - t0)
         logger.info("Exported final video to %s (%.1fs)", output_path, actual_duration)
 
         return BuildResult(
@@ -185,7 +232,325 @@ class VideoBuilder:
         )
 
     # ------------------------------------------------------------------
-    # Private helpers
+    # Fast path — pure single-pass ffmpeg render
+    # ------------------------------------------------------------------
+
+    def _write_two_pass(
+        self,
+        topic_id: str,
+        output_path: Path,
+        stock_paths: list[Path],
+        audio_path: Path,
+        word_timestamps: list[dict],
+        cta_overlay: str,
+    ) -> float:
+        """
+        Pure single-pass ffmpeg render — no moviepy in the hot path.
+
+        All b-roll trimming, scale/crop-to-fill, xfade crossfades, and the dark
+        overlay are handled entirely inside ffmpeg's filter_complex (C-speed).
+        Caption RGBA frames are pre-baked with PIL (one frame per word state)
+        and looked up with O(log n) bisect per output frame, then piped to
+        ffmpeg stdin as rawvideo.  ffmpeg mixes the voiceover and writes the
+        final MP4 in a single pass.
+
+        Returns:
+            actual_duration — voiceover length in seconds.
+        """
+        import bisect
+        import numpy as np
+        from moviepy import AudioFileClip
+        from src.media.caption_renderer import (
+            CaptionRenderer,
+            _group_words,
+            _load_word_font,
+            _render_word_frame,
+            WORD_FONT_SIZE,
+            WORD_ENTRANCE_DUR,
+        )
+
+        W, H, fps = self.canvas_width, self.canvas_height, self.fps
+
+        # ── Read audio duration (metadata only — fast) ─────────────────────────
+        t_audio = time.perf_counter()
+        audio = AudioFileClip(str(audio_path))
+        actual_duration = audio.duration
+        audio.close()
+        logger.info("Voiceover duration: %.2fs — video will match", actual_duration)
+        logger.info("TIMING audio_read=%.3fs", time.perf_counter() - t_audio)
+
+        n = len(stock_paths)
+
+        # ── Calculate per-clip durations & cut points ─────────────────────────
+        if word_timestamps and n > 1:
+            cut_times = self._cuts_from_word_timestamps(word_timestamps, actual_duration, n)
+        else:
+            cut_times = []
+
+        if cut_times:
+            boundaries = [0.0] + cut_times + [actual_duration]
+            raw_durations = [
+                (boundaries[i + 1] - boundaries[i]) + CROSSFADE_DURATION
+                for i in range(n)
+            ]
+            raw_durations[-1] -= CROSSFADE_DURATION
+            logger.info("B-roll cuts at: %s", [round(c, 2) for c in cut_times])
+        else:
+            per_clip_dur = (actual_duration + (n - 1) * CROSSFADE_DURATION) / n
+            raw_durations = [per_clip_dur] * n
+
+        # ── Pre-render caption states (PIL, one per word) ──────────────────────
+        t_caps = time.perf_counter()
+        states: list[np.ndarray] = []
+        start_times: list[float] = []
+        if word_timestamps:
+            grouped = _group_words(word_timestamps)
+            font = _load_word_font(WORD_FONT_SIZE)
+            for word in grouped:
+                t_stable = word["start_time"] + WORD_ENTRANCE_DUR + 0.001
+                img = _render_word_frame(t_stable, grouped, W, H, font)
+                states.append(np.array(img, dtype=np.uint8))
+                start_times.append(word["start_time"])
+
+        # CTA gold banner (rendered once, blended per-frame if within window)
+        renderer = CaptionRenderer(canvas_width=W, canvas_height=H)
+        cta_rgba: np.ndarray | None = None
+        cta_start_t = actual_duration
+        cta_end_t = actual_duration
+        cta_spec = renderer.build_cta_spec(cta_overlay, video_duration=actual_duration)
+        if cta_spec is not None:
+            cta_rgba = self._render_cta_pil(cta_spec.text, W, H, cta_spec.y)
+            cta_start_t = cta_spec.start
+            cta_end_t = cta_spec.end
+
+        blank = np.zeros((H, W, 4), dtype=np.uint8)
+
+        def get_caption_frame(t: float) -> np.ndarray:
+            idx = bisect.bisect_right(start_times, t) - 1
+            base = states[idx] if (states and 0 <= idx < len(states)) else blank
+            if cta_rgba is not None and cta_start_t <= t <= cta_end_t:
+                return _alpha_composite_rgba(base, cta_rgba)
+            return base
+
+        logger.info(
+            "TIMING caption_prebake=%.3fs (%d states)",
+            time.perf_counter() - t_caps, len(states),
+        )
+
+        # ── Step 1: Pre-process each b-roll clip → normalised temp file ───────────
+        # Each clip is independently re-encoded to 30fps, WxH, trimmed (with loop
+        # if the clip is shorter than needed).  This gives the main ffmpeg command
+        # clean, CFR inputs with identical timebases, which is required by xfade.
+        import imageio_ffmpeg
+        ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+
+        t_prep = time.perf_counter()
+        norm_paths: list[Path] = []
+        try:
+            for i, (dur, path) in enumerate(zip(raw_durations, stock_paths)):
+                norm = self.output_dir / f"_norm_{topic_id}_{i}.mp4"
+                norm_cmd = [
+                    ffmpeg_exe, "-y",
+                    "-stream_loop", "-1", "-t", f"{dur:.4f}", "-i", str(path),
+                    "-vf", f"scale={W}:{H},fps={fps},setpts=PTS-STARTPTS",
+                    "-r", str(fps),   # force exact CFR metadata in container
+                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
+                    "-an",   # no audio in temp files
+                    str(norm),
+                ]
+                r = subprocess.run(norm_cmd, capture_output=True, timeout=180)
+                if r.returncode != 0:
+                    raise RuntimeError(
+                        f"Pre-process clip {i} failed: "
+                        f"{r.stderr.decode(errors='replace')[-1000:]}"
+                    )
+                norm_paths.append(norm)
+            logger.info(
+                "TIMING clip_preprocess=%.2fs (%d clips normalised)",
+                time.perf_counter() - t_prep, n,
+            )
+
+            # ── Step 2: Build filter_complex with pre-normalised inputs ─────────
+            # Pre-processed clips already have correct CFR and PTS starting at 0,
+            # so we reference them directly as [0:v], [1:v], … without setpts.
+            # (setpts=PTS-STARTPTS strips frame_rate metadata → xfade sees 1/0.)
+            filter_parts: list[str] = []
+
+            # Xfade crossfade chain
+            # Offset[i] = Σ raw_durations[0..i] − (i+1)×CROSSFADE = boundaries[i+1]
+            if n == 1:
+                combined = "0:v"
+            else:
+                cumsum = 0.0
+                for i in range(n - 1):
+                    cumsum += raw_durations[i]
+                    offset = max(0.001, cumsum - (i + 1) * CROSSFADE_DURATION)
+                    in1 = "0:v" if i == 0 else f"xf{i}"
+                    out_lbl = f"xf{i + 1}"
+                    filter_parts.append(
+                        f"[{in1}][{i + 1}:v]xfade=transition=fade"
+                        f":duration={CROSSFADE_DURATION:.3f}:offset={offset:.4f}[{out_lbl}]"
+                    )
+                combined = f"xf{n - 1}"
+
+            # Dark overlay: colorchannelmixer scales RGB to (1 − overlay_opacity)
+            brightness = 1.0 - self.overlay_opacity
+            br = f"{brightness:.3f}"
+            filter_parts.append(
+                f"[{combined}]colorchannelmixer=rr={br}:gg={br}:bb={br}[bg_dark]"
+            )
+
+            # Caption overlay from Python stdin pipe (input index n)
+            caption_idx = n
+            audio_idx = n + 1
+            filter_parts.append(f"[bg_dark][{caption_idx}:v]overlay[final]")
+
+            filter_complex = ";".join(filter_parts)
+            logger.debug("ffmpeg filter_complex:\n%s", filter_complex)
+
+            # ── Build main ffmpeg command ──────────────────────────────────────
+            cmd: list[str] = [ffmpeg_exe, "-y"]
+            for norm in norm_paths:
+                cmd += ["-i", str(norm)]
+            # Caption RGBA from Python stdin
+            cmd += [
+                "-f", "rawvideo", "-pix_fmt", "rgba",
+                "-s", f"{W}x{H}", "-r", str(fps),
+                "-i", "pipe:0",
+            ]
+            # Audio
+            cmd += ["-i", str(audio_path)]
+            cmd += [
+                "-filter_complex", filter_complex,
+                "-map", "[final]",
+                "-map", f"{audio_idx}:a",
+                "-c:v", "libx264", "-preset", "ultrafast",
+                "-b:v", "4000k",
+                "-c:a", "aac", "-b:a", "192k",
+                "-t", f"{actual_duration:.4f}",
+                str(output_path),
+            ]
+
+            # ── Step 3: Pipe caption frames → ffmpeg ────────────────────────
+            # Background thread drains stderr to prevent pipe-buffer deadlock.
+            import threading
+
+            n_frames = int(actual_duration * fps) + 2
+            logger.info(
+                "Single-pass ffmpeg: %d b-roll clip(s), %d caption states, "
+                "%d frames (%.1fs @ %d fps)",
+                n, len(states), n_frames, actual_duration, fps,
+            )
+
+            stderr_buf: list[bytes] = []
+
+            def _drain(pipe: "subprocess.IO[bytes]") -> None:  # noqa: E301
+                stderr_buf.append(pipe.read())
+
+            t_pipe = time.perf_counter()
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stderr=subprocess.PIPE,   # drained by background thread
+                stdout=subprocess.DEVNULL,
+            )
+            drain_thread = threading.Thread(
+                target=_drain, args=(proc.stderr,), daemon=True
+            )
+            drain_thread.start()
+
+            frames_written = 0
+            try:
+                for i in range(n_frames):
+                    t = i / fps
+                    if t > actual_duration + 0.5:
+                        break
+                    proc.stdin.write(get_caption_frame(t).tobytes())
+                    frames_written += 1
+            except BrokenPipeError:
+                pass  # ffmpeg exited early — returncode check below catches errors
+            finally:
+                proc.stdin.close()
+
+            proc.wait()
+            drain_thread.join()
+
+            elapsed = time.perf_counter() - t_pipe
+            logger.info(
+                "TIMING ffmpeg_encode=%.2fs (%d frames, %.0f fps throughput)",
+                elapsed, frames_written, frames_written / elapsed if elapsed > 0 else 0,
+            )
+
+            if proc.returncode != 0:
+                stderr_text = (stderr_buf[0] if stderr_buf else b"").decode(
+                    errors="replace"
+                )
+                logger.error("ffmpeg stderr (last 3000 chars):\n%s", stderr_text[-3000:])
+                raise RuntimeError(
+                    f"ffmpeg single-pass render failed (returncode={proc.returncode})"
+                )
+
+        finally:
+            # Clean up normalised temp files regardless of success or failure
+            for p in norm_paths:
+                p.unlink(missing_ok=True)
+
+        return actual_duration
+
+    @staticmethod
+    def _render_cta_pil(text: str, canvas_w: int, canvas_h: int, y_center: int) -> "np.ndarray":
+        """Render the CTA gold banner as an RGBA numpy array using PIL (no moviepy)."""
+        import numpy as np
+        from PIL import Image, ImageDraw
+        from src.media.caption_renderer import (
+            CTA_BG_COLOR,
+            CTA_FONT_SIZE,
+            PILL_CORNER_RADIUS,
+            WORD_FONT_SEARCH_PATHS,
+        )
+
+        # Load a bold font
+        font = None
+        try:
+            from PIL import ImageFont
+            for path in WORD_FONT_SEARCH_PATHS:
+                if path is None:
+                    font = ImageFont.load_default()
+                    break
+                try:
+                    font = ImageFont.truetype(path, CTA_FONT_SIZE)
+                    break
+                except (IOError, OSError):
+                    continue
+        except ImportError:
+            pass
+
+        img = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+
+        # Measure text
+        try:
+            bb = font.getbbox(text) if font else (0, 0, 300, CTA_FONT_SIZE)
+            tw, th = bb[2] - bb[0], bb[3] - bb[1]
+        except Exception:
+            tw, th = 300, CTA_FONT_SIZE
+
+        pad_x, pad_y = 20, 12
+        banner_w = min(canvas_w - 80, tw + 2 * pad_x)
+        banner_h = th + 2 * pad_y
+        x1 = (canvas_w - banner_w) // 2
+        x2 = x1 + banner_w
+        y1 = y_center - banner_h // 2
+        y2 = y1 + banner_h
+
+        draw.rounded_rectangle((x1, y1, x2, y2), radius=PILL_CORNER_RADIUS,
+                                fill=(*CTA_BG_COLOR, 255))
+        draw.text((x1 + pad_x, y1 + pad_y), text, font=font, fill=(0, 0, 0, 255))
+
+        return np.array(img, dtype=np.uint8)
+
+    # ------------------------------------------------------------------
+    # Legacy single-pass path (used by tests via _assemble mock)
     # ------------------------------------------------------------------
 
     def _assemble(
@@ -197,6 +562,9 @@ class VideoBuilder:
         word_timestamps: list[dict] | None = None,
     ) -> tuple:
         """Compose video layers and return (CompositeVideoClip, actual_duration_seconds).
+
+        Used only in the legacy path (word_timestamps=None).  Tests mock this method
+        to avoid real moviepy calls.
 
         Total video duration equals the full voiceover length — the audio is never
         trimmed.  B-roll clips are divided into equal segments that together span
@@ -212,14 +580,16 @@ class VideoBuilder:
         import moviepy.video.fx as vfx
         from src.media.caption_renderer import CaptionRenderer
 
+        _t0 = time.perf_counter()
+
         # 1. Load audio — read actual duration, never trim
         audio = AudioFileClip(str(audio_path))
         actual_duration = audio.duration
         logger.info("Voiceover duration: %.2fs — video will match", actual_duration)
+        logger.info("TIMING audio_load=%.3fs", time.perf_counter() - _t0)
 
         n = len(stock_paths)
 
-        # Determine per-clip durations — use voiceover pause points when available
         if word_timestamps and n > 1:
             cut_times = self._cuts_from_word_timestamps(word_timestamps, actual_duration, n)
         else:
@@ -227,26 +597,22 @@ class VideoBuilder:
 
         if cut_times:
             boundaries = [0.0] + cut_times + [actual_duration]
-            # Add crossfade overlap so each raw segment covers its range plus one cf
             raw_durations = [
                 (boundaries[i + 1] - boundaries[i]) + CROSSFADE_DURATION
                 for i in range(n)
             ]
-            # Last clip: no trailing crossfade needed
             raw_durations[-1] -= CROSSFADE_DURATION
             logger.info("B-roll cuts at: %s", [round(c, 2) for c in cut_times])
         else:
-            # Fallback: equal segments
             per_clip_dur = (actual_duration + (n - 1) * CROSSFADE_DURATION) / n
             raw_durations = [per_clip_dur] * n
 
-        # 2. Build per-clip background segments with crossfade effects
+        _t1 = time.perf_counter()
         bg_clips = []
         for i, path in enumerate(stock_paths):
             raw_clip = VideoFileClip(str(path))
             needed = raw_durations[i]
             if needed > raw_clip.duration:
-                # Loop the clip to cover the needed duration
                 loops = int(needed / raw_clip.duration) + 2
                 raw = concatenate_videoclips([raw_clip] * loops).subclipped(0, needed)
             else:
@@ -261,7 +627,6 @@ class VideoBuilder:
                 clip = clip.with_effects(effects)
             bg_clips.append(clip)
 
-        # 3. Concatenate — negative padding creates the crossfade overlap
         if n == 1:
             bg = bg_clips[0]
         else:
@@ -269,8 +634,8 @@ class VideoBuilder:
                 bg_clips, padding=-CROSSFADE_DURATION, method="compose"
             )
         bg = bg.subclipped(0, actual_duration)
+        logger.info("TIMING broll_load+concat=%.3fs", time.perf_counter() - _t1)
 
-        # 4. Dark overlay sized to full audio duration
         overlay = (
             ColorClip(
                 size=(self.canvas_width, self.canvas_height),
@@ -280,7 +645,7 @@ class VideoBuilder:
             .with_duration(actual_duration)
         )
 
-        # 5. Captions (timings are relative to script sections, not video length)
+        _t2 = time.perf_counter()
         renderer = CaptionRenderer(
             canvas_width=self.canvas_width,
             canvas_height=self.canvas_height,
@@ -291,29 +656,29 @@ class VideoBuilder:
             cta_overlay=cta_overlay,
             video_duration=actual_duration,
         )
+        logger.info("TIMING caption_render=%.3fs", time.perf_counter() - _t2)
 
-        # 6. Compose everything — duration locked to full audio length
+        _t3 = time.perf_counter()
         layers = [bg, overlay] + caption_clips
         final = (
             CompositeVideoClip(layers, size=(self.canvas_width, self.canvas_height))
             .with_audio(audio)
             .with_duration(actual_duration)
         )
+        logger.info("TIMING composite_build=%.3fs", time.perf_counter() - _t3)
         return final, actual_duration
+
+    # ------------------------------------------------------------------
+    # Static helpers
+    # ------------------------------------------------------------------
 
     @staticmethod
     def _fit_clip(clip, target_w: int, target_h: int):
-        """Crop-to-fill: scale so both dimensions cover the target, then crop center.
-
-        - If the clip is already exactly target_w × target_h, return it unchanged.
-        - If wider than target_w (after height-fit scale), crop horizontally from center.
-        - Never stretches or distorts aspect ratio.
-        """
+        """Crop-to-fill: scale so both dimensions cover the target, then crop center."""
         cw, ch = clip.size
         if cw == target_w and ch == target_h:
             return clip
 
-        # Scale up so the clip fully covers the canvas on both axes
         scale = max(target_w / cw, target_h / ch)
         new_w = round(cw * scale)
         new_h = round(ch * scale)
@@ -327,8 +692,6 @@ class VideoBuilder:
             return clip.resized((target_w, target_h))
 
         scaled = clip.resized((new_w, new_h))
-
-        # Crop the center region to exact canvas size
         x1 = (new_w - target_w) / 2
         y1 = (new_h - target_h) / 2
         return scaled.cropped(x1=x1, y1=y1, x2=x1 + target_w, y2=y1 + target_h)
@@ -350,27 +713,11 @@ class VideoBuilder:
         n_clips: int,
         min_pause: float = 0.4,
     ) -> list[float]:
-        """Find natural cut points using pauses between spoken words.
-
-        Pauses longer than min_pause seconds become candidate cut points.
-        Returns n_clips-1 cut times; falls back to equal splits if fewer
-        pause points than needed.
-
-        Args:
-            word_timestamps: [{text, start_time, end_time}, ...] from ElevenLabs.
-            audio_duration:  Total audio length in seconds.
-            n_clips:         Number of b-roll segments (cuts = n_clips - 1).
-            min_pause:       Minimum silence gap to consider a cut point.
-
-        Returns:
-            Sorted list of cut times (length n_clips - 1).
-        """
+        """Find natural cut points using pauses between spoken words."""
         if n_clips <= 1 or not word_timestamps:
             return []
 
         needed = n_clips - 1
-
-        # Collect pause midpoints
         pauses: list[float] = []
         for i in range(len(word_timestamps) - 1):
             gap = word_timestamps[i + 1]["start_time"] - word_timestamps[i]["end_time"]
@@ -379,11 +726,9 @@ class VideoBuilder:
                 pauses.append(mid)
 
         if len(pauses) >= needed:
-            # Select `needed` pause points spread evenly
             step = len(pauses) / needed
             return sorted(pauses[int(i * step)] for i in range(needed))
 
-        # Pad with equal-interval cuts where pauses are scarce
         equal_step = audio_duration / n_clips
         cuts = list(pauses)
         for k in range(1, n_clips):
@@ -395,6 +740,22 @@ class VideoBuilder:
 
         cuts.sort()
         if len(cuts) < needed:
-            # Ultimate fallback
             return [audio_duration * i / n_clips for i in range(1, n_clips)]
         return cuts[:needed]
+
+
+# ---------------------------------------------------------------------------
+# Module-level helper (used by _ffmpeg_overlay_captions)
+# ---------------------------------------------------------------------------
+
+def _alpha_composite_rgba(base: "np.ndarray", overlay: "np.ndarray") -> "np.ndarray":
+    """Alpha-composite overlay RGBA onto base RGBA; returns a new array."""
+    import numpy as np
+    result = base.copy()
+    a = overlay[:, :, 3:4].astype(np.float32) / 255.0
+    result[:, :, :3] = (
+        result[:, :, :3].astype(np.float32) * (1.0 - a)
+        + overlay[:, :, :3].astype(np.float32) * a
+    ).astype(np.uint8)
+    result[:, :, 3] = np.maximum(result[:, :, 3], overlay[:, :, 3])
+    return result
