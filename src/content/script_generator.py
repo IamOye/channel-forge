@@ -251,6 +251,12 @@ class ScriptGenerator:
         logger.debug("Raw script response: %s", raw)
 
         parts = self._parse_parts(raw)
+
+        # CTA enforcement: ensure question field contains the verbatim CTA text
+        if cta_script:
+            parts, cta_path = self._enforce_cta(parts, cta_script, topic, hook, client)
+            logger.info("CTA enforcement: %s", cta_path)
+
         result = self._build_result(topic, parts, raw)
 
         logger.info(
@@ -307,6 +313,70 @@ class ScriptGenerator:
         except Exception as exc:
             logger.error("Failed to parse script JSON: %s | raw=%s", exc, raw[:200])
             return {part: "" for part in REQUIRED_PARTS}
+
+    @staticmethod
+    def _cta_matches(question: str, cta_script: str) -> bool:
+        """Return True if cta_script appears verbatim (case-insensitive) in question."""
+        return cta_script.strip().lower() in question.strip().lower()
+
+    def _enforce_cta(
+        self,
+        parts: dict[str, str],
+        cta_script: str,
+        topic: str,
+        hook: str,
+        client: "anthropic.Anthropic",
+    ) -> tuple[dict[str, str], str]:
+        """
+        Ensure the question field contains the verbatim CTA text.
+
+        Three outcomes (logged by caller):
+          "CTA matched verbatim -- OK"
+          "CTA drift detected -- regenerated"
+          "CTA drift -- force replaced"
+
+        Returns (parts, path_label).
+        """
+        if self._cta_matches(parts.get("question", ""), cta_script):
+            return parts, "CTA matched verbatim -- OK"
+
+        logger.warning(
+            "CTA drift detected -- regenerating script. "
+            "Expected CTA: %r | Got question: %r",
+            cta_script, parts.get("question", ""),
+        )
+
+        # Retry with a stronger correction prompt
+        correction_prompt = (
+            f"Topic: {topic}\n"
+            f"Hook (use verbatim): {hook}\n"
+            f"Your previous response did not use the exact CTA provided. "
+            f"You MUST copy this text word for word into the question field: {cta_script}\n"
+            f"\nWrite the 4-part script now."
+        )
+        try:
+            message = client.messages.create(
+                model=self.model,
+                max_tokens=self.max_tokens,
+                system=_SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": correction_prompt}],
+            )
+            raw2 = message.content[0].text.strip()
+            parts2 = self._parse_parts(raw2)
+
+            if self._cta_matches(parts2.get("question", ""), cta_script):
+                return parts2, "CTA drift detected -- regenerated"
+
+            logger.warning(
+                "CTA drift persists after retry -- force replacing question field. "
+                "Got: %r", parts2.get("question", ""),
+            )
+        except Exception as exc:
+            logger.error("CTA retry API call failed: %s -- force replacing", exc)
+
+        # Force replace: keep hook/statement/twist from original, inject CTA verbatim
+        parts["question"] = cta_script
+        return parts, "CTA drift -- force replaced"
 
     def _build_result(
         self, topic: str, parts: dict[str, str], raw: str

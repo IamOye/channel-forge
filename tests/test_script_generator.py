@@ -323,3 +323,148 @@ class TestScriptGeneratorGenerate:
 
         assert result.word_count < MAX_WORDS
         assert result.is_valid is True
+
+
+# ---------------------------------------------------------------------------
+# ScriptGenerator._cta_matches
+# ---------------------------------------------------------------------------
+
+class TestCtaMatches:
+    def test_exact_match_returns_true(self) -> None:
+        gen = _make_generator()
+        assert gen._cta_matches(
+            "So ask yourself. Comment FREE below and I'll send you the guide.",
+            "Comment FREE below and I'll send you the guide.",
+        )
+
+    def test_case_insensitive_match(self) -> None:
+        gen = _make_generator()
+        assert gen._cta_matches(
+            "comment free below and i'll send you the guide.",
+            "Comment FREE below and I'll send you the guide.",
+        )
+
+    def test_cta_embedded_in_longer_question(self) -> None:
+        gen = _make_generator()
+        assert gen._cta_matches(
+            "Are you ready? Comment FREE below and I'll send you the guide. Do it now.",
+            "Comment FREE below and I'll send you the guide.",
+        )
+
+    def test_paraphrased_cta_returns_false(self) -> None:
+        gen = _make_generator()
+        assert not gen._cta_matches(
+            "Drop a comment below and I'll share the guide with you.",
+            "Comment FREE below and I'll send you the guide.",
+        )
+
+    def test_empty_question_returns_false(self) -> None:
+        gen = _make_generator()
+        assert not gen._cta_matches("", "Comment FREE below.")
+
+    def test_whitespace_stripped_before_compare(self) -> None:
+        gen = _make_generator()
+        assert gen._cta_matches(
+            "  Comment FREE below.  ",
+            "  Comment FREE below.  ",
+        )
+
+
+# ---------------------------------------------------------------------------
+# ScriptGenerator._enforce_cta
+# ---------------------------------------------------------------------------
+
+CTA = "Comment SALARY below and I'll send you the two income streams."
+
+PARTS_WITH_CTA = {
+    "hook":      "The system is rigged so your nine to five never builds wealth",
+    "statement": "Picture this. You work forty hours a week and have nothing left.",
+    "twist":     "Your salary is capped. Prices keep climbing. The game is rigged.",
+    "question":  f"So ask yourself... are you working to live? {CTA}",
+}
+
+PARTS_WITHOUT_CTA = {
+    "hook":      PARTS_WITH_CTA["hook"],
+    "statement": PARTS_WITH_CTA["statement"],
+    "twist":     PARTS_WITH_CTA["twist"],
+    "question":  "Drop a comment and I will share some resources with you.",
+}
+
+
+class TestEnforceCta:
+    @patch("src.content.script_generator.anthropic.Anthropic")
+    def test_cta_matched_verbatim_no_retry(self, mock_cls) -> None:
+        """When CTA matches first time, no retry call is made."""
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = _mock_message(PARTS_WITH_CTA)
+        mock_cls.return_value = mock_client
+
+        gen = _make_generator()
+        result = gen.generate(topic="salary", hook=PARTS_WITH_CTA["hook"], cta_script=CTA)
+
+        # Only one API call — no retry
+        assert mock_client.messages.create.call_count == 1
+        assert CTA.lower() in result.question.lower()
+
+    @patch("src.content.script_generator.anthropic.Anthropic")
+    def test_cta_drift_triggers_regeneration(self, mock_cls) -> None:
+        """When first response misses CTA, retry is called and succeeds."""
+        mock_client = MagicMock()
+        # First call: CTA missing. Second call (retry): CTA present.
+        mock_client.messages.create.side_effect = [
+            _mock_message(PARTS_WITHOUT_CTA),
+            _mock_message(PARTS_WITH_CTA),
+        ]
+        mock_cls.return_value = mock_client
+
+        gen = _make_generator()
+        result = gen.generate(topic="salary", hook=PARTS_WITH_CTA["hook"], cta_script=CTA)
+
+        assert mock_client.messages.create.call_count == 2
+        assert CTA.lower() in result.question.lower()
+
+    @patch("src.content.script_generator.anthropic.Anthropic")
+    def test_cta_force_replaced_when_retry_also_drifts(self, mock_cls) -> None:
+        """When both attempts miss the CTA, question is force-replaced with cta_script."""
+        mock_client = MagicMock()
+        # Both calls return question without CTA
+        mock_client.messages.create.side_effect = [
+            _mock_message(PARTS_WITHOUT_CTA),
+            _mock_message(PARTS_WITHOUT_CTA),
+        ]
+        mock_cls.return_value = mock_client
+
+        gen = _make_generator()
+        result = gen.generate(topic="salary", hook=PARTS_WITH_CTA["hook"], cta_script=CTA)
+
+        assert mock_client.messages.create.call_count == 2
+        # question must now be exactly the CTA text
+        assert result.question == CTA
+
+    @patch("src.content.script_generator.anthropic.Anthropic")
+    def test_cta_force_replaced_when_retry_api_fails(self, mock_cls) -> None:
+        """When first call misses CTA and retry raises, question is force-replaced."""
+        mock_client = MagicMock()
+        mock_client.messages.create.side_effect = [
+            _mock_message(PARTS_WITHOUT_CTA),
+            Exception("network timeout"),
+        ]
+        mock_cls.return_value = mock_client
+
+        gen = _make_generator()
+        result = gen.generate(topic="salary", hook=PARTS_WITH_CTA["hook"], cta_script=CTA)
+
+        assert result.question == CTA
+
+    @patch("src.content.script_generator.anthropic.Anthropic")
+    def test_no_cta_enforcement_when_cta_script_empty(self, mock_cls) -> None:
+        """When cta_script='', _enforce_cta is not called — only one API call."""
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = _mock_message(VALID_PARTS)
+        mock_cls.return_value = mock_client
+
+        gen = _make_generator()
+        result = gen.generate(topic="test", hook=VALID_PARTS["hook"], cta_script="")
+
+        assert mock_client.messages.create.call_count == 1
+        assert result.question == VALID_PARTS["question"]
