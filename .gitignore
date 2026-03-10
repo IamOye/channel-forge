@@ -4,8 +4,18 @@ venv/
 __pycache__/
 *.pyc
 data/raw/
-data/processed/*.db
+data/processed/
+data/output/
 logs/
 .claude/settings.local.json
 CLAUDE.local.md
 .credentials/
+
+# Media build artifacts
+*.mp4
+*.mp3
+*TEMP_MPY*
+*_bg_temp*
+
+# Stray shell output files
+channel-forge
