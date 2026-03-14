@@ -482,23 +482,30 @@ class AnalyticsHarvester:
 
     def _enrich_video_analytics(self, video: VideoRow) -> None:
         """
-        Fetch deeper analytics (impressions, avg view %, shares, etc.) and
-        update the VideoRow in place.  Silently skips if API call fails.
+        Fetch deeper analytics (avg view %, shares, etc.) and update the
+        VideoRow in place.  Silently skips if API call fails.
+
+        Note: impressions / impressionClickThroughRate are NOT available via
+        the Analytics API v2 (YouTube Studio only) and are intentionally omitted.
         """
         credentials = self._load_credentials()
         service = self._build_analytics_service(credentials)
 
-        end_date   = date.today()
-        start_date = end_date - timedelta(days=365)
+        end_date = date.today()
+        # Use the video's actual publish date so we get full lifetime stats.
+        # published_at is ISO 8601: "2024-03-15T10:30:00Z" — take first 10 chars.
+        start_date_str = (video.published_at or "")[:10]
+        if not start_date_str:
+            start_date_str = (end_date - timedelta(days=365)).isoformat()
 
         resp = service.reports().query(
             ids="channel==MINE",
-            startDate=start_date.isoformat(),
+            startDate=start_date_str,
             endDate=end_date.isoformat(),
             metrics=(
-                "impressions,impressionClickThroughRate,"
                 "averageViewDuration,averageViewPercentage,"
-                "shares,subscribersGained"
+                "shares,subscribersGained,"
+                "likes,comments,estimatedMinutesWatched"
             ),
             filters=f"video=={video.video_id}",
         ).execute()
@@ -512,12 +519,21 @@ class AnalyticsHarvester:
         def _float(idx: int) -> float:
             return float(row[idx]) if len(row) > idx and row[idx] is not None else 0.0
 
-        video.impression_count        = _int(0)
-        video.click_through_rate      = _float(1)
-        video.average_view_duration   = _float(2)
-        video.average_view_percentage = _float(3)
-        video.shares                  = _int(4)
-        video.subscribers_gained      = _int(5)
+        # Index order matches the metrics string above:
+        # 0: averageViewDuration, 1: averageViewPercentage,
+        # 2: shares, 3: subscribersGained, 4: likes, 5: comments,
+        # 6: estimatedMinutesWatched (fetched but not stored separately)
+        video.average_view_duration   = _float(0)
+        video.average_view_percentage = _float(1)
+        video.shares                  = _int(2)
+        video.subscribers_gained      = _int(3)
+        # likes/comments from Analytics API override the Data API values when present
+        analytics_likes    = _int(4)
+        analytics_comments = _int(5)
+        if analytics_likes > 0:
+            video.likes = analytics_likes
+        if analytics_comments > 0:
+            video.comments = analytics_comments
 
     # ------------------------------------------------------------------
     # CSV writers
