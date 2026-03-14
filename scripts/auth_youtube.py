@@ -25,7 +25,11 @@ try:
     # Config
     # ---------------------------------------------------------------------------
 
-    SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
+    SCOPES = [
+        "https://www.googleapis.com/auth/youtube.upload",
+        "https://www.googleapis.com/auth/youtube.readonly",
+        "https://www.googleapis.com/auth/yt-analytics.readonly",
+    ]
     CREDENTIALS_DIR = Path(".credentials")
 
     # ---------------------------------------------------------------------------
@@ -103,7 +107,10 @@ try:
         json.dump(token_data, f, indent=2)
 
     print(f"Token saved to: {token_path}")
-    print(f"\nDone! You can now upload videos for channel '{channel_key}'.")
+    print(f"\nDone! You can now upload videos and harvest analytics for channel '{channel_key}'.")
+    print("\nScopes authorised:")
+    for s in SCOPES:
+        print(f"  - {s}")
 
 except Exception:
     print("\n--- ERROR ---")
