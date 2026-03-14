@@ -229,6 +229,14 @@ def run_daily_analytics() -> None:
                     "[scheduler] Analytics for '%s': %d videos tracked",
                     channel.channel_key, len(results),
                 )
+                try:
+                    from scripts.harvest_analytics import harvest  # lazy
+                    harvest(channel=channel.channel_key)
+                except Exception as harvest_exc:
+                    logger.warning(
+                        "[scheduler] Harvest failed for '%s': %s",
+                        channel.channel_key, harvest_exc,
+                    )
             except Exception as exc:
                 logger.error(
                     "[scheduler] Analytics failed for channel '%s': %s",

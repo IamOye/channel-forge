@@ -18,3 +18,4 @@ google-auth-oauthlib>=1.2
 requests>=2.31
 moviepy>=2.0
 mutagen>=1.47
+openpyxl>=3.1
