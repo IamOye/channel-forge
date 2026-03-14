@@ -51,8 +51,24 @@ DB_PATH = Path(os.getenv("DB_PATH", "data/processed/channel_forge.db"))
 # ---------------------------------------------------------------------------
 
 
+def _check_ffmpeg() -> None:
+    """Verify ffmpeg is accessible via imageio_ffmpeg; log path or error."""
+    try:
+        import imageio_ffmpeg
+        path = imageio_ffmpeg.get_ffmpeg_exe()
+        logger.info("ffmpeg ready at %s", path)
+    except Exception as exc:
+        logger.error(
+            "ffmpeg not available via imageio_ffmpeg: %s — "
+            "video normalization will be skipped. "
+            "Install imageio-ffmpeg: pip install imageio-ffmpeg",
+            exc,
+        )
+
+
 def cmd_run() -> int:
     """Start the blocking APScheduler. Press Ctrl-C to stop."""
+    _check_ffmpeg()
     logger.info("Starting ChannelForge scheduler…")
     from src.scheduler import build_scheduler  # lazy
 

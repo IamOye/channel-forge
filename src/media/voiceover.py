@@ -280,16 +280,18 @@ class VoiceoverGenerator:
         """
         Normalize audio to TARGET_LUFS using ffmpeg loudnorm filter.
         Overwrites the file in place via a temp file.
-        Skipped silently if ffmpeg is not installed.
+        Uses imageio_ffmpeg bundled binary — no PATH configuration needed.
         """
-        import shutil
-        if not shutil.which("ffmpeg"):
-            logger.debug("ffmpeg not found — skipping loudness normalization")
+        try:
+            import imageio_ffmpeg
+            ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+        except Exception as exc:
+            logger.debug("imageio_ffmpeg unavailable — skipping loudness normalization: %s", exc)
             return
 
         temp_path = audio_path.with_suffix(".norm.mp3")
         cmd = [
-            "ffmpeg", "-y",
+            ffmpeg_exe, "-y",
             "-i", str(audio_path),
             "-af", f"loudnorm=I={TARGET_LUFS}:TP=-1.5:LRA=11",
             str(temp_path),
