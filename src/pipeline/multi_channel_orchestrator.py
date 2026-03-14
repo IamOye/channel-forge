@@ -161,6 +161,10 @@ class MultiChannelOrchestrator:
             topics = self._load_topics(channel_cfg, daily_quota)
             result.topics_processed = len(topics)
 
+            # Resolve DB path here so _mark_scored_topic_used uses the same DB
+            ch_db = self.base_db_dir / f"{channel_key}.db"
+            topics_db = ch_db if ch_db.exists() else self.base_db_dir / "channel_forge.db"
+
             pipeline = self._build_pipeline(channel_cfg, db_path)
 
             for topic_item in topics:
@@ -168,6 +172,11 @@ class MultiChannelOrchestrator:
                     run_result = pipeline.run(topic_item)
                     if run_result.is_valid:
                         result.topics_succeeded += 1
+                        self._mark_scored_topic_used(
+                            topics_db,
+                            topic_item["keyword"],
+                            topic_item.get("category", "success"),
+                        )
                     else:
                         result.topics_failed += 1
                         logger.warning(
@@ -230,6 +239,7 @@ class MultiChannelOrchestrator:
                         category   TEXT    NOT NULL DEFAULT 'success',
                         score      REAL    NOT NULL DEFAULT 0,
                         source     TEXT    NOT NULL DEFAULT 'manual',
+                        used       INTEGER NOT NULL DEFAULT 0,
                         created_at TEXT    NOT NULL DEFAULT (datetime('now'))
                     )
                 """)
@@ -263,6 +273,26 @@ class MultiChannelOrchestrator:
             logger.warning("No topics available for channel '%s'", channel_key)
 
         return topics
+
+    def _mark_scored_topic_used(
+        self, db_path: Path, keyword: str, category: str
+    ) -> None:
+        """Mark a scored_topics row as used=1 so it won't be re-queued."""
+        import sqlite3
+
+        try:
+            conn = sqlite3.connect(db_path)
+            try:
+                conn.execute(
+                    "UPDATE scored_topics SET used = 1 WHERE keyword = ? AND category = ?",
+                    (keyword, category),
+                )
+                conn.commit()
+                logger.debug("Marked topic used: %r (%s)", keyword, category)
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.warning("Could not mark topic '%s' as used: %s", keyword, exc)
 
     def _build_pipeline(self, channel_cfg, db_path: Path):
         """Instantiate ProductionPipeline for the given channel."""

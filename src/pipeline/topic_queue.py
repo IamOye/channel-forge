@@ -186,6 +186,33 @@ class TopicQueue:
 
         return topics
 
+    def mark_topic_used(self, keyword: str, category: str) -> None:
+        """
+        Mark a scored_topics row as used so it is excluded from future runs.
+
+        Safe to call even if the table or DB don't exist yet — errors are
+        logged and swallowed.
+
+        Args:
+            keyword: The topic keyword string to mark.
+            category: The category the topic belongs to.
+        """
+        if not self.db_path.exists():
+            return
+        try:
+            conn = sqlite3.connect(self.db_path)
+            try:
+                conn.execute(
+                    "UPDATE scored_topics SET used = 1 WHERE keyword = ? AND category = ?",
+                    (keyword, category),
+                )
+                conn.commit()
+                logger.debug("Marked scored_topic used: %r (%s)", keyword, category)
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.warning("Could not mark topic '%s' as used: %s", keyword, exc)
+
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
@@ -233,8 +260,10 @@ class TopicQueue:
                         """
                         SELECT keyword, category, score, source
                         FROM scored_topics
+                        WHERE category = ? AND used = 0
                         ORDER BY score DESC
                         """,
+                        (category,),
                     ).fetchall()
                     for row in rows:
                         src = row[3] if row[3] else "GOOGLE_TRENDS"

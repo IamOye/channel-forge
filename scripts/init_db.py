@@ -122,11 +122,13 @@ CREATE TABLE IF NOT EXISTS scored_topics (
     category    TEXT    NOT NULL DEFAULT 'success',
     score       REAL    NOT NULL DEFAULT 0,
     source      TEXT    NOT NULL DEFAULT 'manual',
+    used        INTEGER NOT NULL DEFAULT 0,
     created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_scored_keyword ON scored_topics (keyword);
 CREATE INDEX IF NOT EXISTS idx_scored_score   ON scored_topics (score DESC);
+CREATE INDEX IF NOT EXISTS idx_scored_used    ON scored_topics (used);
 """
 
 UPLOADED_VIDEOS_DDL = """

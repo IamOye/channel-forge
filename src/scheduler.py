@@ -82,6 +82,7 @@ def seed_scored_topics_if_empty(db_path: Path | None = None) -> int:
                     category   TEXT    NOT NULL DEFAULT 'success',
                     score      REAL    NOT NULL DEFAULT 0,
                     source     TEXT    NOT NULL DEFAULT 'manual',
+                    used       INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT    NOT NULL DEFAULT (datetime('now'))
                 )
             """)

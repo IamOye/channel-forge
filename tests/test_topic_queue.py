@@ -34,6 +34,7 @@ def _insert_scored_topics(db_path: Path, rows: list[tuple]) -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             keyword TEXT, category TEXT,
             score REAL, source TEXT,
+            used INTEGER DEFAULT 0,
             created_at TEXT DEFAULT (datetime('now'))
         )
     """)
@@ -350,3 +351,101 @@ class TestSchedulerCompetitorJob:
     def import_src_scheduler(self):
         from src.scheduler import build_scheduler
         return build_scheduler
+
+
+# ---------------------------------------------------------------------------
+# scored_topics — used flag and category filter
+# ---------------------------------------------------------------------------
+
+
+class TestScoredTopicsUsedFilter:
+    def test_used_topics_excluded(self, tmp_path) -> None:
+        """Topics with used=1 must not appear in results."""
+        db = tmp_path / "test.db"
+        conn = sqlite3.connect(db)
+        conn.execute("""
+            CREATE TABLE scored_topics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                keyword TEXT, category TEXT,
+                score REAL, source TEXT,
+                used INTEGER DEFAULT 0,
+                created_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        conn.execute(
+            "INSERT INTO scored_topics (keyword, category, score, source, used) VALUES (?,?,?,?,?)",
+            ("already done", "money", 90.0, "GOOGLE_TRENDS", 1),
+        )
+        conn.execute(
+            "INSERT INTO scored_topics (keyword, category, score, source, used) VALUES (?,?,?,?,?)",
+            ("fresh topic", "money", 80.0, "GOOGLE_TRENDS", 0),
+        )
+        conn.commit()
+        conn.close()
+
+        queue = TopicQueue(db_path=db)
+        topics = queue.get_next_topics(category="money", max_count=5)
+        keywords = [t["keyword"] for t in topics]
+
+        assert "already done" not in keywords
+        assert "fresh topic" in keywords
+
+    def test_category_filter_excludes_other_categories(self, tmp_path) -> None:
+        """scored_topics for a different category must not appear."""
+        db = tmp_path / "test.db"
+        _insert_scored_topics(db, [
+            ("money topic", "money", 80.0, "GOOGLE_TRENDS"),
+            ("career topic", "career", 85.0, "GOOGLE_TRENDS"),
+        ])
+
+        queue = TopicQueue(db_path=db)
+        topics = queue.get_next_topics(category="money", max_count=5)
+        keywords = [t["keyword"] for t in topics]
+
+        assert "money topic" in keywords
+        assert "career topic" not in keywords
+
+    def test_mark_topic_used_sets_flag(self, tmp_path) -> None:
+        """mark_topic_used must flip used=1 in the DB."""
+        db = tmp_path / "test.db"
+        _insert_scored_topics(db, [
+            ("target topic", "money", 70.0, "GOOGLE_TRENDS"),
+        ])
+
+        queue = TopicQueue(db_path=db)
+        queue.mark_topic_used("target topic", "money")
+
+        conn = sqlite3.connect(db)
+        used = conn.execute(
+            "SELECT used FROM scored_topics WHERE keyword = ?", ("target topic",)
+        ).fetchone()[0]
+        conn.close()
+        assert used == 1
+
+    def test_mark_topic_used_excludes_from_next_run(self, tmp_path) -> None:
+        """After mark_topic_used, the topic must not appear in get_next_topics."""
+        db = tmp_path / "test.db"
+        _insert_scored_topics(db, [
+            ("target topic", "money", 70.0, "GOOGLE_TRENDS"),
+            ("other topic", "money", 60.0, "GOOGLE_TRENDS"),
+        ])
+
+        queue = TopicQueue(db_path=db)
+        queue.mark_topic_used("target topic", "money")
+
+        topics = queue.get_next_topics(category="money", max_count=5)
+        keywords = [t["keyword"] for t in topics]
+        assert "target topic" not in keywords
+        assert "other topic" in keywords
+
+    def test_mark_topic_used_no_error_on_missing_db(self, tmp_path) -> None:
+        """mark_topic_used must not raise when the DB doesn't exist."""
+        queue = TopicQueue(db_path=tmp_path / "nonexistent.db")
+        queue.mark_topic_used("any topic", "money")  # should not raise
+
+    def test_mark_topic_used_no_error_on_missing_table(self, tmp_path) -> None:
+        """mark_topic_used must not raise when scored_topics table doesn't exist."""
+        db = tmp_path / "test.db"
+        sqlite3.connect(db).close()  # empty DB, no tables
+        queue = TopicQueue(db_path=db)
+        queue.mark_topic_used("any topic", "money")  # should not raise
