@@ -265,6 +265,37 @@ class TestRunAll:
 
         assert results == []
 
+    def test_disabled_channels_are_skipped(self, tmp_path) -> None:
+        """Channels with enabled=False must not be run."""
+        orchestrator = _make_orchestrator(tmp_path)
+
+        channels = [
+            _make_channel(channel_key="active", name="Active", enabled=True),
+            _make_channel(channel_key="inactive", name="Inactive", enabled=False),
+        ]
+
+        with patch("config.channels.CHANNELS", channels):
+            with patch.object(orchestrator, "_load_topics", return_value=[]):
+                with patch.object(orchestrator, "_build_pipeline", return_value=MagicMock()):
+                    with patch.object(orchestrator, "_setup_channel_output"):
+                        results = orchestrator.run_all()
+
+        assert len(results) == 1
+        assert results[0].channel_key == "active"
+
+    def test_all_disabled_returns_empty_list(self, tmp_path) -> None:
+        orchestrator = _make_orchestrator(tmp_path)
+
+        channels = [
+            _make_channel(channel_key="ch1", enabled=False),
+            _make_channel(channel_key="ch2", enabled=False),
+        ]
+
+        with patch("config.channels.CHANNELS", channels):
+            results = orchestrator.run_all()
+
+        assert results == []
+
 
 # ---------------------------------------------------------------------------
 # _load_topics — real SQLite

@@ -20,6 +20,7 @@ class ChannelConfig:
     daily_quota: int = 3            # Max uploads per day
     timezone: str = "Africa/Lagos"
     output_dir: str = ""            # Defaults to data/output/{channel_key}/ if empty
+    enabled: bool = True            # Set False to skip in automated runs
 
     def __post_init__(self) -> None:
         if not self.output_dir:
@@ -37,6 +38,7 @@ CHANNELS: list[ChannelConfig] = [
         category="success",
         daily_quota=3,
         timezone="Africa/Lagos",
+        enabled=False,   # no OAuth credentials configured yet
     ),
     ChannelConfig(
         channel_key="career",
@@ -44,6 +46,7 @@ CHANNELS: list[ChannelConfig] = [
         category="career",
         daily_quota=2,
         timezone="Africa/Lagos",
+        enabled=False,   # no OAuth credentials configured yet
     ),
     ChannelConfig(
         channel_key="money_debate",
@@ -51,7 +54,7 @@ CHANNELS: list[ChannelConfig] = [
         channel_id="UC9nKSmjC4g9QEEbPHVQEh6g",
         handle="@moneyheresy",
         category="money",
-        daily_quota=3,
+        daily_quota=1,   # 1 per run × 4 runs/day = 4 videos/day (safe for new channel)
         timezone="Africa/Lagos",
     ),
 ]

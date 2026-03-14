@@ -113,10 +113,10 @@ class MultiChannelOrchestrator:
             individual channel failures are captured in ChannelRunResult.error.
         """
         from config.channels import CHANNELS  # lazy — allows test mocking
-        channels = CHANNELS
+        channels = [c for c in CHANNELS if getattr(c, "enabled", True)]
 
         if not channels:
-            logger.warning("No channels configured in config/channels.py")
+            logger.warning("No enabled channels configured in config/channels.py")
             return []
 
         logger.info("Running pipeline for %d channel(s)", len(channels))

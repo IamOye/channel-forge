@@ -326,6 +326,112 @@ class TestScriptGeneratorGenerate:
 
 
 # ---------------------------------------------------------------------------
+# ScriptGenerator word-count retry
+# ---------------------------------------------------------------------------
+
+
+class TestWordCountRetry:
+    @patch("src.content.script_generator.anthropic.Anthropic")
+    def test_retry_triggered_when_over_120(self, mock_cls) -> None:
+        """generate() must call messages.create twice when first response > 120 words."""
+        long_parts = {
+            "hook":      " ".join(["word"] * 35),
+            "statement": " ".join(["word"] * 35),
+            "twist":     " ".join(["word"] * 35),
+            "question":  "Is this still over the limit?",  # ~7 words → total ~112+7=119... use more
+        }
+        # Make first response exceed 120 words
+        long_parts["question"] = " ".join(["word"] * 20) + " Is this over limit?"
+
+        short_parts = {
+            "hook":      "This changes everything you know.",
+            "statement": "Most people spend years chasing the wrong thing.",
+            "twist":     "The data proves it does not work.",
+            "question":  "So what are you actually working for?",
+        }
+
+        mock_client = MagicMock()
+        mock_client.messages.create.side_effect = [
+            _mock_message(long_parts),   # first call → too long
+            _mock_message(short_parts),  # retry → short enough
+        ]
+        mock_cls.return_value = mock_client
+
+        gen = _make_generator()
+        result = gen.generate(topic="test", hook=long_parts["hook"])
+
+        assert mock_client.messages.create.call_count == 2
+        assert result.word_count < MAX_WORDS
+
+    @patch("src.content.script_generator.anthropic.Anthropic")
+    def test_no_retry_when_under_limit(self, mock_cls) -> None:
+        """generate() must call messages.create once when first response ≤ 120 words."""
+        short_parts = {
+            "hook":      "This ancient secret changes everything you know now.",
+            "statement": "Stoics said your mind determines your happiness not circumstances.",
+            "twist":     "Yet you let outside events dictate your emotional state every day.",
+            "question":  "What would your life look like if you took back control today?",
+        }
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = _mock_message(short_parts)
+        mock_cls.return_value = mock_client
+
+        gen = _make_generator()
+        gen.generate(topic="test", hook=short_parts["hook"])
+
+        assert mock_client.messages.create.call_count == 1
+
+    @patch("src.content.script_generator.anthropic.Anthropic")
+    def test_retry_api_failure_uses_original(self, mock_cls) -> None:
+        """If the retry API call fails, the original (long) result is returned."""
+        long_parts = {
+            "hook":      " ".join(["word"] * 35),
+            "statement": " ".join(["word"] * 35),
+            "twist":     " ".join(["word"] * 35),
+            "question":  " ".join(["word"] * 20) + " Is this over limit?",
+        }
+        mock_client = MagicMock()
+        mock_client.messages.create.side_effect = [
+            _mock_message(long_parts),
+            Exception("API timeout"),
+        ]
+        mock_cls.return_value = mock_client
+
+        gen = _make_generator()
+        result = gen.generate(topic="test", hook=long_parts["hook"])
+
+        # Should not raise; still returns a result
+        assert result.word_count > 0
+        assert result.is_valid is False  # still over limit
+
+    def test_parts_too_long_true_when_over_limit(self) -> None:
+        from src.content.script_generator import RETRY_WORD_LIMIT
+        gen = _make_generator()
+        long_parts = {p: " ".join(["word"] * 35) for p in ("hook", "statement", "twist", "question")}
+        assert gen._parts_too_long(long_parts) is True
+
+    def test_parts_too_long_false_when_under_limit(self) -> None:
+        gen = _make_generator()
+        short_parts = {
+            "hook": "Short hook here.",
+            "statement": "Brief statement.",
+            "twist": "Quick twist.",
+            "question": "What now?",
+        }
+        assert gen._parts_too_long(short_parts) is False
+
+    def test_parts_too_long_false_when_any_part_empty(self) -> None:
+        gen = _make_generator()
+        parts = {
+            "hook": " ".join(["word"] * 40),
+            "statement": " ".join(["word"] * 40),
+            "twist": " ".join(["word"] * 40),
+            "question": "",  # empty → no retry
+        }
+        assert gen._parts_too_long(parts) is False
+
+
+# ---------------------------------------------------------------------------
 # ScriptGenerator._cta_matches
 # ---------------------------------------------------------------------------
 

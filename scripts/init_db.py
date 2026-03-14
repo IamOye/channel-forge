@@ -259,6 +259,29 @@ def verify_db(db_path: Path) -> list[str]:
         conn.close()
 
 
+def migrate_db(db_path: Path) -> None:
+    """
+    Apply incremental schema migrations to an existing database.
+
+    Safe to run on any ChannelForge DB — each migration is idempotent.
+    """
+    if not db_path.exists():
+        return
+    conn = sqlite3.connect(db_path)
+    try:
+        # Phase 12 migration: add `used` column to scored_topics
+        try:
+            conn.execute(
+                "ALTER TABLE scored_topics ADD COLUMN used INTEGER DEFAULT 0"
+            )
+            conn.commit()
+            logger.info("Migration applied: scored_topics.used column added (%s)", db_path)
+        except sqlite3.OperationalError:
+            pass  # column already exists
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -276,6 +299,7 @@ def main() -> None:
 
     for name, (path, ddl_parts) in databases.items():
         create_db(path, ddl_parts)
+        migrate_db(path)
         tables = verify_db(path)
         logger.info("  %s tables: %s", name, tables)
 

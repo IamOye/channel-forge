@@ -89,7 +89,7 @@ Pack in beats 6 and 7:
   Beat 7: The exact CTA text provided, word for word. Do NOT rephrase or improvise.
 
 WRITING RULES — follow these strictly:
-- Total word count across all 4 parts: 110–120 words. HARD MAXIMUM: 149 words total. Count carefully before responding.
+- Total word count across all 4 parts: 100–120 words. HARD MAXIMUM: 120 words total. Count carefully before responding.
 - Never use em dashes (—) in the script body
 - Never use "it is worth noting", "in conclusion", "furthermore", "moreover"
 - Write as if talking to one specific person
@@ -114,7 +114,8 @@ Respond ONLY with a JSON object, no markdown:
 # Validation constants
 # ---------------------------------------------------------------------------
 
-MAX_WORDS = 150   # hard ceiling; target is 110–120 words
+MAX_WORDS = 121   # hard ceiling; scripts of ≥121 words fail (target 100–120)
+RETRY_WORD_LIMIT = 120  # trigger one brevity retry if word_count > this
 REQUIRED_PARTS = ("hook", "statement", "twist", "question")
 
 PART_WORD_LIMITS = {
@@ -252,6 +253,10 @@ class ScriptGenerator:
 
         parts = self._parse_parts(raw)
 
+        # Word count retry: if too long, retry once with a tighter prompt
+        if self._parts_too_long(parts):
+            parts, raw = self._retry_for_brevity(topic, hook, parts, raw, client)
+
         # CTA enforcement: ensure question field contains the verbatim CTA text
         if cta_script:
             parts, cta_path = self._enforce_cta(parts, cta_script, topic, hook, client)
@@ -377,6 +382,62 @@ class ScriptGenerator:
         # Force replace: keep hook/statement/twist from original, inject CTA verbatim
         parts["question"] = cta_script
         return parts, "CTA drift -- force replaced"
+
+    def _parts_too_long(self, parts: dict[str, str]) -> bool:
+        """Return True if combined word count of all parts exceeds RETRY_WORD_LIMIT."""
+        all_text = " ".join(parts.get(p, "") for p in REQUIRED_PARTS)
+        word_count = len(all_text.split()) if all_text.strip() else 0
+        has_content = all(parts.get(p, "").strip() for p in REQUIRED_PARTS)
+        return has_content and word_count > RETRY_WORD_LIMIT
+
+    def _retry_for_brevity(
+        self,
+        topic: str,
+        hook: str,
+        parts: dict[str, str],
+        raw: str,
+        client: "anthropic.Anthropic",
+    ) -> tuple[dict[str, str], str]:
+        """
+        Retry the script generation with a tighter word-count instruction.
+
+        Called once when the initial response exceeds RETRY_WORD_LIMIT words.
+        Returns the retry parts + raw on success, or the original on failure.
+        """
+        word_count = len(
+            " ".join(parts.get(p, "") for p in REQUIRED_PARTS).split()
+        )
+        logger.warning(
+            "Script too long (%d words) — retrying with 110-word cap", word_count
+        )
+        retry_prompt = (
+            f"Topic: {topic}\n"
+            f"Hook (use verbatim): {hook}\n"
+            f"Your script was too long at {word_count} words. "
+            f"Rewrite it in 110 words maximum. "
+            f"Keep the same 7-part structure but make every sentence shorter and punchier.\n"
+            f"\nWrite the 4-part script now."
+        )
+        try:
+            message = client.messages.create(
+                model=self.model,
+                max_tokens=self.max_tokens,
+                system=_SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": retry_prompt}],
+            )
+            raw2 = message.content[0].text.strip()
+            parts2 = self._parse_parts(raw2)
+            if all(parts2.get(p, "").strip() for p in REQUIRED_PARTS):
+                new_count = len(
+                    " ".join(parts2.get(p, "") for p in REQUIRED_PARTS).split()
+                )
+                logger.info(
+                    "Word count retry: %d → %d words", word_count, new_count
+                )
+                return parts2, raw2
+        except Exception as exc:
+            logger.error("Word count retry API call failed: %s", exc)
+        return parts, raw
 
     def _build_result(
         self, topic: str, parts: dict[str, str], raw: str
