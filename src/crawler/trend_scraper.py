@@ -20,6 +20,27 @@ from typing import Any
 
 import httpx
 from dotenv import load_dotenv
+
+# ---------------------------------------------------------------------------
+# urllib3 v2.0 compatibility shim for pytrends
+# urllib3 v2.0 renamed Retry's `method_whitelist` parameter to `allowed_methods`.
+# pytrends still passes `method_whitelist`, so we patch Retry.__init__ to
+# silently map the old name to the new one before importing pytrends.
+# ---------------------------------------------------------------------------
+try:
+    import urllib3.util.retry as _retry_mod
+
+    _orig_retry_init = _retry_mod.Retry.__init__
+
+    def _compat_retry_init(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if "method_whitelist" in kwargs:
+            kwargs.setdefault("allowed_methods", kwargs.pop("method_whitelist"))
+        _orig_retry_init(self, *args, **kwargs)
+
+    _retry_mod.Retry.__init__ = _compat_retry_init  # type: ignore[method-assign]
+except Exception:
+    pass  # if urllib3 is not present or already compatible, do nothing
+
 from pytrends.request import TrendReq
 
 load_dotenv()

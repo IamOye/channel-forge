@@ -155,6 +155,36 @@ PRODUCTS: dict[str, dict[str, str]] = {
 }
 
 # ---------------------------------------------------------------------------
+# Fallback topics per category
+# Used by the production pipeline when scored_topics table is empty or
+# the scraper returned nothing — ensures production always runs.
+# ---------------------------------------------------------------------------
+
+FALLBACK_TOPICS: dict[str, list[str]] = {
+    "money": [
+        "why your salary will never make you rich",
+        "the debt trap nobody talks about",
+        "why saving money keeps you poor",
+        "how the wealthy avoid paying taxes legally",
+        "why your boss will always earn more than you",
+    ],
+    "career": [
+        "why working hard guarantees you stay broke",
+        "the salary negotiation secret nobody teaches",
+        "why loyal employees get paid the least",
+        "how to escape the paycheck to paycheck cycle",
+        "why your degree is making you poor",
+    ],
+    "success": [
+        "the biggest lie about becoming successful",
+        "why talented people stay broke",
+        "the morning routine myth that wastes your time",
+        "why most successful people were told no first",
+        "the real reason you are not making progress",
+    ],
+}
+
+# ---------------------------------------------------------------------------
 # Script limits
 # ---------------------------------------------------------------------------
 

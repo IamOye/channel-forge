@@ -199,16 +199,36 @@ class MultiChannelOrchestrator:
         Load up to max_topics items from the scored_topics table for this channel.
 
         Tries the channel-specific DB first, then the shared channel_forge.db.
-        Returns an empty list if neither DB exists or the table is absent.
+        Creates the scored_topics table if it doesn't exist (ensures DB is
+        always in a valid state even on first run).
+        Falls back to one random FALLBACK_TOPICS entry when the table is empty.
         """
+        import random
         import sqlite3
-        db_path  = self.base_db_dir / f"{channel_cfg.channel_key}.db"
-        main_db  = self.base_db_dir / "channel_forge.db"
+
+        from config.constants import FALLBACK_TOPICS
+
+        db_path   = self.base_db_dir / f"{channel_cfg.channel_key}.db"
+        main_db   = self.base_db_dir / "channel_forge.db"
         db_to_use = db_path if db_path.exists() else main_db
 
+        rows: list[tuple] = []
         try:
+            db_to_use.parent.mkdir(parents=True, exist_ok=True)
             conn = sqlite3.connect(db_to_use)
             try:
+                # Ensure table exists so the query never raises OperationalError
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS scored_topics (
+                        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                        keyword    TEXT    NOT NULL,
+                        category   TEXT    NOT NULL DEFAULT 'success',
+                        score      REAL    NOT NULL DEFAULT 0,
+                        source     TEXT    NOT NULL DEFAULT 'manual',
+                        created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+                    )
+                """)
+                conn.commit()
                 rows = conn.execute(
                     """
                     SELECT keyword, category, score
@@ -220,7 +240,13 @@ class MultiChannelOrchestrator:
                 ).fetchall()
             finally:
                 conn.close()
+        except Exception as exc:
+            logger.warning(
+                "Could not load topics for channel '%s': %s",
+                channel_cfg.channel_key, exc,
+            )
 
+        if rows:
             topics: list[dict[str, Any]] = []
             for i, row in enumerate(rows):
                 topics.append({
@@ -231,12 +257,27 @@ class MultiChannelOrchestrator:
                 })
             return topics
 
-        except Exception as exc:
-            logger.warning(
-                "Could not load topics for channel '%s': %s",
-                channel_cfg.channel_key, exc,
+        # scored_topics is empty — use one random fallback topic
+        category = getattr(channel_cfg, "category", "money")
+        fallbacks = FALLBACK_TOPICS.get(category) or FALLBACK_TOPICS.get("money", [])
+        if fallbacks:
+            keyword = random.choice(fallbacks)
+            logger.info(
+                "scored_topics empty for channel '%s' — using fallback topic: %r",
+                channel_cfg.channel_key, keyword,
             )
-            return []
+            return [{
+                "topic_id": f"{channel_cfg.channel_key}_fallback_000",
+                "keyword":  keyword,
+                "category": category,
+                "score":    50.0,
+            }]
+
+        logger.warning(
+            "No topics and no fallbacks available for channel '%s'",
+            channel_cfg.channel_key,
+        )
+        return []
 
     def _build_pipeline(self, channel_cfg, db_path: Path):
         """Instantiate ProductionPipeline for the given channel."""

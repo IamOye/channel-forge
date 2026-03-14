@@ -321,12 +321,15 @@ class TestLoadTopics:
         topics = orchestrator._load_topics(channel, max_topics=2)
         assert len(topics) == 2
 
-    def test_missing_db_returns_empty(self, tmp_path) -> None:
+    def test_missing_db_returns_fallback_topic(self, tmp_path) -> None:
         orchestrator = _make_orchestrator(tmp_path)
         channel = _make_channel(channel_key="nodb")
-        # No DB file created
+        # No DB file — code should create scored_topics and return one fallback
         topics = orchestrator._load_topics(channel, max_topics=5)
-        assert topics == []
+        assert len(topics) == 1
+        assert topics[0]["keyword"] != ""
+        assert topics[0]["category"] == "success"
+        assert "fallback" in topics[0]["topic_id"]
 
     def test_topic_has_expected_keys(self, tmp_path) -> None:
         orchestrator = _make_orchestrator(tmp_path)
