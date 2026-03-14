@@ -257,6 +257,15 @@ class ProductionPipeline:
 
         video_path = build_result.output_path
 
+        # --- Step 5.5: Thumbnail ---
+        thumbnail_path = ""
+        thumb_result = self._run_step(
+            "thumbnail", steps, errors,
+            lambda: self._run_thumbnail(topic_id, hook_text, keyword, category),
+        )
+        if thumb_result:
+            thumbnail_path = thumb_result if isinstance(thumb_result, str) else ""
+
         # --- Step 6: Metadata ---
         meta_result = self._run_step(
             "metadata", steps, errors,
@@ -275,7 +284,7 @@ class ProductionPipeline:
         # --- Step 7: YouTube upload ---
         upload_result = self._run_step(
             "youtube_upload", steps, errors,
-            lambda: self._run_uploader(topic_id, video_path, metadata),
+            lambda: self._run_uploader(topic_id, video_path, metadata, thumbnail_path),
         )
         if upload_result is None or not upload_result.is_valid:
             errors.append(f"upload failed: {getattr(upload_result, 'validation_errors', [])}")
@@ -343,7 +352,13 @@ class ProductionPipeline:
             stock_video_path=stock_paths,
             cta_overlay=cta_overlay,
             word_timestamps=word_timestamps,
+            anthropic_api_key=self.anthropic_api_key or "",
         )
+
+    def _run_thumbnail(self, topic_id: str, hook: str, keyword: str, category: str) -> str:
+        from src.media.thumbnail_generator import ThumbnailGenerator
+        gen = ThumbnailGenerator()
+        return gen.generate(hook=hook, topic=topic_id, category=category)
 
     def _extract_broll_keywords(self, script_dict: dict, count: int = 4) -> list[str]:
         """Use Claude to derive visually concrete Pixabay search phrases from the script.
@@ -424,10 +439,10 @@ class ProductionPipeline:
         gen = MetadataGenerator(api_key=self.anthropic_api_key)
         return gen.generate(topic=keyword, script=script, category=category, video_number=video_number)
 
-    def _run_uploader(self, topic_id: str, video_path: str, metadata: dict):
+    def _run_uploader(self, topic_id: str, video_path: str, metadata: dict, thumbnail_path: str = ""):
         from src.publisher.youtube_uploader import YouTubeUploader
         uploader = YouTubeUploader(channel_key=self.youtube_channel_key)
-        return uploader.upload(topic_id=topic_id, video_path=video_path, metadata=metadata)
+        return uploader.upload(topic_id=topic_id, video_path=video_path, metadata=metadata, thumbnail_path=thumbnail_path)
 
     # ------------------------------------------------------------------
     # Helpers

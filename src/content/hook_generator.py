@@ -26,13 +26,11 @@ logger = logging.getLogger(__name__)
 
 _MODEL = "claude-sonnet-4-5"
 
-_SYSTEM_PROMPT = """You are an expert YouTube Shorts scriptwriter specialising in
-viral hooks. Your hooks must be punchy, under 15 words, and immediately grab attention.
+_SYSTEM_PROMPT = """You are an expert YouTube Shorts scriptwriter specialising in viral hooks for finance/money content.
 
 TARGET AUDIENCE: United States (primary), United Kingdom, Canada, Australia (secondary).
 
-NEVER reference: India, rupees, Indian statistics, Asian or African markets,
-chai, cricket, Bollywood.
+NEVER reference: India, rupees, Indian statistics, Asian or African markets, chai, cricket, Bollywood.
 
 CURRENCY RULES — critical for voiceover naturalness:
 - Never use symbols: $, £, €, ₹
@@ -47,20 +45,44 @@ CULTURAL CONTEXT:
 - Use Western references: 401k, mortgage, Wall Street, Silicon Valley, pension, NHS
 - Relatable scenarios: "working a 9-to-5 in New York", "paying rent in London"
 
-Given a topic, engagement score, and dominant emotion, generate exactly 5 hook variants.
-Each hook must:
-- Be 10–15 words long
-- Match the dominant emotion
-- Create immediate curiosity or shock
-- Work as the opening line of a 15-second video
+Generate exactly 5 hooks — one per formula below.
 
-For each hook also provide:
-- curiosity_score: 0–10 (how much it makes viewer want to keep watching)
-- clarity_score: 0–10 (how clearly it signals what the video is about)
+FORMULA 1 — THE CONTRADICTION:
+"[Widely believed thing] is actually [opposite of what they expect]"
+Example: "Working harder is literally designed to keep you poor."
+
+FORMULA 2 — THE PERSONAL ACCUSATION:
+"You are [doing something they do] and it is costing you [specific loss]"
+Example: "You are saving money every month and losing four percent of it every single year."
+
+FORMULA 3 — THE INSIDER SECRET:
+"[Authority figure] never told you [thing]"
+Example: "Your financial advisor is legally allowed to give you bad advice."
+
+FORMULA 4 — THE UNCOMFORTABLE TRUTH:
+"The reason you are [their situation] has nothing to do with [what they blame]"
+Example: "The reason you are broke has nothing to do with how hard you work."
+
+FORMULA 5 — THE PATTERN INTERRUPT:
+Start mid-thought as if already in conversation.
+Example: "...and that is exactly why your boss drives a better car than you."
+
+RULES for ALL hooks:
+- Never start with "Did you know"
+- Never start with "In this video"
+- Never ask yes/no questions
+- Never use em dashes (—)
+- Max 12 words
+- Must feel like mid-conversation drop
+
+Score each hook on:
+- open_loop: 1-10 (how much it makes viewer want to keep watching)
+- personal_relevance: 1-10 (how directly it speaks to viewer's situation)
+- contradiction: 1-10 (shock/surprise/counter-intuitive factor)
 
 Respond ONLY with a JSON array of exactly 5 objects, no markdown:
 [
-  {"text": "hook text here", "curiosity_score": 8, "clarity_score": 7},
+  {"text": "hook text", "formula": 1, "open_loop": 8, "personal_relevance": 7, "contradiction": 9},
   ...
 ]"""
 
@@ -76,10 +98,16 @@ class HookVariant:
     text: str
     curiosity_score: float       # 0–10
     clarity_score: float         # 0–10
+    open_loop_score: float = 0.0
+    personal_relevance_score: float = 0.0
+    contradiction_score: float = 0.0
+    formula: int = 0
 
     @property
     def combined_score(self) -> float:
-        """Equal-weight combination of curiosity and clarity."""
+        """Combined score — uses new formula scores when available, falls back to old."""
+        if self.open_loop_score or self.personal_relevance_score or self.contradiction_score:
+            return (self.open_loop_score + self.personal_relevance_score + self.contradiction_score) / 3.0
         return (self.curiosity_score + self.clarity_score) / 2.0
 
 
@@ -108,12 +136,19 @@ class HookResult:
             "best_curiosity": self.best.curiosity_score,
             "best_clarity": self.best.clarity_score,
             "best_combined": round(self.best.combined_score, 2),
+            "best_open_loop": self.best.open_loop_score,
+            "best_personal_relevance": self.best.personal_relevance_score,
+            "best_contradiction": self.best.contradiction_score,
             "all_variants": [
                 {
                     "text": v.text,
                     "curiosity_score": v.curiosity_score,
                     "clarity_score": v.clarity_score,
                     "combined_score": round(v.combined_score, 2),
+                    "open_loop_score": v.open_loop_score,
+                    "personal_relevance_score": v.personal_relevance_score,
+                    "contradiction_score": v.contradiction_score,
+                    "formula": getattr(v, "formula", 0),
                 }
                 for v in self.variants
             ],
@@ -222,7 +257,8 @@ class HookGenerator:
             f"Topic: {topic}\n"
             f"Engagement score: {score:.1f}/100\n"
             f"Dominant emotion: {emotion}\n\n"
-            f"Generate {self.NUM_VARIANTS} hook variants for a YouTube Shorts video."
+            f"Generate exactly 5 hooks (one per formula) for a YouTube Shorts video about this topic.\n"
+            f"Each hook must feel like a mid-conversation drop and land within the first 2 seconds."
         )
 
     def _parse_variants(self, raw: str) -> list[HookVariant]:
@@ -258,6 +294,10 @@ class HookGenerator:
                         clarity_score=float(
                             max(0.0, min(10.0, item.get("clarity_score", 5.0)))
                         ),
+                        open_loop_score=float(max(0.0, min(10.0, item.get("open_loop", 0.0)))),
+                        personal_relevance_score=float(max(0.0, min(10.0, item.get("personal_relevance", 0.0)))),
+                        contradiction_score=float(max(0.0, min(10.0, item.get("contradiction", 0.0)))),
+                        formula=int(item.get("formula", 0)),
                     )
                 )
 
@@ -266,7 +306,7 @@ class HookGenerator:
 
             # Pad to NUM_VARIANTS if Claude returned fewer
             while len(variants) < self.NUM_VARIANTS:
-                variants.append(HookVariant(text="Hook unavailable", curiosity_score=0.0, clarity_score=0.0))
+                variants.append(HookVariant(text="Hook unavailable", curiosity_score=0.0, clarity_score=0.0, open_loop_score=0.0, personal_relevance_score=0.0, contradiction_score=0.0))
 
             return variants
 

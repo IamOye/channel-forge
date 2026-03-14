@@ -118,6 +118,7 @@ class YouTubeUploader:
         video_path: str | Path,
         metadata: dict[str, Any],
         publish_at: str | None = None,
+        thumbnail_path: str | Path = "",
     ) -> UploadResult:
         """
         Upload a video file to YouTube.
@@ -153,6 +154,10 @@ class YouTubeUploader:
             body = self._build_body(metadata, publish_at)
             video_id = self._execute_upload(service, body, video_path)
             url = f"https://www.youtube.com/watch?v={video_id}"
+
+            # Attempt thumbnail upload if provided
+            if thumbnail_path:
+                self._upload_thumbnail(service, video_id, Path(thumbnail_path))
 
             logger.info("Upload complete: topic_id=%s -> %s", topic_id, url)
             return UploadResult(
@@ -294,6 +299,22 @@ class YouTubeUploader:
                     raise
 
         return response["id"]
+
+    def _upload_thumbnail(self, service, video_id: str, thumb_path: Path) -> None:
+        """Upload a custom thumbnail. Logs and swallows errors silently."""
+        try:
+            from googleapiclient.http import MediaFileUpload  # lazy
+            media = MediaFileUpload(str(thumb_path), mimetype="image/jpeg")
+            service.thumbnails().set(
+                videoId=video_id,
+                media_body=media,
+            ).execute()
+            logger.info("Thumbnail uploaded for video_id=%s", video_id)
+        except Exception as exc:
+            logger.warning(
+                "Thumbnail saved locally — verify channel at youtube.com/verify to enable. "
+                "Error: %s", exc,
+            )
 
     @staticmethod
     def _validate_inputs(video_path: Path, metadata: dict) -> list[str]:

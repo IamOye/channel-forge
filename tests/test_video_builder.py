@@ -277,3 +277,85 @@ class TestCutsFromWordTimestamps:
         cuts = VideoBuilder._cuts_from_word_timestamps(words, 12.0, 4, min_pause=0.4)
         assert len(cuts) == 3
         assert cuts == sorted(cuts)
+
+
+class TestKineticOverlays:
+    def test_extract_key_phrases_returns_list(self) -> None:
+        from src.media.video_builder import VideoBuilder
+        from unittest.mock import MagicMock, patch
+        import json
+
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = MagicMock(
+            content=[MagicMock(text='["7 income streams", "one income source", "time for money"]')]
+        )
+        mock_anthropic_module = MagicMock()
+        mock_anthropic_module.Anthropic.return_value = mock_client
+        with patch.dict("sys.modules", {"anthropic": mock_anthropic_module}):
+            result = VideoBuilder.extract_key_phrases("You trade time for money", api_key="fake")
+
+        assert isinstance(result, list)
+        assert len(result) <= 3
+
+    def test_extract_key_phrases_max_3(self) -> None:
+        from src.media.video_builder import VideoBuilder
+        from unittest.mock import MagicMock, patch
+
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = MagicMock(
+            content=[MagicMock(text='["a", "b", "c", "d", "e"]')]
+        )
+        mock_anthropic_module = MagicMock()
+        mock_anthropic_module.Anthropic.return_value = mock_client
+        with patch.dict("sys.modules", {"anthropic": mock_anthropic_module}):
+            result = VideoBuilder.extract_key_phrases("Some script text", api_key="fake")
+
+        assert len(result) <= 3
+
+    def test_extract_key_phrases_empty_script_returns_empty(self) -> None:
+        from src.media.video_builder import VideoBuilder
+        result = VideoBuilder.extract_key_phrases("", api_key="fake")
+        assert result == []
+
+    def test_extract_key_phrases_no_api_key_returns_empty(self) -> None:
+        from src.media.video_builder import VideoBuilder
+        import os
+        original = os.environ.pop("ANTHROPIC_API_KEY", None)
+        try:
+            result = VideoBuilder.extract_key_phrases("some script", api_key="")
+            assert result == []
+        finally:
+            if original is not None:
+                os.environ["ANTHROPIC_API_KEY"] = original
+
+    def test_extract_key_phrases_api_failure_returns_empty(self) -> None:
+        from src.media.video_builder import VideoBuilder
+        from unittest.mock import patch
+
+        mock_anthropic_module = MagicMock()
+        mock_anthropic_module.Anthropic.side_effect = Exception("API down")
+        with patch.dict("sys.modules", {"anthropic": mock_anthropic_module}):
+            result = VideoBuilder.extract_key_phrases("some script", api_key="fake")
+
+        assert result == []
+
+    def test_render_kinetic_overlay_pil_shape(self) -> None:
+        from src.media.video_builder import VideoBuilder
+        import numpy as np
+        frame = VideoBuilder._render_kinetic_overlay_pil("78 percent", 1080, 1920)
+        assert isinstance(frame, np.ndarray)
+        assert frame.shape == (1920, 1080, 4)
+
+    def test_render_kinetic_overlay_pil_scale_larger(self) -> None:
+        from src.media.video_builder import VideoBuilder
+        import numpy as np
+        frame = VideoBuilder._render_kinetic_overlay_pil("test", 1080, 1920, scale=1.2)
+        assert frame.shape == (1920, 1080, 4)
+
+    def test_render_kinetic_overlay_pil_alpha_mult(self) -> None:
+        from src.media.video_builder import VideoBuilder
+        import numpy as np
+        full = VideoBuilder._render_kinetic_overlay_pil("test", 200, 400, alpha_mult=1.0)
+        faded = VideoBuilder._render_kinetic_overlay_pil("test", 200, 400, alpha_mult=0.0)
+        # faded frame should have lower or equal max alpha
+        assert faded[:, :, 3].max() <= full[:, :, 3].max()

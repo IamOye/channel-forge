@@ -246,3 +246,110 @@ class TestHookGeneratorGenerate:
         import json as _json
         serialised = _json.dumps(d)
         assert len(serialised) > 10
+
+
+# ---------------------------------------------------------------------------
+# Hook formula scoring (new Phase 3 fields)
+# ---------------------------------------------------------------------------
+
+
+class TestHookVariantNewScores:
+    def test_new_scores_default_zero(self) -> None:
+        v = HookVariant(text="test hook", curiosity_score=5.0, clarity_score=5.0)
+        assert v.open_loop_score == 0.0
+        assert v.personal_relevance_score == 0.0
+        assert v.contradiction_score == 0.0
+
+    def test_combined_uses_new_scores_when_set(self) -> None:
+        v = HookVariant(
+            text="test",
+            curiosity_score=5.0,
+            clarity_score=5.0,
+            open_loop_score=9.0,
+            personal_relevance_score=7.0,
+            contradiction_score=8.0,
+        )
+        assert abs(v.combined_score - (9.0 + 7.0 + 8.0) / 3.0) < 0.001
+
+    def test_combined_falls_back_to_old_scores_when_new_are_zero(self) -> None:
+        v = HookVariant(text="test", curiosity_score=8.0, clarity_score=6.0)
+        assert v.combined_score == 7.0  # (8 + 6) / 2
+
+    def test_formula_field_defaults_zero(self) -> None:
+        v = HookVariant(text="test hook", curiosity_score=5.0, clarity_score=5.0)
+        assert v.formula == 0
+
+    def test_parse_variants_reads_new_fields(self) -> None:
+        import json
+        gen = HookGenerator(api_key="")
+        payload = [
+            {
+                "text": "hook text",
+                "formula": 2,
+                "open_loop": 8,
+                "personal_relevance": 7,
+                "contradiction": 9,
+            }
+        ] + [
+            {"text": f"h{i}", "formula": i + 1, "open_loop": 5, "personal_relevance": 5, "contradiction": 5}
+            for i in range(4)
+        ]
+        variants = gen._parse_variants(json.dumps(payload))
+        assert variants[0].open_loop_score == 8.0
+        assert variants[0].personal_relevance_score == 7.0
+        assert variants[0].contradiction_score == 9.0
+
+    def test_five_formulas_produce_different_texts(self) -> None:
+        """Claude prompt should produce 5 different formula-based hooks."""
+        import json
+        from unittest.mock import MagicMock, patch
+
+        payload = [
+            {"text": f"Formula {i+1} hook text example here", "formula": i+1,
+             "open_loop": 7, "personal_relevance": 6, "contradiction": 8}
+            for i in range(5)
+        ]
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = MagicMock(
+            content=[MagicMock(text=json.dumps(payload))]
+        )
+        with patch("src.content.hook_generator.anthropic.Anthropic", return_value=mock_client):
+            gen = HookGenerator(api_key="fake")
+            result = gen.generate(topic="passive income", score=80.0, emotion="shock")
+
+        texts = {v.text for v in result.variants}
+        assert len(texts) == 5  # all unique
+
+    def test_system_prompt_contains_formula_names(self) -> None:
+        from src.content.hook_generator import _SYSTEM_PROMPT
+        assert "CONTRADICTION" in _SYSTEM_PROMPT
+        assert "PERSONAL ACCUSATION" in _SYSTEM_PROMPT
+        assert "INSIDER SECRET" in _SYSTEM_PROMPT
+        assert "UNCOMFORTABLE TRUTH" in _SYSTEM_PROMPT
+        assert "PATTERN INTERRUPT" in _SYSTEM_PROMPT
+
+    def test_system_prompt_no_yes_no_questions_rule(self) -> None:
+        from src.content.hook_generator import _SYSTEM_PROMPT
+        assert "yes/no" in _SYSTEM_PROMPT.lower() or "yes-no" in _SYSTEM_PROMPT.lower()
+
+    def test_to_dict_includes_new_score_fields(self) -> None:
+        import json
+        from unittest.mock import MagicMock, patch
+
+        payload = [
+            {"text": f"h{i}", "formula": i+1,
+             "open_loop": 7, "personal_relevance": 6, "contradiction": 8}
+            for i in range(5)
+        ]
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = MagicMock(
+            content=[MagicMock(text=json.dumps(payload))]
+        )
+        with patch("src.content.hook_generator.anthropic.Anthropic", return_value=mock_client):
+            gen = HookGenerator(api_key="fake")
+            result = gen.generate(topic="test", score=70.0, emotion="curiosity")
+
+        d = result.to_dict()
+        assert "best_open_loop" in d
+        assert "best_personal_relevance" in d
+        assert "best_contradiction" in d

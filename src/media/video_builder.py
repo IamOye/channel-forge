@@ -145,6 +145,7 @@ class VideoBuilder:
         stock_video_path: str | Path | list[str | Path],
         cta_overlay: str = "",
         word_timestamps: list[dict] | None = None,
+        anthropic_api_key: str = "",
     ) -> BuildResult:
         """
         Build and export the final video MP4.
@@ -201,6 +202,8 @@ class VideoBuilder:
                 audio_path=audio_path,
                 word_timestamps=word_timestamps,
                 cta_overlay=cta_overlay,
+                anthropic_api_key=anthropic_api_key,
+                script_dict=script_dict,
             )
         else:
             # ── Legacy single-pass moviepy path (used by tests) ───────────────
@@ -243,6 +246,8 @@ class VideoBuilder:
         audio_path: Path,
         word_timestamps: list[dict],
         cta_overlay: str,
+        anthropic_api_key: str = "",
+        script_dict: dict[str, str] | None = None,
     ) -> float:
         """
         Pure single-pass ffmpeg render — no moviepy in the hot path.
@@ -325,17 +330,66 @@ class VideoBuilder:
 
         blank = np.zeros((H, W, 4), dtype=np.uint8)
 
-        def get_caption_frame(t: float) -> np.ndarray:
-            idx = bisect.bisect_right(start_times, t) - 1
-            base = states[idx] if (states and 0 <= idx < len(states)) else blank
-            if cta_rgba is not None and cta_start_t <= t <= cta_end_t:
-                return _alpha_composite_rgba(base, cta_rgba)
-            return base
-
         logger.info(
             "TIMING caption_prebake=%.3fs (%d states)",
             time.perf_counter() - t_caps, len(states),
         )
+
+        # ── Kinetic text overlays ──────────────────────────────────────────────
+        kinetic_overlays: list[tuple[float, float, "np.ndarray", "np.ndarray"]] = []
+        # (start_t, end_t, entrance_frame, stable_frame)
+
+        OVERLAY_ENTRANCE_DUR = 0.12
+        OVERLAY_EXIT_DUR     = 0.15
+        OVERLAY_DURATION     = 1.5
+        HOOK_GUARD           = 2.0
+        CTA_GUARD            = 3.0
+
+        avail_start = HOOK_GUARD
+        avail_end   = actual_duration - CTA_GUARD
+
+        if script_dict and anthropic_api_key and (avail_end - avail_start) > OVERLAY_DURATION:
+            full_script = " ".join(filter(None, [
+                script_dict.get("hook", ""),
+                script_dict.get("statement", ""),
+                script_dict.get("twist", ""),
+                script_dict.get("question", ""),
+            ]))
+            phrases = self.extract_key_phrases(full_script, anthropic_api_key)
+            n_overlays = min(len(phrases), 3)
+            if n_overlays > 0:
+                span = avail_end - avail_start
+                spacing = span / (n_overlays + 1)
+                for k, phrase in enumerate(phrases[:n_overlays]):
+                    t_center = avail_start + spacing * (k + 1)
+                    t_start  = t_center - OVERLAY_DURATION / 2
+                    t_end    = t_start + OVERLAY_DURATION
+                    stable_frame   = self._render_kinetic_overlay_pil(phrase, W, H, scale=1.0, alpha_mult=1.0)
+                    entrance_frame = self._render_kinetic_overlay_pil(phrase, W, H, scale=1.2, alpha_mult=1.0)
+                    kinetic_overlays.append((t_start, t_end, entrance_frame, stable_frame))
+                logger.info("[kinetic] %d overlay(s) scheduled", len(kinetic_overlays))
+
+        def get_caption_frame(t: float) -> np.ndarray:
+            idx = bisect.bisect_right(start_times, t) - 1
+            base = states[idx] if (states and 0 <= idx < len(states)) else blank
+            if cta_rgba is not None and cta_start_t <= t <= cta_end_t:
+                base = _alpha_composite_rgba(base, cta_rgba)
+            # Kinetic text overlays
+            for (ov_start, ov_end, entrance_frame, stable_frame) in kinetic_overlays:
+                if ov_start <= t <= ov_end:
+                    rel = t - ov_start
+                    if rel < OVERLAY_ENTRANCE_DUR:
+                        # Use pre-rendered entrance frame (larger scale)
+                        base = _alpha_composite_rgba(base, entrance_frame)
+                    elif t > ov_end - OVERLAY_EXIT_DUR:
+                        # Fade exit: alpha drops 1→0
+                        progress = (t - (ov_end - OVERLAY_EXIT_DUR)) / OVERLAY_EXIT_DUR
+                        alpha = 1.0 - progress
+                        fade_frame = (stable_frame.astype(np.float32) * alpha).astype(np.uint8)
+                        base = _alpha_composite_rgba(base, fade_frame)
+                    else:
+                        base = _alpha_composite_rgba(base, stable_frame)
+            return base
 
         # ── Step 1: Pre-process each b-roll clip → normalised temp file ───────────
         # Each clip is independently re-encoded to 30fps, WxH, trimmed (with loop
@@ -742,6 +796,157 @@ class VideoBuilder:
         if len(cuts) < needed:
             return [audio_duration * i / n_clips for i in range(1, n_clips)]
         return cuts[:needed]
+
+    @staticmethod
+    def extract_key_phrases(script: str, api_key: str = "") -> list[str]:
+        """
+        Call Claude API to extract up to 3 key phrases from the script for
+        kinetic text overlays.
+
+        Args:
+            script: Full script text (all 4 parts joined).
+            api_key: Anthropic API key. If empty, reads ANTHROPIC_API_KEY from env.
+
+        Returns:
+            List of 0–3 strings (max 4 words each). Returns [] on any failure.
+        """
+        import json as _json
+        import os
+
+        key = api_key or os.getenv("ANTHROPIC_API_KEY", "")
+        if not key or not script.strip():
+            return []
+        try:
+            import anthropic
+            client = anthropic.Anthropic(api_key=key)
+            prompt = (
+                "Extract up to 3 key phrases or statistics from this script that would look "
+                "powerful displayed as bold text overlays on screen.\n"
+                "Return JSON array of strings only.\n"
+                "Max 3 items. Max 4 words each.\n"
+                "Prefer numbers, percentages, and short punchy statements.\n"
+                f"Script: {script}"
+            )
+            message = client.messages.create(
+                model="claude-sonnet-4-5",
+                max_tokens=80,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            raw = message.content[0].text.strip()
+            if raw.startswith("```"):
+                raw = "\n".join(
+                    line for line in raw.splitlines()
+                    if not line.strip().startswith("```")
+                ).strip()
+            phrases = _json.loads(raw)
+            if isinstance(phrases, list):
+                return [str(p).strip() for p in phrases[:3] if str(p).strip()]
+        except Exception as exc:
+            logger.warning("[kinetic] phrase extraction failed: %s", exc)
+        return []
+
+    @staticmethod
+    def _render_kinetic_overlay_pil(
+        text: str,
+        canvas_w: int,
+        canvas_h: int,
+        scale: float = 1.0,
+        alpha_mult: float = 1.0,
+    ) -> "np.ndarray":
+        """
+        Pre-render a kinetic text overlay as RGBA numpy array.
+
+        The overlay is a white bold text on a semi-transparent black rounded pill,
+        centred horizontally at y=42% of canvas height.
+
+        Args:
+            text:       Text to display.
+            canvas_w:   Canvas width.
+            canvas_h:   Canvas height.
+            scale:      Scale factor (1.0 = normal, 1.2 = entrance slam).
+            alpha_mult: Alpha multiplier for fade-out (0.0–1.0).
+
+        Returns:
+            RGBA uint8 numpy array of shape (canvas_h, canvas_w, 4).
+        """
+        import numpy as np
+        from PIL import Image, ImageDraw, ImageFont
+
+        FONT_SIZE = 88
+        PILL_ALPHA = int(165 * alpha_mult)  # 65% opacity pill
+        TEXT_ALPHA = int(255 * alpha_mult)
+        CORNER_R = 16
+        PAD_X, PAD_Y = 28, 16
+
+        # Load font
+        font = None
+        font_paths = [
+            "C:/Windows/Fonts/ariblk.ttf",
+            "C:/Windows/Fonts/arialbd.ttf",
+            "/usr/share/fonts/truetype/msttcorefonts/Arial_Black.ttf",
+            None,
+        ]
+        for fp in font_paths:
+            if fp is None:
+                font = ImageFont.load_default()
+                break
+            try:
+                font = ImageFont.truetype(fp, FONT_SIZE)
+                break
+            except (IOError, OSError):
+                continue
+
+        # Measure text
+        try:
+            bb = font.getbbox(text)
+            tw, th = bb[2] - bb[0], bb[3] - bb[1]
+        except Exception:
+            tw, th = int(FONT_SIZE * len(text) * 0.55), FONT_SIZE
+
+        pill_w = int(tw + 2 * PAD_X)
+        pill_h = int(th + 2 * PAD_Y)
+
+        # Apply scale (for entrance animation)
+        scaled_w = int(pill_w * scale)
+        scaled_h = int(pill_h * scale)
+
+        # Create pill image
+        pill_img = Image.new("RGBA", (max(1, scaled_w), max(1, scaled_h)), (0, 0, 0, 0))
+        d = ImageDraw.Draw(pill_img)
+        d.rounded_rectangle(
+            [0, 0, max(1, scaled_w) - 1, max(1, scaled_h) - 1],
+            radius=int(CORNER_R * scale),
+            fill=(0, 0, 0, PILL_ALPHA),
+        )
+
+        # Text centred in pill (scale font proportionally)
+        if scale != 1.0:
+            scaled_font_size = max(1, int(FONT_SIZE * scale))
+            scaled_font = None
+            for fp in font_paths:
+                if fp is None:
+                    scaled_font = ImageFont.load_default()
+                    break
+                try:
+                    scaled_font = ImageFont.truetype(fp, scaled_font_size)
+                    break
+                except (IOError, OSError):
+                    continue
+        else:
+            scaled_font = font
+
+        tx = (scaled_w - int(tw * scale)) // 2
+        ty = (scaled_h - int(th * scale)) // 2
+        d.text((tx, ty), text, font=scaled_font, fill=(255, 255, 255, TEXT_ALPHA))
+
+        # Compose onto full canvas at y=42%
+        canvas = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
+        center_y = int(canvas_h * 0.42)
+        x0 = (canvas_w - scaled_w) // 2
+        y0 = center_y - scaled_h // 2
+        canvas.paste(pill_img, (x0, y0), pill_img)
+
+        return np.array(canvas, dtype=np.uint8)
 
 
 # ---------------------------------------------------------------------------
