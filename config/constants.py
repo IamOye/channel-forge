@@ -185,6 +185,53 @@ FALLBACK_TOPICS: dict[str, list[str]] = {
 }
 
 # ---------------------------------------------------------------------------
+# Competitor channels to monitor for topic research
+# ---------------------------------------------------------------------------
+
+COMPETITOR_CHANNELS: dict[str, list[dict[str, str]]] = {
+    "money": [
+        {"name": "GrahamStephan",        "id": "UCV6KDgJskWaEckne5aPA0aQ"},
+        {"name": "AndreiJikh",           "id": "UCGy7SkBjcIAgTiwkXEtPnYg"},
+        {"name": "MinorityMindset",      "id": "UCT3EznhW_CNFcfOlyDNTLLQ"},
+        {"name": "WallStreetMillennial", "id": "UCeugSTiqaIoqCVHkkGQYDjg"},
+        {"name": "JarradMorrow",         "id": "UCamg5A4wQRIVEFDXSBVmtkg"},
+    ],
+    "career": [
+        {"name": "AliAbdaal",    "id": "UCoOae5nYA7VqaXzerajD0lg"},
+        {"name": "JeffSu",       "id": "UC8wqCr7GfXWRpFbMIQWbVAQ"},
+        {"name": "LindaRaynier", "id": "UCKrqnTQILduMtTQTGGmFRcQ"},
+    ],
+    "success": [
+        {"name": "ImpactTheory", "id": "UCnYMOamNKLGVlJgRUbamveA"},
+        {"name": "LewisHowes",  "id": "UCKnzDQGO2bNy0sXFPLGT1OA"},
+        {"name": "BrianTracy",  "id": "UCkKNXIzv86vLhoBiMRzV_9A"},
+    ],
+}
+
+# Finance keywords cycled through for YouTube trending/Shorts searches
+FINANCE_SEARCH_KEYWORDS: list[str] = [
+    "money", "salary", "wealth", "investing",
+    "passive income", "financial freedom",
+    "debt", "stocks", "real estate", "side hustle",
+]
+
+# ---------------------------------------------------------------------------
+# Topic source priority scores (higher = pick first)
+# ---------------------------------------------------------------------------
+
+SOURCE_PRIORITIES: dict[str, int] = {
+    "VIEWER_REQUESTED":       100,   # viewers asked via comment
+    "COMPETITOR_HIGH_SIGNAL":  90,   # competitor video > 100k views / 30 days
+    "YOUTUBE_TRENDING":        80,   # trending / high-view search result
+    "GOOGLE_TRENDS":           70,   # pytrends interest signal
+    "YOUTUBE_KEYWORD":         60,   # general YouTube keyword signal
+    "FALLBACK":                50,   # pre-written fallback list
+}
+
+# Minimum view count for a competitor video to be treated as a HIGH_SIGNAL topic
+COMPETITOR_HIGH_SIGNAL_MIN_VIEWS: int = 100_000
+
+# ---------------------------------------------------------------------------
 # Script limits
 # ---------------------------------------------------------------------------
 

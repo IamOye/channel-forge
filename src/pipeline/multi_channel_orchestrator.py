@@ -196,28 +196,33 @@ class MultiChannelOrchestrator:
 
     def _load_topics(self, channel_cfg, max_topics: int) -> list[dict[str, Any]]:
         """
-        Load up to max_topics items from the scored_topics table for this channel.
+        Load up to max_topics unused topics for a channel, ordered by priority.
 
-        Tries the channel-specific DB first, then the shared channel_forge.db.
-        Creates the scored_topics table if it doesn't exist (ensures DB is
-        always in a valid state even on first run).
-        Falls back to one random FALLBACK_TOPICS entry when the table is empty.
+        Uses TopicQueue which:
+          1. Queries competitor_topics + scored_topics across all sources
+          2. Orders by SOURCE_PRIORITIES (VIEWER_REQUESTED first, FALLBACK last)
+          3. Deduplicates against upload history (difflib similarity > 70%)
+          4. Falls back to FALLBACK_TOPICS constants when DB is empty
+          5. Calls Claude as a last resort to generate a fresh topic
+
+        Also ensures the scored_topics table exists in the target DB.
         """
-        import random
         import sqlite3
 
-        from config.constants import FALLBACK_TOPICS
+        from src.pipeline.topic_queue import TopicQueue
 
-        db_path   = self.base_db_dir / f"{channel_cfg.channel_key}.db"
+        channel_key = channel_cfg.channel_key
+        category    = getattr(channel_cfg, "category", "money")
+
+        db_path   = self.base_db_dir / f"{channel_key}.db"
         main_db   = self.base_db_dir / "channel_forge.db"
         db_to_use = db_path if db_path.exists() else main_db
 
-        rows: list[tuple] = []
+        # Ensure scored_topics table exists in whichever DB we'll use
         try:
             db_to_use.parent.mkdir(parents=True, exist_ok=True)
             conn = sqlite3.connect(db_to_use)
             try:
-                # Ensure table exists so the query never raises OperationalError
                 conn.execute("""
                     CREATE TABLE IF NOT EXISTS scored_topics (
                         id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -229,55 +234,35 @@ class MultiChannelOrchestrator:
                     )
                 """)
                 conn.commit()
-                rows = conn.execute(
-                    """
-                    SELECT keyword, category, score
-                    FROM scored_topics
-                    ORDER BY score DESC
-                    LIMIT ?
-                    """,
-                    (max_topics,),
-                ).fetchall()
             finally:
                 conn.close()
         except Exception as exc:
-            logger.warning(
-                "Could not load topics for channel '%s': %s",
-                channel_cfg.channel_key, exc,
-            )
+            logger.warning("Could not ensure scored_topics table for '%s': %s", channel_key, exc)
 
-        if rows:
-            topics: list[dict[str, Any]] = []
-            for i, row in enumerate(rows):
-                topics.append({
-                    "topic_id": f"{channel_cfg.channel_key}_topic_{i:03d}",
-                    "keyword":  row[0],
-                    "category": row[1],
-                    "score":    row[2],
-                })
-            return topics
+        # Build topic queue backed by the channel's DB
+        queue = TopicQueue(db_path=db_to_use)
+        uploaded = queue.get_uploaded_topics()
 
-        # scored_topics is empty — use one random fallback topic
-        category = getattr(channel_cfg, "category", "money")
-        fallbacks = FALLBACK_TOPICS.get(category) or FALLBACK_TOPICS.get("money", [])
-        if fallbacks:
-            keyword = random.choice(fallbacks)
-            logger.info(
-                "scored_topics empty for channel '%s' — using fallback topic: %r",
-                channel_cfg.channel_key, keyword,
-            )
-            return [{
-                "topic_id": f"{channel_cfg.channel_key}_fallback_000",
-                "keyword":  keyword,
-                "category": category,
-                "score":    50.0,
-            }]
-
-        logger.warning(
-            "No topics and no fallbacks available for channel '%s'",
-            channel_cfg.channel_key,
+        raw_topics = queue.get_next_topics(
+            category=category,
+            max_count=max_topics,
+            uploaded_topics=uploaded,
         )
-        return []
+
+        # Stamp with stable topic_ids for this channel
+        topics: list[dict[str, Any]] = []
+        for i, t in enumerate(raw_topics):
+            topics.append({
+                "topic_id": t.get("topic_id") or f"{channel_key}_topic_{i:03d}",
+                "keyword":  t["keyword"],
+                "category": t.get("category", category),
+                "score":    t.get("score", 50.0),
+            })
+
+        if not topics:
+            logger.warning("No topics available for channel '%s'", channel_key)
+
+        return topics
 
     def _build_pipeline(self, channel_cfg, db_path: Path):
         """Instantiate ProductionPipeline for the given channel."""

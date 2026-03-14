@@ -202,11 +202,29 @@ CREATE INDEX IF NOT EXISTS idx_results_topic ON production_results (topic_id);
 CREATE INDEX IF NOT EXISTS idx_results_valid ON production_results (is_valid);
 """
 
+COMPETITOR_TOPICS_DDL = """
+CREATE TABLE IF NOT EXISTS competitor_topics (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel_name    TEXT    NOT NULL,
+    original_title  TEXT    NOT NULL,
+    extracted_topic TEXT    NOT NULL,
+    view_count      INTEGER NOT NULL DEFAULT 0,
+    category        TEXT    NOT NULL DEFAULT 'money',
+    source          TEXT    NOT NULL DEFAULT 'competitor',
+    used            INTEGER NOT NULL DEFAULT 0,          -- 1 = already produced
+    scraped_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_comp_category  ON competitor_topics (category);
+CREATE INDEX IF NOT EXISTS idx_comp_views     ON competitor_topics (view_count DESC);
+CREATE INDEX IF NOT EXISTS idx_comp_used      ON competitor_topics (used);
+"""
+
 # Unified main DB gets all tables
 MAIN_DDL_PARTS = [
     TRENDS_DDL, SAFETY_DDL, SCORES_DDL, TITLES_DDL, VIDEO_IDEAS_DDL,
     SCORED_TOPICS_DDL, UPLOADED_VIDEOS_DDL, VIDEO_METRICS_DDL,
-    OPTIMIZATION_LOG_DDL, PRODUCTION_RESULTS_DDL,
+    OPTIMIZATION_LOG_DDL, PRODUCTION_RESULTS_DDL, COMPETITOR_TOPICS_DDL,
 ]
 
 

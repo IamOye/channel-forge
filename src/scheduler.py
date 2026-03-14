@@ -129,6 +129,43 @@ def run_daily_analytics() -> None:
         logger.info("[scheduler] run_daily_analytics END (%.1fs)", elapsed)
 
 
+def run_competitor_research() -> None:
+    """Scrape competitor channels and trending finance topics (runs every 12 h)."""
+    start = datetime.now(timezone.utc)
+    logger.info("[scheduler] run_competitor_research START %s", start.isoformat())
+    try:
+        from src.crawler.competitor_scraper import CompetitorScraper  # lazy
+        from config.channels import CHANNELS  # lazy
+
+        scraper = CompetitorScraper()
+        for channel in CHANNELS:
+            category = getattr(channel, "category", "money")
+            try:
+                topics = scraper.scrape_competitor_topics(category)
+                logger.info(
+                    "[scheduler] Competitor topics for '%s': %d",
+                    channel.channel_key, len(topics),
+                )
+            except Exception as exc:
+                logger.error(
+                    "[scheduler] Competitor scrape failed for '%s': %s",
+                    channel.channel_key, exc,
+                )
+
+        # Also scrape trending finance topics (shared across all channels)
+        try:
+            trending = scraper.scrape_trending_finance_topics()
+            logger.info("[scheduler] Trending finance topics: %d", len(trending))
+        except Exception as exc:
+            logger.error("[scheduler] Trending finance scrape failed: %s", exc)
+
+    except Exception as exc:
+        logger.error("[scheduler] run_competitor_research ERROR: %s", exc)
+    finally:
+        elapsed = (datetime.now(timezone.utc) - start).total_seconds()
+        logger.info("[scheduler] run_competitor_research END (%.1fs)", elapsed)
+
+
 def run_weekly_optimization() -> None:
     """Analyze performance data and inject optimized topics (runs weekly)."""
     start = datetime.now(timezone.utc)
@@ -210,6 +247,16 @@ def build_scheduler(timezone_name: str | None = None) -> BlockingScheduler:
         misfire_grace_time=300,
     )
 
+    # --- Competitor research: every 12 h at 00:00 and 12:00 ---
+    scheduler.add_job(
+        run_competitor_research,
+        trigger=CronTrigger(hour="0,12", minute=0, timezone=tz),
+        id="competitor_research",
+        name="Competitor Research",
+        replace_existing=True,
+        misfire_grace_time=600,
+    )
+
     # --- Optimization: every Sunday at 02:00 ---
     scheduler.add_job(
         run_weekly_optimization,
@@ -225,8 +272,6 @@ def build_scheduler(timezone_name: str | None = None) -> BlockingScheduler:
         misfire_grace_time=600,
     )
 
-    logger.info(
-        "[scheduler] Built scheduler with timezone '%s', %d jobs",
-        tz_name, len(scheduler.get_jobs()),
-    )
+    n_jobs = len(scheduler.get_jobs())
+    logger.info("[scheduler] Built scheduler with timezone '%s', %d jobs", tz_name, n_jobs)
     return scheduler
