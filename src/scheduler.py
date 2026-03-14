@@ -12,14 +12,16 @@ Timezone is read from the UPLOAD_TIMEZONE environment variable
 (default "Africa/Lagos").
 
 Usage:
-    from src.scheduler import build_scheduler
+    from src.scheduler import build_scheduler, run_startup_tasks
+    run_startup_tasks()     # seed topics + immediate scrape
     scheduler = build_scheduler()
-    scheduler.start()   # blocks until Ctrl-C
+    scheduler.start()       # blocks until Ctrl-C
 """
 
 import logging
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.blocking import BlockingScheduler
@@ -39,6 +41,99 @@ from config.constants import (
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_DB = Path(os.getenv("DB_PATH", "data/processed/channel_forge.db"))
+
+
+# ---------------------------------------------------------------------------
+# Startup helpers
+# ---------------------------------------------------------------------------
+
+
+def seed_scored_topics_if_empty(db_path: Path | None = None) -> int:
+    """
+    Seed scored_topics with FALLBACK_TOPICS if the table is empty.
+
+    Creates the table if it doesn't exist, then inserts all FALLBACK_TOPICS
+    entries so that the production pipeline always has topics to work with
+    even before the first scheduled scrape fires.
+
+    Args:
+        db_path: Path to the SQLite database. Defaults to DB_PATH env var or
+                 ``data/processed/channel_forge.db``.
+
+    Returns:
+        Number of rows inserted (0 when the table was already populated).
+    """
+    import sqlite3
+
+    from config.constants import FALLBACK_TOPICS
+
+    target = db_path or _DEFAULT_DB
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        conn = sqlite3.connect(target)
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS scored_topics (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    keyword    TEXT    NOT NULL,
+                    category   TEXT    NOT NULL DEFAULT 'success',
+                    score      REAL    NOT NULL DEFAULT 0,
+                    source     TEXT    NOT NULL DEFAULT 'manual',
+                    created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+                )
+            """)
+            count = conn.execute("SELECT COUNT(*) FROM scored_topics").fetchone()[0]
+            if count > 0:
+                logger.info(
+                    "[scheduler] scored_topics already has %d row(s) — skipping seed",
+                    count,
+                )
+                return 0
+
+            rows = [
+                (keyword, category, 50.0, "FALLBACK")
+                for category, keywords in FALLBACK_TOPICS.items()
+                for keyword in keywords
+            ]
+            conn.executemany(
+                "INSERT INTO scored_topics (keyword, category, score, source) VALUES (?, ?, ?, ?)",
+                rows,
+            )
+            conn.commit()
+            logger.info(
+                "[scheduler] Seeded scored_topics with %d fallback topic(s)", len(rows)
+            )
+            return len(rows)
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.error("[scheduler] seed_scored_topics_if_empty failed: %s", exc)
+        return 0
+
+
+def run_startup_tasks(db_path: Path | None = None) -> None:
+    """
+    Run once immediately when the scheduler process starts.
+
+    Steps:
+      1. Seed scored_topics with FALLBACK_TOPICS if the table is empty, so
+         production never fires with zero topics in the queue.
+      2. Run all channel scrapers immediately — don't wait for the first
+         scheduled cron hour.
+
+    Args:
+        db_path: Passed through to ``seed_scored_topics_if_empty``.
+    """
+    logger.info("[scheduler] Running startup tasks…")
+    seed_scored_topics_if_empty(db_path)
+    try:
+        run_all_channel_scrapers()
+    except Exception as exc:
+        logger.error("[scheduler] Startup scrape failed (non-fatal): %s", exc)
+    logger.info("[scheduler] Startup tasks complete")
 
 
 # ---------------------------------------------------------------------------

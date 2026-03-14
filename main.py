@@ -70,8 +70,9 @@ def cmd_run() -> int:
     """Start the blocking APScheduler. Press Ctrl-C to stop."""
     _check_ffmpeg()
     logger.info("Starting ChannelForge scheduler…")
-    from src.scheduler import build_scheduler  # lazy
+    from src.scheduler import build_scheduler, run_startup_tasks  # lazy
 
+    run_startup_tasks()  # seed fallback topics + immediate scrape
     scheduler = build_scheduler()
     try:
         logger.info("Scheduler running. Press Ctrl-C to exit.")

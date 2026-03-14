@@ -6,6 +6,8 @@ AnalyticsTracker, OptimizationLoop) are mocked — no real API calls or schedule
 blocking loops.
 """
 
+import sqlite3
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -307,3 +309,141 @@ class TestRunWeeklyOptimization:
         }):
             # Should not raise even when is_valid=False
             run_weekly_optimization()
+
+
+# ---------------------------------------------------------------------------
+# seed_scored_topics_if_empty
+# ---------------------------------------------------------------------------
+
+
+class TestSeedScoredTopicsIfEmpty:
+    def test_seeds_when_table_empty(self, tmp_path: Path) -> None:
+        from src.scheduler import seed_scored_topics_if_empty
+
+        db = tmp_path / "test.db"
+        inserted = seed_scored_topics_if_empty(db)
+
+        assert inserted > 0
+        conn = sqlite3.connect(db)
+        count = conn.execute("SELECT COUNT(*) FROM scored_topics").fetchone()[0]
+        conn.close()
+        assert count == inserted
+
+    def test_skips_when_already_populated(self, tmp_path: Path) -> None:
+        from src.scheduler import seed_scored_topics_if_empty
+
+        db = tmp_path / "test.db"
+        conn = sqlite3.connect(db)
+        conn.execute("""
+            CREATE TABLE scored_topics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                keyword TEXT NOT NULL,
+                category TEXT NOT NULL DEFAULT 'success',
+                score REAL NOT NULL DEFAULT 0,
+                source TEXT NOT NULL DEFAULT 'manual',
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        conn.execute(
+            "INSERT INTO scored_topics (keyword, category, score, source) VALUES (?, ?, ?, ?)",
+            ("existing topic", "money", 70.0, "manual"),
+        )
+        conn.commit()
+        conn.close()
+
+        inserted = seed_scored_topics_if_empty(db)
+        assert inserted == 0
+
+        conn = sqlite3.connect(db)
+        count = conn.execute("SELECT COUNT(*) FROM scored_topics").fetchone()[0]
+        conn.close()
+        assert count == 1  # unchanged
+
+    def test_creates_table_if_missing(self, tmp_path: Path) -> None:
+        from src.scheduler import seed_scored_topics_if_empty
+
+        db = tmp_path / "subdir" / "test.db"
+        seed_scored_topics_if_empty(db)
+
+        assert db.exists()
+        conn = sqlite3.connect(db)
+        tables = [r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()]
+        conn.close()
+        assert "scored_topics" in tables
+
+    def test_returns_zero_on_db_error(self, tmp_path: Path) -> None:
+        from src.scheduler import seed_scored_topics_if_empty
+
+        # Pass a path to a file that is not a valid SQLite DB
+        bad = tmp_path / "bad.db"
+        bad.write_bytes(b"not a sqlite database")
+
+        result = seed_scored_topics_if_empty(bad)
+        assert result == 0
+
+    def test_all_fallback_categories_seeded(self, tmp_path: Path) -> None:
+        from src.scheduler import seed_scored_topics_if_empty
+        from config.constants import FALLBACK_TOPICS
+
+        db = tmp_path / "test.db"
+        seed_scored_topics_if_empty(db)
+
+        conn = sqlite3.connect(db)
+        categories = {r[0] for r in conn.execute(
+            "SELECT DISTINCT category FROM scored_topics"
+        ).fetchall()}
+        conn.close()
+        assert categories == set(FALLBACK_TOPICS.keys())
+
+    def test_source_is_fallback(self, tmp_path: Path) -> None:
+        from src.scheduler import seed_scored_topics_if_empty
+
+        db = tmp_path / "test.db"
+        seed_scored_topics_if_empty(db)
+
+        conn = sqlite3.connect(db)
+        sources = {r[0] for r in conn.execute(
+            "SELECT DISTINCT source FROM scored_topics"
+        ).fetchall()}
+        conn.close()
+        assert sources == {"FALLBACK"}
+
+
+# ---------------------------------------------------------------------------
+# run_startup_tasks
+# ---------------------------------------------------------------------------
+
+
+class TestRunStartupTasks:
+    def test_seeds_and_scrapes(self, tmp_path: Path) -> None:
+        from src.scheduler import run_startup_tasks
+
+        db = tmp_path / "test.db"
+        scraper_called = {"n": 0}
+
+        def fake_scraper():
+            scraper_called["n"] += 1
+
+        with patch("src.scheduler.run_all_channel_scrapers", fake_scraper):
+            run_startup_tasks(db)
+
+        assert scraper_called["n"] == 1
+        conn = sqlite3.connect(db)
+        count = conn.execute("SELECT COUNT(*) FROM scored_topics").fetchone()[0]
+        conn.close()
+        assert count > 0
+
+    def test_does_not_raise_on_scraper_error(self, tmp_path: Path) -> None:
+        from src.scheduler import run_startup_tasks
+
+        db = tmp_path / "test.db"
+
+        with patch(
+            "src.scheduler.run_all_channel_scrapers",
+            side_effect=Exception("network down"),
+        ):
+            # seed_scored_topics_if_empty runs before run_all_channel_scrapers,
+            # and run_all_channel_scrapers already swallows its own errors
+            run_startup_tasks(db)
