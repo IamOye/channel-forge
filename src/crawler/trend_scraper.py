@@ -128,9 +128,75 @@ class GoogleTrendsScraper:
 
         return signals
 
+    def fetch_rising(
+        self, keywords: list[str], timeframe: str = "today 3-m"
+    ) -> list[TrendSignal]:
+        """
+        Fetch rising (momentum) related queries from Google Trends.
+
+        Rising queries represent search terms gaining momentum fast.
+        Scored 75 — higher than regular Google Trends top-query scores —
+        because they signal emerging demand before it peaks.
+
+        Args:
+            keywords: Seed keywords to look up.
+            timeframe: pytrends timeframe string.
+
+        Returns:
+            List of TrendSignal objects with source="rising_google" and
+            interest_score=75.0.
+        """
+        signals: list[TrendSignal] = []
+        for chunk in self._chunk(keywords, size=5):
+            chunk_signals = self._fetch_rising_chunk(chunk, timeframe)
+            signals.extend(chunk_signals)
+            time.sleep(1.0)
+        return signals
+
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    def _fetch_rising_chunk(
+        self, keywords: list[str], timeframe: str
+    ) -> list[TrendSignal]:
+        """Fetch rising related queries for a single chunk (≤5 keywords)."""
+        for attempt in range(1, self.retries + 1):
+            try:
+                self._pytrends.build_payload(
+                    keywords, cat=0, timeframe=timeframe, geo=self.region, gprop="",
+                )
+                related = self._pytrends.related_queries()
+                signals: list[TrendSignal] = []
+                for kw in keywords:
+                    if kw not in related:
+                        continue
+                    rising_df = related[kw].get("rising")
+                    if rising_df is None or rising_df.empty:
+                        continue
+                    for query in rising_df["query"].head(5).tolist():
+                        if query:
+                            signals.append(TrendSignal(
+                                keyword=query,
+                                source="rising_google",
+                                region=self.region,
+                                interest_score=75.0,
+                                raw_json={"parent_keyword": kw},
+                            ))
+                return signals
+            except Exception as exc:
+                logger.warning(
+                    "Rising trends attempt %d/%d failed for %s: %s",
+                    attempt, self.retries, keywords, exc,
+                )
+                if attempt < self.retries:
+                    time.sleep(self.backoff * attempt)
+                else:
+                    logger.error(
+                        "Giving up on rising trends for keywords: %s", keywords
+                    )
+                    return []
+        return []
 
     def _fetch_chunk(self, keywords: list[str], timeframe: str) -> list[TrendSignal]:
         """Fetch a single chunk (≤5 keywords) from Google Trends."""
@@ -439,6 +505,11 @@ class TrendScrapingEngine:
                 g_signals = self.google.fetch(keywords)
                 all_signals.extend(g_signals)
                 logger.info("Google Trends: %d signals returned", len(g_signals))
+                rising_signals = self.google.fetch_rising(keywords)
+                all_signals.extend(rising_signals)
+                logger.info(
+                    "Google Trends rising: %d signals returned", len(rising_signals)
+                )
             except Exception as exc:
                 logger.error("Google Trends fetch failed: %s", exc)
 

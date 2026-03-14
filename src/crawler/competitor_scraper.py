@@ -31,9 +31,11 @@ import httpx
 from dotenv import load_dotenv
 
 from config.constants import (
+    AUTOCOMPLETE_SEED_KEYWORDS,
     COMPETITOR_CHANNELS,
     COMPETITOR_HIGH_SIGNAL_MIN_VIEWS,
     FINANCE_SEARCH_KEYWORDS,
+    TRENDING_SEARCH_KEYWORDS,
 )
 
 load_dotenv()
@@ -41,6 +43,7 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 _YOUTUBE_BASE = "https://www.googleapis.com/youtube/v3"
+_AUTOCOMPLETE_URL = "http://suggestqueries.google.com/complete/search"
 _DEFAULT_DB = Path("data/processed/channel_forge.db")
 
 # Regex patterns that signal a viewer question
@@ -260,6 +263,117 @@ class CompetitorScraper:
         self._save_to_db(results)
         return [ct.extracted_topic for ct in results]
 
+    def scrape_search_autocomplete(self, category: str) -> list[str]:
+        """
+        Fetch YouTube search autocomplete suggestions for seed keywords.
+
+        Uses the YouTube Suggest API to discover what people are actively
+        typing right now — no API key required.
+
+        Args:
+            category: Channel category ("money", "career", "success").
+
+        Returns:
+            Deduplicated list of suggestion strings stored as AUTOCOMPLETE
+            topics (priority 85).
+        """
+        seeds = AUTOCOMPLETE_SEED_KEYWORDS.get(category, [])
+        if not seeds:
+            logger.warning("No autocomplete seeds for category '%s'", category)
+            return []
+
+        results: list[CompetitorTopic] = []
+        seen: set[str] = set()
+
+        for seed in seeds:
+            suggestions = self._fetch_autocomplete(seed)
+            for suggestion in suggestions:
+                key = suggestion.lower().strip()
+                if key and key not in seen:
+                    seen.add(key)
+                    results.append(CompetitorTopic(
+                        channel_name="youtube_autocomplete",
+                        original_title=seed,
+                        extracted_topic=suggestion,
+                        view_count=0,
+                        category=category,
+                        source="AUTOCOMPLETE",
+                    ))
+            time.sleep(0.3)
+
+        self._save_to_db(results)
+        logger.info(
+            "Autocomplete: %d topics scraped for category '%s'",
+            len(results), category,
+        )
+        return [ct.extracted_topic for ct in results]
+
+    def scrape_trending_search_topics(self, category: str = "money") -> list[str]:
+        """
+        Search YouTube for recent high-view Shorts, extract fresh topic angles.
+
+        Queries videos published in the last 7 days, ordered by viewCount,
+        with videoDuration=short. Claude extracts a concise topic angle from
+        each title. Stored as TRENDING_SEARCH priority (score 80).
+
+        Args:
+            category: Channel category for storing results.
+
+        Returns:
+            List of extracted topic strings (empty if no API key).
+        """
+        if not self.api_key:
+            logger.warning("YOUTUBE_API_KEY not set — skipping trending search")
+            return []
+
+        published_after = (
+            datetime.now(timezone.utc) - timedelta(days=7)
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        results: list[CompetitorTopic] = []
+        seen: set[str] = set()
+
+        for keyword in TRENDING_SEARCH_KEYWORDS:
+            params = {
+                "part":           "snippet",
+                "q":              f"{keyword} money 2026",
+                "type":           "video",
+                "order":          "viewCount",
+                "publishedAfter": published_after,
+                "videoDuration":  "short",
+                "regionCode":     "US",
+                "maxResults":     25,
+                "key":            self.api_key,
+            }
+            items = self._get(_YOUTUBE_BASE + "/search", params)
+            video_ids = [
+                i["id"]["videoId"] for i in items if "videoId" in i.get("id", {})
+            ]
+            stats_map = self._fetch_video_stats(video_ids) if video_ids else {}
+
+            for item in items[:5]:
+                title  = item.get("snippet", {}).get("title", "").strip()
+                vid_id = item.get("id", {}).get("videoId", "")
+                views  = stats_map.get(vid_id, 0)
+                title_key = title.lower()
+                if title and title_key not in seen:
+                    seen.add(title_key)
+                    topic = self._extract_trending_topic(title, views)
+                    if topic:
+                        results.append(CompetitorTopic(
+                            channel_name="trending_search",
+                            original_title=title,
+                            extracted_topic=topic,
+                            view_count=views,
+                            category=category,
+                            source="TRENDING_SEARCH",
+                        ))
+            time.sleep(0.5)
+
+        self._save_to_db(results)
+        logger.info("Trending search: %d topics scraped", len(results))
+        return [ct.extracted_topic for ct in results]
+
     # ------------------------------------------------------------------
     # Private: YouTube API helpers
     # ------------------------------------------------------------------
@@ -430,6 +544,76 @@ class CompetitorScraper:
                         ))
             time.sleep(0.3)
         return results
+
+    def _fetch_autocomplete(self, query: str) -> list[str]:
+        """
+        Call the YouTube Suggest API and return up to 10 suggestion strings.
+
+        The endpoint returns JSONP: window.google.ac.h(["query",[...],...])
+        Handles both JSONP and plain JSON response formats.
+        """
+        import json as _json
+
+        params = {"client": "youtube", "ds": "yt", "q": query}
+        try:
+            resp = self._client.get(_AUTOCOMPLETE_URL, params=params)
+            resp.raise_for_status()
+            text = resp.text.strip()
+
+            # Strip JSONP wrapper if present
+            if text.startswith("window.google.ac.h("):
+                text = text[len("window.google.ac.h("):]
+                if text.endswith(")"):
+                    text = text[:-1]
+
+            data = _json.loads(text)
+            suggestions_raw = data[1] if len(data) > 1 else []
+
+            suggestions: list[str] = []
+            for item in suggestions_raw:
+                if isinstance(item, list) and item:
+                    s = str(item[0]).strip()
+                    if s:
+                        suggestions.append(s)
+                elif isinstance(item, str) and item.strip():
+                    suggestions.append(item.strip())
+            return suggestions[:10]
+        except Exception as exc:
+            logger.warning("Autocomplete fetch failed for '%s': %s", query, exc)
+            return []
+
+    def _extract_trending_topic(self, title: str, view_count: int) -> str:
+        """
+        Extract a fresh topic angle from a trending video title.
+
+        Uses Claude with view-count context. Falls back to heuristic when
+        Claude API is unavailable.
+        """
+        if not self.anthropic_api_key:
+            return self._heuristic_extract(title)
+
+        views_str = f"{view_count:,}" if view_count else "many"
+        prompt = (
+            f"This YouTube Short got {views_str} views in 5 days. "
+            f"Extract the core financial topic as a fresh angle for a new video in under 10 words. "
+            f'Title: "{title}"\n'
+            f"Return only the new topic angle, plain lowercase, no hashtags."
+        )
+        try:
+            client = self._get_anthropic_client()
+            message = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=60,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            topic = message.content[0].text.strip().strip('"').strip("'")
+            word_count = len(topic.split())
+            if 3 <= word_count <= 15 and "http" not in topic:
+                return topic
+            return ""
+        except Exception as exc:
+            logger.warning("Trending topic extraction failed: %s", exc)
+            return self._heuristic_extract(title)
 
     # ------------------------------------------------------------------
     # Private: HTTP helper

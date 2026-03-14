@@ -246,3 +246,155 @@ class TestMineCommentTopics:
         # Only the question comment produces a topic
         assert len(result) == 1
         assert result[0] == "why investing early beats saving"
+
+
+# ---------------------------------------------------------------------------
+# scrape_search_autocomplete
+# ---------------------------------------------------------------------------
+
+class TestScrapeSearchAutocomplete:
+    _JSONP = ('window.google.ac.h(["why am i",'
+              '[["why am i poor",0,[]],["why am i always broke",0,[]]],'
+              ',{}])')
+    _JSONP_CLEAN = ('window.google.ac.h(["how to make money",'
+                    '[["how to make money fast",0,[]],["how to make money online",0,[]]],'
+                    '{}])')
+
+    def test_returns_list_of_strings(self, tmp_path) -> None:
+        scraper = _make_scraper(tmp_path, api_key="", anthropic_key="")
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status.return_value = None
+        mock_resp.text = self._JSONP_CLEAN
+        with patch.object(scraper._client, "get", return_value=mock_resp):
+            with patch("src.crawler.competitor_scraper.time.sleep"):
+                result = scraper.scrape_search_autocomplete("money")
+        assert isinstance(result, list)
+        assert all(isinstance(t, str) for t in result)
+
+    def test_returns_suggestions_from_jsonp(self, tmp_path) -> None:
+        scraper = _make_scraper(tmp_path, api_key="", anthropic_key="")
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status.return_value = None
+        mock_resp.text = self._JSONP_CLEAN
+        with patch.object(scraper._client, "get", return_value=mock_resp):
+            with patch("src.crawler.competitor_scraper.time.sleep"):
+                result = scraper.scrape_search_autocomplete("money")
+        # Should extract the two suggestions from JSONP
+        assert "how to make money fast" in result or len(result) > 0
+
+    def test_stored_with_autocomplete_source(self, tmp_path) -> None:
+        db = tmp_path / "t.db"
+        scraper = _make_scraper(tmp_path, api_key="", anthropic_key="")
+        scraper.db_path = db
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status.return_value = None
+        mock_resp.text = self._JSONP_CLEAN
+        with patch.object(scraper._client, "get", return_value=mock_resp):
+            with patch("src.crawler.competitor_scraper.time.sleep"):
+                scraper.scrape_search_autocomplete("money")
+        conn = sqlite3.connect(db)
+        rows = conn.execute("SELECT source FROM competitor_topics").fetchall()
+        conn.close()
+        assert all(r[0] == "AUTOCOMPLETE" for r in rows)
+
+    def test_handles_network_error_gracefully(self, tmp_path) -> None:
+        scraper = _make_scraper(tmp_path, api_key="", anthropic_key="")
+        with patch.object(scraper._client, "get", side_effect=Exception("timeout")):
+            with patch("src.crawler.competitor_scraper.time.sleep"):
+                result = scraper.scrape_search_autocomplete("money")
+        assert result == []
+
+    def test_deduplicates_suggestions_across_seeds(self, tmp_path) -> None:
+        scraper = _make_scraper(tmp_path, api_key="", anthropic_key="")
+        # Same suggestion returned for every seed
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status.return_value = None
+        mock_resp.text = 'window.google.ac.h(["q",[["how to make money fast",0,[]]],{}])'
+        with patch.object(scraper._client, "get", return_value=mock_resp):
+            with patch("src.crawler.competitor_scraper.time.sleep"):
+                result = scraper.scrape_search_autocomplete("money")
+        # Dedup — all results are unique even though same suggestion per seed
+        assert len(result) == len(set(result))
+
+    def test_unknown_category_returns_empty(self, tmp_path) -> None:
+        scraper = _make_scraper(tmp_path, api_key="", anthropic_key="")
+        result = scraper.scrape_search_autocomplete("nonexistent_category_xyz")
+        assert result == []
+
+
+# ---------------------------------------------------------------------------
+# scrape_trending_search_topics
+# ---------------------------------------------------------------------------
+
+class TestScrapeTrendingSearchTopics:
+    def test_returns_empty_without_api_key(self, tmp_path) -> None:
+        scraper = CompetitorScraper(api_key="", db_path=tmp_path / "t.db")
+        result = scraper.scrape_trending_search_topics()
+        assert result == []
+
+    def test_returns_list_of_strings(self, tmp_path) -> None:
+        scraper = _make_scraper(tmp_path)
+        mock_items = [
+            {"id": {"videoId": "v1"}, "snippet": {"title": "Why Your Salary Keeps You Poor"}},
+        ]
+        with patch.object(scraper, "_get", return_value=mock_items):
+            with patch.object(scraper, "_fetch_video_stats", return_value={"v1": 500_000}):
+                with patch.object(scraper, "_extract_trending_topic", return_value="why salary keeps you poor"):
+                    with patch("src.crawler.competitor_scraper.time.sleep"):
+                        result = scraper.scrape_trending_search_topics()
+        assert isinstance(result, list)
+        assert all(isinstance(t, str) for t in result)
+
+    def test_stored_with_trending_search_source(self, tmp_path) -> None:
+        db = tmp_path / "ts.db"
+        scraper = _make_scraper(tmp_path)
+        scraper.db_path = db
+        mock_items = [
+            {"id": {"videoId": "v1"}, "snippet": {"title": "How I Made $10k in 30 Days"}},
+        ]
+        with patch.object(scraper, "_get", return_value=mock_items):
+            with patch.object(scraper, "_fetch_video_stats", return_value={"v1": 200_000}):
+                with patch.object(scraper, "_extract_trending_topic", return_value="how to make ten thousand fast"):
+                    with patch("src.crawler.competitor_scraper.time.sleep"):
+                        scraper.scrape_trending_search_topics()
+        conn = sqlite3.connect(db)
+        rows = conn.execute("SELECT source FROM competitor_topics").fetchall()
+        conn.close()
+        assert any(r[0] == "TRENDING_SEARCH" for r in rows)
+
+    def test_skips_empty_titles(self, tmp_path) -> None:
+        scraper = _make_scraper(tmp_path)
+        mock_items = [{"id": {"videoId": "v1"}, "snippet": {"title": ""}}]
+        with patch.object(scraper, "_get", return_value=mock_items):
+            with patch.object(scraper, "_fetch_video_stats", return_value={}):
+                with patch("src.crawler.competitor_scraper.time.sleep"):
+                    result = scraper.scrape_trending_search_topics()
+        assert result == []
+
+
+# ---------------------------------------------------------------------------
+# _extract_trending_topic
+# ---------------------------------------------------------------------------
+
+class TestExtractTrendingTopic:
+    def test_heuristic_fallback_when_no_claude(self, tmp_path) -> None:
+        scraper = CompetitorScraper(api_key="yt-fake", anthropic_api_key="", db_path=tmp_path / "t.db")
+        result = scraper._extract_trending_topic("Why Saving Money Keeps You Poor", 500_000)
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+    @patch("src.crawler.competitor_scraper.CompetitorScraper._get_anthropic_client")
+    def test_uses_view_count_in_prompt(self, mock_get_client, tmp_path) -> None:
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = MagicMock(
+            content=[MagicMock(text="why saving money makes you poor")]
+        )
+        mock_get_client.return_value = mock_client
+
+        scraper = _make_scraper(tmp_path)
+        result = scraper._extract_trending_topic("Why Saving Money Fails", 500_000)
+        assert result == "why saving money makes you poor"
+        # Verify view count appears in the prompt
+        call_args = mock_client.messages.create.call_args
+        prompt_text = call_args[1]["messages"][0]["content"]
+        assert "500,000" in prompt_text

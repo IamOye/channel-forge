@@ -163,6 +163,94 @@ class TestGoogleTrendsScraper:
 
 
 # ---------------------------------------------------------------------------
+# GoogleTrendsScraper — fetch_rising
+# ---------------------------------------------------------------------------
+
+class TestGoogleTrendsFetchRising:
+    """Tests for the rising-query discovery method."""
+
+    def _make_related_with_rising(self, keywords: list[str]) -> dict:
+        return {
+            kw: {
+                "top":    pd.DataFrame({"query": [f"{kw} tutorial"], "value": [100]}),
+                "rising": pd.DataFrame({"query": [f"{kw} 2026", f"best {kw}"], "value": [500, 300]}),
+            }
+            for kw in keywords
+        }
+
+    @patch("src.crawler.trend_scraper.TrendReq")
+    def test_fetch_rising_returns_signals(self, mock_trend_req_cls) -> None:
+        keywords = ["money"]
+        mock_pt = MagicMock()
+        mock_pt.related_queries.return_value = self._make_related_with_rising(keywords)
+        mock_trend_req_cls.return_value = mock_pt
+
+        scraper = GoogleTrendsScraper()
+        with patch("src.crawler.trend_scraper.time.sleep"):
+            signals = scraper.fetch_rising(keywords)
+
+        assert len(signals) >= 1
+        assert all(s.source == "rising_google" for s in signals)
+
+    @patch("src.crawler.trend_scraper.TrendReq")
+    def test_rising_queries_scored_higher_than_top_queries(self, mock_trend_req_cls) -> None:
+        """Rising signals always carry score 75; regular Google Trends interest
+        is based on mean IOT which for this fixture is 55 — so rising wins."""
+        keywords = ["salary"]
+        iot_df = pd.DataFrame({"salary": [50.0, 55.0, 60.0], "isPartial": [False]*3})
+        related = {
+            "salary": {
+                "top":    pd.DataFrame({"query": ["salary negotiation"], "value": [80]}),
+                "rising": pd.DataFrame({"query": ["salary transparency 2026"], "value": [600]}),
+            }
+        }
+
+        mock_pt = MagicMock()
+        mock_pt.interest_over_time.return_value = iot_df
+        mock_pt.related_queries.return_value = related
+        mock_trend_req_cls.return_value = mock_pt
+
+        scraper = GoogleTrendsScraper()
+        with patch("src.crawler.trend_scraper.time.sleep"):
+            top_signals    = scraper.fetch(keywords)
+            rising_signals = scraper.fetch_rising(keywords)
+
+        assert len(top_signals) == 1
+        assert len(rising_signals) >= 1
+        top_score    = top_signals[0].interest_score     # ~55
+        rising_score = rising_signals[0].interest_score  # always 75
+        assert rising_score > top_score
+
+    @patch("src.crawler.trend_scraper.TrendReq")
+    def test_fetch_rising_handles_missing_rising_data(self, mock_trend_req_cls) -> None:
+        """When rising DataFrame is absent, fetch_rising returns empty list."""
+        mock_pt = MagicMock()
+        mock_pt.related_queries.return_value = {
+            "money": {"top": pd.DataFrame({"query": ["money tips"], "value": [100]})}
+            # "rising" key absent
+        }
+        mock_trend_req_cls.return_value = mock_pt
+
+        scraper = GoogleTrendsScraper()
+        with patch("src.crawler.trend_scraper.time.sleep"):
+            signals = scraper.fetch_rising(["money"])
+
+        assert signals == []
+
+    @patch("src.crawler.trend_scraper.TrendReq")
+    def test_fetch_rising_handles_exception_gracefully(self, mock_trend_req_cls) -> None:
+        mock_pt = MagicMock()
+        mock_pt.related_queries.side_effect = Exception("rate limited")
+        mock_trend_req_cls.return_value = mock_pt
+
+        scraper = GoogleTrendsScraper(retries=2)
+        with patch("src.crawler.trend_scraper.time.sleep"):
+            signals = scraper.fetch_rising(["money"])
+
+        assert signals == []
+
+
+# ---------------------------------------------------------------------------
 # YouTubeTrendsScraper
 # ---------------------------------------------------------------------------
 
@@ -273,6 +361,7 @@ class TestTrendScrapingEngine:
         mock_google.fetch.return_value = [
             TrendSignal(keyword="Python", source="google", interest_score=80.0)
         ]
+        mock_google.fetch_rising.return_value = []  # no rising signals in this test
         mock_google_cls.return_value = mock_google
 
         mock_yt = MagicMock()
@@ -289,7 +378,8 @@ class TestTrendScrapingEngine:
         signals = engine.fetch_all(["Python"])
         assert len(signals) == 2
         sources = {s.source for s in signals}
-        assert sources == {"google", "youtube"}
+        assert "google" in sources
+        assert "youtube" in sources
 
     def test_engine_disabled_sources(self) -> None:
         engine = TrendScrapingEngine(google_enabled=False, youtube_enabled=False)
@@ -297,6 +387,34 @@ class TestTrendScrapingEngine:
         assert engine.youtube is None
         signals = engine.fetch_all(["anything"])
         assert signals == []
+
+    @patch("src.crawler.trend_scraper.YouTubeTrendsScraper")
+    @patch("src.crawler.trend_scraper.GoogleTrendsScraper")
+    def test_fetch_all_includes_rising_signals(
+        self, mock_google_cls, mock_yt_cls
+    ) -> None:
+        """fetch_all propagates rising_google signals from fetch_rising."""
+        mock_google = MagicMock()
+        mock_google.fetch.return_value = [
+            TrendSignal(keyword="Python", source="google", interest_score=55.0)
+        ]
+        mock_google.fetch_rising.return_value = [
+            TrendSignal(keyword="Python 2026", source="rising_google", interest_score=75.0)
+        ]
+        mock_google_cls.return_value = mock_google
+
+        mock_yt = MagicMock()
+        mock_yt.fetch_for_keywords.return_value = []
+        mock_yt.fetch_trending.return_value = []
+        mock_yt_cls.return_value = mock_yt
+
+        engine = TrendScrapingEngine(youtube_enabled=False)
+        engine.google = mock_google
+        engine.youtube = None
+
+        signals = engine.fetch_all(["Python"])
+        sources = {s.source for s in signals}
+        assert "rising_google" in sources
 
     @patch("src.crawler.trend_scraper.GoogleTrendsScraper")
     def test_engine_handles_google_exception(self, mock_google_cls) -> None:

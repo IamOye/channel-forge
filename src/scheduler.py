@@ -47,24 +47,40 @@ logger = logging.getLogger(__name__)
 
 
 def run_all_channel_scrapers() -> None:
-    """Fetch fresh trend signals for every configured channel."""
+    """Fetch fresh trend signals and autocomplete topics for every configured channel."""
     start = datetime.now(timezone.utc)
     logger.info("[scheduler] run_all_channel_scrapers START %s", start.isoformat())
     try:
         from src.crawler.trend_scraper import TrendScrapingEngine  # lazy
+        from src.crawler.competitor_scraper import CompetitorScraper  # lazy
 
         engine = TrendScrapingEngine()
+        scraper = CompetitorScraper()
         from config.channels import CHANNELS  # lazy
 
         for channel in CHANNELS:
+            category = getattr(channel, "category", "money")
             try:
                 logger.info(
                     "[scheduler] Scraping trends for channel '%s'", channel.channel_key
                 )
-                engine.fetch_all(keywords=[channel.category])
+                engine.fetch_all(keywords=[category])
             except Exception as exc:
                 logger.error(
                     "[scheduler] Scraper failed for channel '%s': %s",
+                    channel.channel_key, exc,
+                )
+
+            # Autocomplete scraping runs alongside trends (every 6 h)
+            try:
+                ac_topics = scraper.scrape_search_autocomplete(category)
+                logger.info(
+                    "[scheduler] Autocomplete topics for '%s': %d",
+                    channel.channel_key, len(ac_topics),
+                )
+            except Exception as exc:
+                logger.error(
+                    "[scheduler] Autocomplete scrape failed for '%s': %s",
                     channel.channel_key, exc,
                 )
     except Exception as exc:
@@ -158,6 +174,15 @@ def run_competitor_research() -> None:
             logger.info("[scheduler] Trending finance topics: %d", len(trending))
         except Exception as exc:
             logger.error("[scheduler] Trending finance scrape failed: %s", exc)
+
+        # Trending search (recent high-view Shorts) — runs every 12 h
+        try:
+            trending_search = scraper.scrape_trending_search_topics()
+            logger.info(
+                "[scheduler] Trending search topics: %d", len(trending_search)
+            )
+        except Exception as exc:
+            logger.error("[scheduler] Trending search scrape failed: %s", exc)
 
     except Exception as exc:
         logger.error("[scheduler] run_competitor_research ERROR: %s", exc)

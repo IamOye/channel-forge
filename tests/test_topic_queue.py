@@ -261,6 +261,60 @@ class TestGetNextTopicsClaudeFallback:
 
 
 # ---------------------------------------------------------------------------
+# Priority queue ordering — all 9 levels
+# ---------------------------------------------------------------------------
+
+class TestPriorityOrdering:
+    def test_all_9_priority_levels_present(self) -> None:
+        from config.constants import SOURCE_PRIORITIES
+        expected = [
+            "VIEWER_REQUESTED", "COMPETITOR_HIGH_SIGNAL",
+            "AUTOCOMPLETE", "TRENDING_SEARCH", "YOUTUBE_TRENDING",
+            "RISING_GOOGLE_TRENDS", "GOOGLE_TRENDS", "YOUTUBE_KEYWORD", "FALLBACK",
+        ]
+        for src in expected:
+            assert src in SOURCE_PRIORITIES, f"Missing priority source: {src}"
+
+    def test_priority_ordering_top_to_bottom(self) -> None:
+        from config.constants import SOURCE_PRIORITIES
+        p = SOURCE_PRIORITIES
+        assert p["VIEWER_REQUESTED"]       > p["COMPETITOR_HIGH_SIGNAL"]
+        assert p["COMPETITOR_HIGH_SIGNAL"] > p["AUTOCOMPLETE"]
+        assert p["AUTOCOMPLETE"]           > p["RISING_GOOGLE_TRENDS"]
+        assert p["RISING_GOOGLE_TRENDS"]   > p["GOOGLE_TRENDS"]
+        assert p["GOOGLE_TRENDS"]          > p["YOUTUBE_KEYWORD"]
+        assert p["YOUTUBE_KEYWORD"]        > p["FALLBACK"]
+
+    def test_autocomplete_at_or_above_youtube_trending(self) -> None:
+        from config.constants import SOURCE_PRIORITIES
+        assert SOURCE_PRIORITIES["AUTOCOMPLETE"] >= SOURCE_PRIORITIES["YOUTUBE_TRENDING"]
+
+    def test_trending_search_equal_to_youtube_trending(self) -> None:
+        from config.constants import SOURCE_PRIORITIES
+        assert SOURCE_PRIORITIES["TRENDING_SEARCH"] == SOURCE_PRIORITIES["YOUTUBE_TRENDING"]
+
+    def test_rising_google_trends_above_google_trends(self) -> None:
+        from config.constants import SOURCE_PRIORITIES
+        assert SOURCE_PRIORITIES["RISING_GOOGLE_TRENDS"] > SOURCE_PRIORITIES["GOOGLE_TRENDS"]
+
+    def test_queue_ranks_autocomplete_before_fallback(self, tmp_path) -> None:
+        """AUTOCOMPLETE topics rank above FALLBACK in get_next_topics output."""
+        db = tmp_path / "test.db"
+        _insert_competitor_topics(db, [
+            ("autocomplete suggestion topic", 0, "money", "AUTOCOMPLETE"),
+        ])
+        queue = TopicQueue(db_path=db)
+        topics = queue.get_next_topics(category="money", max_count=5)
+        keywords = [t["keyword"] for t in topics]
+        assert "autocomplete suggestion topic" in keywords
+        ac_idx = keywords.index("autocomplete suggestion topic")
+        # All fallback topics (if any) must appear after the autocomplete topic
+        for i, t in enumerate(topics):
+            if t.get("source") == "FALLBACK":
+                assert ac_idx < i
+
+
+# ---------------------------------------------------------------------------
 # Scheduler integration — competitor_research job exists
 # ---------------------------------------------------------------------------
 

@@ -220,13 +220,42 @@ FINANCE_SEARCH_KEYWORDS: list[str] = [
 # ---------------------------------------------------------------------------
 
 SOURCE_PRIORITIES: dict[str, int] = {
-    "VIEWER_REQUESTED":       100,   # viewers asked via comment
-    "COMPETITOR_HIGH_SIGNAL":  90,   # competitor video > 100k views / 30 days
-    "YOUTUBE_TRENDING":        80,   # trending / high-view search result
-    "GOOGLE_TRENDS":           70,   # pytrends interest signal
-    "YOUTUBE_KEYWORD":         60,   # general YouTube keyword signal
-    "FALLBACK":                50,   # pre-written fallback list
+    "VIEWER_REQUESTED":        100,   # viewers asked via comment
+    "COMPETITOR_HIGH_SIGNAL":   90,   # competitor video > 100k views / 30 days
+    "AUTOCOMPLETE":             85,   # YouTube search autocomplete suggestions
+    "TRENDING_SEARCH":          80,   # recent high-view Shorts via YouTube search
+    "YOUTUBE_TRENDING":         80,   # trending / high-view search result
+    "RISING_GOOGLE_TRENDS":     75,   # rising related queries (gaining momentum)
+    "GOOGLE_TRENDS":            70,   # pytrends interest signal (top queries)
+    "YOUTUBE_KEYWORD":          60,   # general YouTube keyword signal
+    "FALLBACK":                 50,   # pre-written fallback list
 }
+
+# ---------------------------------------------------------------------------
+# Autocomplete seed keywords (per category) for YouTube suggest scraping
+# ---------------------------------------------------------------------------
+
+AUTOCOMPLETE_SEED_KEYWORDS: dict[str, list[str]] = {
+    "money": [
+        "why am i", "how to make money", "why rich people", "salary truth",
+        "financial freedom", "passive income", "how to invest", "why saving",
+    ],
+    "career": [
+        "why your job", "salary negotiation", "how to get promoted",
+        "quit your job", "side hustle", "work from home income",
+    ],
+    "success": [
+        "why successful people", "morning routine", "how to be successful",
+        "millionaire habits", "why most people fail", "growth mindset",
+    ],
+}
+
+# Keywords cycled for trending-search Shorts discovery (Source 2)
+TRENDING_SEARCH_KEYWORDS: list[str] = [
+    "salary", "investing", "passive income", "financial freedom",
+    "debt", "rich vs poor", "money mindset", "side hustle",
+    "stock market", "real estate",
+]
 
 # Minimum view count for a competitor video to be treated as a HIGH_SIGNAL topic
 COMPETITOR_HIGH_SIGNAL_MIN_VIEWS: int = 100_000
