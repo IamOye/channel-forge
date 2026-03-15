@@ -78,6 +78,9 @@ FALLBACK_CLIP_IDS: list[int] = [
     13111,   # investment portfolio review
 ]
 
+_PIXABAY_PHOTO_API_URL = "https://pixabay.com/api/"
+MAX_PHOTO_PORTRAIT_RATIO = 0.65  # width/height must be below this for portrait photos
+
 # Minimum relevance score to accept a clip (Claude scores 1–10)
 _MIN_RELEVANCE_SCORE = 6
 # Trigger additional human-focused search if fewer than this many clips pass scoring
@@ -438,6 +441,106 @@ class PixabayFetcher:
                 logger.warning("[pixabay] Fallback clip %d failed: %s", fid, exc)
 
         return paths
+
+    def fetch_photos(
+        self,
+        topic_id: str,
+        phrase: str,
+        count: int = 2,
+    ) -> list[dict]:
+        """Fetch portrait stock photos from Pixabay image API.
+
+        Filters: portrait only (width/height < MAX_PHOTO_PORTRAIT_RATIO = 0.65).
+        Downloads to output_dir/{topic_id}_photo_{n}.jpg.
+
+        Returns:
+            List of dicts with keys: id, local_path, width, height, tags.
+            Returns [] on API error (never raises).
+
+        Raises:
+            ValueError: If PIXABAY_API_KEY is not configured.
+        """
+        if not self.api_key:
+            raise ValueError("PIXABAY_API_KEY not set")
+
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+        params = {
+            "key":         self.api_key,
+            "q":           phrase,
+            "image_type":  "photo",
+            "orientation": "vertical",
+            "min_width":   1080,
+            "per_page":    20,
+            "safesearch":  "true",
+            "order":       "popular",
+        }
+        try:
+            resp = httpx.get(_PIXABAY_PHOTO_API_URL, params=params, timeout=REQUEST_TIMEOUT)
+            resp.raise_for_status()
+            hits = resp.json().get("hits", [])
+        except Exception as exc:
+            logger.error("[pixabay] Photo API call failed for query=%r: %s", phrase, exc)
+            return []
+
+        results: list[dict] = []
+        for hit in hits:
+            if len(results) >= count:
+                break
+            width  = int(hit.get("imageWidth", 0))
+            height = int(hit.get("imageHeight", 0))
+            if width < 1080 or height == 0:
+                continue
+            ratio = width / height
+            if ratio >= MAX_PHOTO_PORTRAIT_RATIO:
+                logger.debug(
+                    "[pixabay] Rejected photo %d — ratio %.2f not portrait",
+                    hit.get("id", 0), ratio,
+                )
+                continue
+
+            url = (
+                hit.get("fullHDURL")
+                or hit.get("largeImageURL")
+                or hit.get("webformatURL", "")
+            )
+            if not url:
+                continue
+
+            idx         = len(results)
+            output_path = self.output_dir / f"{topic_id}_photo_{idx}.jpg"
+            if not self._download_photo(url, output_path):
+                continue
+
+            results.append({
+                "id":         hit.get("id", 0),
+                "local_path": str(output_path),
+                "width":      width,
+                "height":     height,
+                "tags":       hit.get("tags", ""),
+            })
+            logger.info(
+                "[pixabay] Downloaded photo %d: %dx%d -> %s",
+                hit.get("id", 0), width, height, output_path,
+            )
+
+        return results
+
+    def _download_photo(self, url: str, output_path: Path) -> bool:
+        """Download a photo URL to output_path. Returns True on success."""
+        try:
+            with httpx.stream(
+                "GET", url, timeout=DOWNLOAD_TIMEOUT, follow_redirects=True
+            ) as resp:
+                resp.raise_for_status()
+                with open(output_path, "wb") as f:
+                    for chunk in resp.iter_bytes(chunk_size=65536):
+                        f.write(chunk)
+            return output_path.stat().st_size > 1024  # at least 1 KB
+        except Exception as exc:
+            logger.warning("[pixabay] Photo download failed for %s: %s", url, exc)
+            output_path.unlink(missing_ok=True)
+            return False
 
     # ------------------------------------------------------------------
     # Private helpers

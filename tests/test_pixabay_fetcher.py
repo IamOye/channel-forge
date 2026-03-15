@@ -542,3 +542,115 @@ class TestFetchMultiple:
         with patch.object(fetcher, "score_clip_relevance") as mock_score:
             fetcher.fetch_multiple("t1", ["phrase"], count=2)  # no topic
         mock_score.assert_not_called()
+
+# ---------------------------------------------------------------------------
+# fetch_photos — portrait photo API
+# ---------------------------------------------------------------------------
+
+
+def _make_photo_hit(pid: int, width: int, height: int) -> dict:
+    """Build a minimal Pixabay image API hit dict."""
+    return {
+        "id": pid,
+        "imageWidth": width,
+        "imageHeight": height,
+        "tags": f"photo_tag_{pid}",
+        "largeImageURL": f"https://cdn.pixabay.com/photo/{pid}.jpg",
+        "webformatURL":  f"https://cdn.pixabay.com/wf/{pid}.jpg",
+    }
+
+
+def _mock_photo_api_response(hits: list) -> MagicMock:
+    m = MagicMock()
+    m.raise_for_status = MagicMock()
+    m.json.return_value = {"hits": hits, "total": len(hits)}
+    return m
+
+
+class TestFetchPhotos:
+    @patch("src.media.pixabay_fetcher.httpx.get")
+    @patch("src.media.pixabay_fetcher.httpx.stream")
+    def test_fetch_photos_returns_portrait_images_only(self, mock_stream, mock_get, tmp_path) -> None:
+        """width/height = 0.5625 (portrait) -> accepted."""
+        hit = _make_photo_hit(pid=10, width=1080, height=1920)
+        mock_get.return_value = _mock_photo_api_response([hit])
+        # Mock stream download
+        mock_ctx = MagicMock()
+        mock_ctx.__enter__ = MagicMock(return_value=mock_ctx)
+        mock_ctx.__exit__ = MagicMock(return_value=False)
+        mock_ctx.raise_for_status = MagicMock()
+        mock_ctx.iter_bytes = MagicMock(return_value=[b"x" * 2048])
+        mock_stream.return_value = mock_ctx
+
+        fetcher = PixabayFetcher(api_key="fake", output_dir=tmp_path)
+        results = fetcher.fetch_photos(topic_id="t1", phrase="portrait test")
+        assert len(results) == 1
+        assert results[0]["id"] == 10
+        assert results[0]["width"] == 1080
+        assert results[0]["height"] == 1920
+
+    @patch("src.media.pixabay_fetcher.httpx.get")
+    def test_fetch_photos_rejects_landscape(self, mock_get, tmp_path) -> None:
+        """width/height = 1.5 (landscape) -> rejected."""
+        hit = _make_photo_hit(pid=20, width=1920, height=1080)  # ratio 1.778 >= 0.65
+        mock_get.return_value = _mock_photo_api_response([hit])
+        fetcher = PixabayFetcher(api_key="fake", output_dir=tmp_path)
+        results = fetcher.fetch_photos(topic_id="t1", phrase="landscape test")
+        assert results == []
+
+    @patch("src.media.pixabay_fetcher.httpx.get")
+    def test_fetch_photos_rejects_near_square(self, mock_get, tmp_path) -> None:
+        """width/height = 0.90 (near square, >= 0.65) -> rejected."""
+        hit = _make_photo_hit(pid=30, width=900, height=1000)  # ratio 0.90 >= 0.65
+        mock_get.return_value = _mock_photo_api_response([hit])
+        fetcher = PixabayFetcher(api_key="fake", output_dir=tmp_path)
+        results = fetcher.fetch_photos(topic_id="t1", phrase="square test")
+        assert results == []
+
+    def test_fetch_photos_raises_without_api_key(self, tmp_path) -> None:
+        fetcher = PixabayFetcher(api_key="", output_dir=tmp_path)
+        with pytest.raises(ValueError, match="PIXABAY_API_KEY not set"):
+            fetcher.fetch_photos(topic_id="t1", phrase="test")
+
+    @patch("src.media.pixabay_fetcher.httpx.get")
+    def test_fetch_photos_returns_empty_on_api_error(self, mock_get, tmp_path) -> None:
+        import httpx as _httpx
+        mock_get.side_effect = _httpx.RequestError("network error")
+        fetcher = PixabayFetcher(api_key="fake", output_dir=tmp_path)
+        results = fetcher.fetch_photos(topic_id="t1", phrase="error test")
+        assert results == []
+
+    @patch("src.media.pixabay_fetcher.httpx.get")
+    @patch("src.media.pixabay_fetcher.httpx.stream")
+    def test_fetch_photos_respects_count(self, mock_stream, mock_get, tmp_path) -> None:
+        """Should return at most count photos."""
+        hits = [_make_photo_hit(pid=i, width=1080, height=1920) for i in range(1, 6)]
+        mock_get.return_value = _mock_photo_api_response(hits)
+        mock_ctx = MagicMock()
+        mock_ctx.__enter__ = MagicMock(return_value=mock_ctx)
+        mock_ctx.__exit__ = MagicMock(return_value=False)
+        mock_ctx.raise_for_status = MagicMock()
+        mock_ctx.iter_bytes = MagicMock(return_value=[b"x" * 2048])
+        mock_stream.return_value = mock_ctx
+
+        fetcher = PixabayFetcher(api_key="fake", output_dir=tmp_path)
+        results = fetcher.fetch_photos(topic_id="t1", phrase="test", count=2)
+        assert len(results) == 2
+
+    @patch("src.media.pixabay_fetcher.httpx.get")
+    @patch("src.media.pixabay_fetcher.httpx.stream")
+    def test_fetch_photos_result_dict_has_required_keys(self, mock_stream, mock_get, tmp_path) -> None:
+        hit = _make_photo_hit(pid=99, width=1080, height=1920)
+        mock_get.return_value = _mock_photo_api_response([hit])
+        mock_ctx = MagicMock()
+        mock_ctx.__enter__ = MagicMock(return_value=mock_ctx)
+        mock_ctx.__exit__ = MagicMock(return_value=False)
+        mock_ctx.raise_for_status = MagicMock()
+        mock_ctx.iter_bytes = MagicMock(return_value=[b"x" * 2048])
+        mock_stream.return_value = mock_ctx
+
+        fetcher = PixabayFetcher(api_key="fake", output_dir=tmp_path)
+        results = fetcher.fetch_photos(topic_id="t1", phrase="test")
+        assert len(results) == 1
+        for key in ("id", "local_path", "width", "height", "tags"):
+            assert key in results[0]

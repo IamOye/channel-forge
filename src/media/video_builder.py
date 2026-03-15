@@ -603,6 +603,181 @@ class VideoBuilder:
 
         return np.array(img, dtype=np.uint8)
 
+    def apply_ken_burns(
+        self,
+        image_path: "str | Path",
+        duration: float,
+        effect: "str | None" = None,
+    ) -> "list[np.ndarray]":
+        """Pre-render Ken Burns effect frames from a still image.
+
+        Effects: 'zoom_in', 'zoom_out', 'pan_right', 'pan_left'.
+        If None, randomly selects one.
+
+        Uses keyframe interpolation: pre-renders start and end frames with
+        PIL (LANCZOS quality), then interpolates all intermediate frames
+        with numpy lerp for performance (< 5 s per clip in practice).
+
+        Args:
+            image_path: Path to the source photo (any PIL-supported format).
+            duration:   Output clip duration in seconds.
+            effect:     One of the 4 effect names, or None for random.
+
+        Returns:
+            List of RGB numpy arrays (H×W×3, dtype uint8), one per frame at self.fps.
+        """
+        import random as _rnd
+        import numpy as np
+        from PIL import Image
+
+        EFFECTS = ["zoom_in", "zoom_out", "pan_right", "pan_left"]
+        if effect is None:
+            effect = _rnd.choice(EFFECTS)
+
+        W, H, fps = self.canvas_width, self.canvas_height, self.fps
+        ZOOM = 1.15   # zoom factor for zoom_in / zoom_out
+
+        # ── Scale source image so there is buffer for zoom / pan ──────────────
+        img = Image.open(str(image_path)).convert("RGB")
+        buf_scale = max((W * ZOOM) / img.width, (H * ZOOM) / img.height)
+        sw = int(img.width  * buf_scale)
+        sh = int(img.height * buf_scale)
+        img_buf = img.resize((sw, sh), Image.LANCZOS)
+
+        cx = sw // 2
+        cy = sh // 2
+        # Available buffer pixels on each side
+        w_buf = (sw - W) // 2
+        h_buf = (sh - H) // 2
+
+        # ── Compute start/end crop boxes (PIL format: x1, y1, x2, y2) ─────────
+        if effect == "zoom_in":
+            # Start: full W×H crop (normal view).
+            # End:   smaller crop (W/ZOOM × H/ZOOM) → scaled up = zoomed in.
+            e_cw = int(W / ZOOM)
+            e_ch = int(H / ZOOM)
+            s_box = (cx - W  // 2, cy - H  // 2, cx + W  // 2, cy + H  // 2)
+            e_box = (cx - e_cw // 2, cy - e_ch // 2, cx + e_cw // 2, cy + e_ch // 2)
+
+        elif effect == "zoom_out":
+            # Start: smaller crop (zoomed in). End: full W×H (normal view).
+            s_cw = int(W / ZOOM)
+            s_ch = int(H / ZOOM)
+            s_box = (cx - s_cw // 2, cy - s_ch // 2, cx + s_cw // 2, cy + s_ch // 2)
+            e_box = (cx - W  // 2, cy - H  // 2, cx + W  // 2, cy + H  // 2)
+
+        elif effect == "pan_right":
+            # Crop window moves right; start from left, end at center.
+            pan_x = max(1, int(w_buf * 0.8))
+            s_box = (cx - W // 2 - pan_x, cy - H // 2, cx + W // 2 - pan_x, cy + H // 2)
+            e_box = (cx - W // 2,          cy - H // 2, cx + W // 2,          cy + H // 2)
+
+        elif effect == "pan_left":
+            # Crop window moves left; start at center, end shifted right.
+            pan_x = max(1, int(w_buf * 0.8))
+            s_box = (cx - W // 2,          cy - H // 2, cx + W // 2,          cy + H // 2)
+            e_box = (cx - W // 2 + pan_x, cy - H // 2, cx + W // 2 + pan_x, cy + H // 2)
+
+        else:
+            s_box = e_box = (cx - W // 2, cy - H // 2, cx + W // 2, cy + H // 2)
+
+        def _render_box(box: tuple) -> "np.ndarray":
+            x1, y1, x2, y2 = box
+            x1 = max(0, x1); y1 = max(0, y1)
+            x2 = min(sw, x2); y2 = min(sh, y2)
+            crop = img_buf.crop((x1, y1, x2, y2))
+            if crop.size != (W, H):
+                crop = crop.resize((W, H), Image.LANCZOS)
+            return np.array(crop, dtype=np.float32)
+
+        start_frame = _render_box(s_box)
+        end_frame   = _render_box(e_box)
+
+        n_frames = int(duration * fps) + 1
+        frames: list[np.ndarray] = []
+        for i in range(n_frames):
+            progress = i / max(n_frames - 1, 1)
+            frame = (
+                start_frame * (1.0 - progress) + end_frame * progress
+            ).astype(np.uint8)
+            frames.append(frame)
+
+        logger.info(
+            "[ken_burns] effect=%s frames=%d duration=%.2fs",
+            effect, len(frames), duration,
+        )
+        return frames
+
+    def write_ken_burns_mp4(
+        self,
+        image_path: "str | Path",
+        output_path: "str | Path",
+        duration: float,
+        effect: "str | None" = None,
+    ) -> bool:
+        """Apply Ken Burns effect to a photo and write the result to an mp4 file.
+
+        Calls apply_ken_burns() to get frames, then pipes them to ffmpeg as
+        rawvideo (rgb24) to produce a H.264 mp4.
+
+        Returns:
+            True on success, False on any failure (never raises).
+        """
+        import subprocess
+        from pathlib import Path as _Path
+
+        try:
+            import imageio_ffmpeg
+            ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+        except Exception as exc:
+            logger.warning("[ken_burns] imageio_ffmpeg not available: %s", exc)
+            return False
+
+        try:
+            frames = self.apply_ken_burns(image_path, duration=duration, effect=effect)
+            if not frames:
+                return False
+
+            out = _Path(output_path)
+            out.parent.mkdir(parents=True, exist_ok=True)
+
+            W, H, fps = self.canvas_width, self.canvas_height, self.fps
+            cmd = [
+                ffmpeg_exe, "-y",
+                "-f", "rawvideo", "-pix_fmt", "rgb24",
+                "-s", f"{W}x{H}", "-r", str(fps),
+                "-i", "pipe:0",
+                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
+                "-an",
+                str(out),
+            ]
+
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            try:
+                for frame in frames:
+                    proc.stdin.write(frame.tobytes())
+            except BrokenPipeError:
+                pass
+            finally:
+                proc.stdin.close()
+
+            proc.wait()
+            success = proc.returncode == 0 and out.exists() and out.stat().st_size > 0
+            if success:
+                logger.info("[ken_burns] Wrote %d frames to %s", len(frames), out)
+            else:
+                logger.warning("[ken_burns] write_ken_burns_mp4 failed (returncode=%d)", proc.returncode)
+            return success
+
+        except Exception as exc:
+            logger.warning("[ken_burns] write_ken_burns_mp4 error: %s", exc)
+            return False
+
     # ------------------------------------------------------------------
     # Legacy single-pass path (used by tests via _assemble mock)
     # ------------------------------------------------------------------

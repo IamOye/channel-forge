@@ -322,17 +322,61 @@ class ProductionPipeline:
         return gen.generate(script_dict=script_dict, topic_id=topic_id, category=category)
 
     def _run_pixabay(self, topic_id: str, script_dict: dict, category: str) -> _MultiFetchResult:
+        """Fetch 2 video clips + 2 photo clips (Ken Burns) and interleave them.
+
+        Clip order: video → photo → video → photo
+        """
         from src.media.pixabay_fetcher import PixabayFetcher
+        from src.media.video_builder import VideoBuilder, VIDEO_DURATION
+
         fetcher = PixabayFetcher(api_key=self.pixabay_api_key)
-        phrases = self._extract_broll_keywords(script_dict, count=4)
-        paths = fetcher.fetch_multiple(topic_id=topic_id, keywords_list=phrases, count=4)
-        if not paths:
+
+        # ── 2 video clips (action / situational) ──────────────────────────────
+        video_phrases = self._extract_broll_keywords(script_dict, count=2)
+        video_paths = fetcher.fetch_multiple(
+            topic_id=topic_id,
+            keywords_list=video_phrases,
+            count=2,
+        )
+
+        # ── 2 photo clips with Ken Burns (conceptual / emotional) ──────────────
+        photo_phrases = self._extract_photo_phrases(script_dict)
+        builder = VideoBuilder()
+        ken_burns_paths: list[str] = []
+
+        for i, phrase in enumerate(photo_phrases[:2]):
+            photos = fetcher.fetch_photos(
+                topic_id=f"{topic_id}_kb{i}",
+                phrase=phrase,
+                count=1,
+            )
+            if photos:
+                kb_path = Path("data/raw") / f"{topic_id}_ken_burns_{i}.mp4"
+                ok = builder.write_ken_burns_mp4(
+                    image_path=photos[0]["local_path"],
+                    output_path=kb_path,
+                    duration=VIDEO_DURATION,
+                )
+                if ok:
+                    ken_burns_paths.append(str(kb_path))
+
+        # ── Interleave: video0, photo0, video1, photo1 ─────────────────────────
+        all_paths: list[str] = []
+        v_list = list(video_paths)
+        k_list = list(ken_burns_paths)
+        for v, k in zip(v_list, k_list):
+            all_paths.extend([v, k])
+        # Append any remaining clips if counts differ
+        all_paths.extend(v_list[len(k_list):])
+        all_paths.extend(k_list[len(v_list):])
+
+        if not all_paths:
             return _MultiFetchResult(
                 video_paths=[],
                 is_valid=False,
-                validation_errors=["no stock videos found for any b-roll phrase"],
+                validation_errors=["no stock media found for any b-roll phrase"],
             )
-        return _MultiFetchResult(video_paths=paths, is_valid=True)
+        return _MultiFetchResult(video_paths=all_paths, is_valid=True)
 
     def _run_video_builder(
         self,
@@ -433,6 +477,53 @@ class ProductionPipeline:
         from src.media.pixabay_fetcher import KEYWORD_MAP
         base = KEYWORD_MAP.get("default")
         return (base * count)[:count]
+
+    def _extract_photo_phrases(self, script_dict: dict) -> list[str]:
+        """Use Claude to generate 2 conceptual/emotional stock photo search phrases.
+
+        Distinct from video b-roll phrases — photos are symbolic/lifestyle-oriented.
+        Falls back to generic phrases if API call fails.
+        """
+        import json as _json
+        import anthropic
+
+        full_script = " ".join(filter(None, [
+            script_dict.get("hook", ""),
+            script_dict.get("statement", ""),
+            script_dict.get("twist", ""),
+            script_dict.get("question", ""),
+        ]))
+
+        prompt = (
+            "Generate 2 search phrases for stock PHOTOS (not videos) that visually "
+            "represent the emotion and concept of this script.\n"
+            "Think lifestyle, mood, symbolic.\n"
+            "Examples: 'wealthy lifestyle luxury', 'stressed person bills', "
+            "'financial freedom beach laptop', 'empty wallet poverty'\n"
+            f"Script: {full_script}\n"
+            "Return JSON array of 2 strings only."
+        )
+
+        try:
+            client = anthropic.Anthropic(api_key=self.anthropic_api_key)
+            message = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=80,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            raw = message.content[0].text.strip()
+            if raw.startswith("```"):
+                raw = "\n".join(
+                    line for line in raw.splitlines()
+                    if not line.strip().startswith("```")
+                ).strip()
+            phrases = _json.loads(raw)
+            if isinstance(phrases, list):
+                return [str(p).strip() for p in phrases[:2] if str(p).strip()]
+        except Exception as exc:
+            logger.warning("[pipeline] Photo phrase extraction failed: %s", exc)
+
+        return ["successful person lifestyle", "financial freedom concept"]
 
     def _run_metadata(self, keyword: str, script: str, category: str = "", video_number: int = 0):
         from src.content.metadata_generator import MetadataGenerator
