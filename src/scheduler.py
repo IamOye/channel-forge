@@ -249,6 +249,36 @@ def run_daily_analytics() -> None:
         logger.info("[scheduler] run_daily_analytics END (%.1fs)", elapsed)
 
 
+def run_elevenlabs_usage_check() -> None:
+    """Check ElevenLabs monthly usage and log a prominent warning if above 67%."""
+    start = datetime.now(timezone.utc)
+    logger.info("[scheduler] run_elevenlabs_usage_check START %s", start.isoformat())
+    try:
+        from scripts.check_elevenlabs_usage import get_usage_report  # lazy
+        report = get_usage_report()
+        pct = report["pct_used"]
+        logger.info(
+            "[scheduler] ElevenLabs usage: %d/%d chars (%.1f%%) — %s",
+            report["monthly_total"], report["monthly_limit"], pct, report["status"],
+        )
+        if pct >= 67:
+            logger.warning(
+                "===================================\n"
+                "ELEVENLABS WARNING: %.0f%% used\n"
+                "%d chars remaining\n"
+                "~%d videos left\n"
+                "===================================",
+                pct,
+                report["chars_remaining"],
+                report["videos_remaining"],
+            )
+    except Exception as exc:
+        logger.error("[scheduler] run_elevenlabs_usage_check ERROR: %s", exc)
+    finally:
+        elapsed = (datetime.now(timezone.utc) - start).total_seconds()
+        logger.info("[scheduler] run_elevenlabs_usage_check END (%.1fs)", elapsed)
+
+
 def run_competitor_research() -> None:
     """Scrape competitor channels and trending finance topics (runs every 12 h)."""
     start = datetime.now(timezone.utc)
@@ -372,6 +402,16 @@ def build_scheduler(timezone_name: str | None = None) -> BlockingScheduler:
         ),
         id="analytics",
         name="Daily Analytics",
+        replace_existing=True,
+        misfire_grace_time=300,
+    )
+
+    # --- ElevenLabs usage check: daily at 09:00 ---
+    scheduler.add_job(
+        run_elevenlabs_usage_check,
+        trigger=CronTrigger(hour=9, minute=0, timezone=tz),
+        id="elevenlabs_usage",
+        name="ElevenLabs Usage Check",
         replace_existing=True,
         misfire_grace_time=300,
     )

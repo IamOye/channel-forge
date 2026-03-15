@@ -12,9 +12,10 @@ Usage:
 
 import logging
 import os
+import sqlite3
 import subprocess
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +55,19 @@ MIN_DURATION_SECONDS = 10.0
 TARGET_LUFS = -14.0
 
 OUTPUT_DIR = Path("data/raw")
+
+# ---------------------------------------------------------------------------
+# Usage tracking constants
+# ---------------------------------------------------------------------------
+
+_DEFAULT_DB = Path(os.getenv("DB_PATH", "data/processed/channel_forge.db"))
+_MONTHLY_LIMIT = int(os.getenv("ELEVENLABS_MONTHLY_LIMIT", "30000"))
+_RESET_DAY = int(os.getenv("ELEVENLABS_RESET_DAY", "1"))
+
+# Warning thresholds (fractions of monthly limit)
+_WARN_67_PCT = 0.67
+_WARN_85_PCT = 0.85
+_WARN_95_PCT = 0.95
 
 
 # ---------------------------------------------------------------------------
@@ -109,9 +123,11 @@ class VoiceoverGenerator:
         self,
         api_key: str | None = None,
         output_dir: str | Path = OUTPUT_DIR,
+        db_path: str | Path | None = None,
     ) -> None:
         self.api_key = api_key if api_key is not None else os.getenv("ELEVENLABS_API_KEY", "")
         self.output_dir = Path(output_dir)
+        self.db_path = Path(db_path) if db_path else _DEFAULT_DB
 
     # ------------------------------------------------------------------
     # Public API
@@ -171,6 +187,11 @@ class VoiceoverGenerator:
         duration = self._get_duration(output_path)
         errors = self._validate_duration(duration)
 
+        chars_used = len(text)
+        logger.info("[voiceover] Used %d chars for topic %s", chars_used, topic_id)
+        self._save_usage(topic_id=topic_id, chars_used=chars_used, voice_name=voice_name)
+        self._check_monthly_usage()
+
         result = VoiceoverResult(
             topic_id=topic_id,
             audio_path=str(output_path),
@@ -188,6 +209,114 @@ class VoiceoverGenerator:
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    def _save_usage(self, topic_id: str, chars_used: int, voice_name: str) -> None:
+        """Persist a usage record to the elevenlabs_usage table. Failures are swallowed."""
+        try:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            conn = sqlite3.connect(self.db_path)
+            try:
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS elevenlabs_usage (
+                        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                        date       TEXT    NOT NULL,
+                        topic_id   TEXT    NOT NULL,
+                        chars_used INTEGER NOT NULL,
+                        voice_name TEXT    NOT NULL,
+                        created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+                    )
+                """)
+                conn.execute(
+                    "INSERT INTO elevenlabs_usage (date, topic_id, chars_used, voice_name) VALUES (?, ?, ?, ?)",
+                    (date.today().isoformat(), topic_id, chars_used, voice_name),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.warning("[voiceover] Failed to save usage to DB: %s", exc)
+
+    def _check_monthly_usage(self) -> None:
+        """Query monthly totals, log status, and emit warnings at 67/85/95% thresholds."""
+        try:
+            monthly_limit = int(os.getenv("ELEVENLABS_MONTHLY_LIMIT", str(_MONTHLY_LIMIT)))
+            reset_day = int(os.getenv("ELEVENLABS_RESET_DAY", str(_RESET_DAY)))
+
+            today = date.today()
+            month_start = today.replace(day=reset_day)
+            if today.day < reset_day:
+                # We're before this month's reset day — look back to last month
+                if today.month == 1:
+                    month_start = month_start.replace(year=today.year - 1, month=12)
+                else:
+                    month_start = month_start.replace(month=today.month - 1)
+
+            conn = sqlite3.connect(self.db_path)
+            try:
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS elevenlabs_usage (
+                        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                        date       TEXT    NOT NULL,
+                        topic_id   TEXT    NOT NULL,
+                        chars_used INTEGER NOT NULL,
+                        voice_name TEXT    NOT NULL,
+                        created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+                    )
+                """)
+                row = conn.execute(
+                    "SELECT SUM(chars_used), COUNT(*) FROM elevenlabs_usage WHERE date >= ?",
+                    (month_start.isoformat(),),
+                ).fetchone()
+            finally:
+                conn.close()
+
+            monthly_total = int(row[0] or 0)
+            videos_produced = int(row[1] or 0)
+            chars_remaining = max(0, monthly_limit - monthly_total)
+            pct_used = monthly_total / monthly_limit * 100 if monthly_limit > 0 else 0.0
+
+            logger.info(
+                "[voiceover] Monthly usage: %d/%d chars (%.1f%%)",
+                monthly_total, monthly_limit, pct_used,
+            )
+
+            # Calculate videos remaining (avoid division by zero on first video)
+            if videos_produced > 0:
+                avg_chars = monthly_total / videos_produced
+                videos_remaining = int(chars_remaining / avg_chars) if avg_chars > 0 else 0
+            else:
+                videos_remaining = 0
+
+            # Determine reset date
+            if today.day < reset_day:
+                reset_date = month_start.replace(month=today.month, day=reset_day)
+            else:
+                if today.month == 12:
+                    reset_date = today.replace(year=today.year + 1, month=1, day=reset_day)
+                else:
+                    reset_date = today.replace(month=today.month + 1, day=reset_day)
+
+            fraction = monthly_total / monthly_limit if monthly_limit > 0 else 0.0
+
+            if fraction >= _WARN_95_PCT:
+                logger.critical(
+                    "[voiceover] ElevenLabs at 95%% monthly limit — production will stop at 100%%. "
+                    "Reset date: %s",
+                    reset_date.strftime("%B %d, %Y"),
+                )
+            elif fraction >= _WARN_85_PCT:
+                logger.warning(
+                    "[voiceover] ElevenLabs at 85%% monthly limit — consider upgrading or pausing "
+                    "production until reset."
+                )
+            elif fraction >= _WARN_67_PCT:
+                logger.warning(
+                    "[voiceover] ElevenLabs at 67%% monthly limit — %d chars remaining. "
+                    "Approximately %d videos left this month.",
+                    chars_remaining, videos_remaining,
+                )
+        except Exception as exc:
+            logger.warning("[voiceover] Failed to check monthly usage: %s", exc)
 
     @staticmethod
     def _select_voice(category: str) -> tuple[str, str]:
