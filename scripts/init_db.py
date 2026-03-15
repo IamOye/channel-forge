@@ -222,11 +222,28 @@ CREATE INDEX IF NOT EXISTS idx_comp_views     ON competitor_topics (view_count D
 CREATE INDEX IF NOT EXISTS idx_comp_used      ON competitor_topics (used);
 """
 
+ELEVENLABS_USAGE_DDL = """
+CREATE TABLE IF NOT EXISTS elevenlabs_usage (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    date          TEXT    NOT NULL,
+    topic_id      TEXT    NOT NULL,
+    chars_used    INTEGER NOT NULL,
+    voice_name    TEXT    NOT NULL,
+    monthly_total INTEGER DEFAULT 0,
+    pct_used      REAL    DEFAULT 0,
+    created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_usage_date    ON elevenlabs_usage (date);
+CREATE INDEX IF NOT EXISTS idx_usage_topic   ON elevenlabs_usage (topic_id);
+"""
+
 # Unified main DB gets all tables
 MAIN_DDL_PARTS = [
     TRENDS_DDL, SAFETY_DDL, SCORES_DDL, TITLES_DDL, VIDEO_IDEAS_DDL,
     SCORED_TOPICS_DDL, UPLOADED_VIDEOS_DDL, VIDEO_METRICS_DDL,
     OPTIMIZATION_LOG_DDL, PRODUCTION_RESULTS_DDL, COMPETITOR_TOPICS_DDL,
+    ELEVENLABS_USAGE_DDL,
 ]
 
 
@@ -278,6 +295,15 @@ def migrate_db(db_path: Path) -> None:
             logger.info("Migration applied: scored_topics.used column added (%s)", db_path)
         except sqlite3.OperationalError:
             pass  # column already exists
+
+        # ElevenLabs usage migration: add monthly_total and pct_used columns
+        for col, coltype in [("monthly_total", "INTEGER DEFAULT 0"), ("pct_used", "REAL DEFAULT 0")]:
+            try:
+                conn.execute(f"ALTER TABLE elevenlabs_usage ADD COLUMN {col} {coltype}")
+                conn.commit()
+                logger.info("Migration applied: elevenlabs_usage.%s column added (%s)", col, db_path)
+            except sqlite3.OperationalError:
+                pass  # column already exists or table doesn't exist yet
     finally:
         conn.close()
 

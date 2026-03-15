@@ -6,6 +6,7 @@ Uses tmp_path for real SQLite topic loading tests.
 """
 
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -384,3 +385,123 @@ class TestLoadTopics:
 
         topics = orchestrator._load_topics(channel, max_topics=5)
         assert "mych" in topics[0]["topic_id"]
+
+
+# ---------------------------------------------------------------------------
+# Production lock — _check_production_lock
+# ---------------------------------------------------------------------------
+
+
+def _insert_production_result(db_path: Path, completed_at_iso: str) -> None:
+    """Insert a minimal production_results row with the given completed_at timestamp."""
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db_path)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS production_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            completed_at TEXT NOT NULL
+        )
+    """)
+    conn.execute(
+        "INSERT INTO production_results (completed_at) VALUES (?)",
+        (completed_at_iso,),
+    )
+    conn.commit()
+    conn.close()
+
+
+class TestProductionLock:
+    def test_skip_when_run_completed_10_minutes_ago(self, tmp_path: Path) -> None:
+        """Run completed 10 min ago → should_skip=True."""
+        orchestrator = _make_orchestrator(tmp_path)
+        db_path = tmp_path / "processed" / "test_ch.db"
+        recent = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+        _insert_production_result(db_path, recent)
+
+        should_skip, minutes_since, next_window = orchestrator._check_production_lock(
+            "test_ch", db_path
+        )
+        assert should_skip is True
+        assert 9 <= minutes_since <= 11
+
+    def test_proceed_when_last_run_was_35_minutes_ago(self, tmp_path: Path) -> None:
+        """Run completed 35 min ago (> 30-min window) → should_skip=False."""
+        orchestrator = _make_orchestrator(tmp_path)
+        db_path = tmp_path / "processed" / "test_ch.db"
+        old = (datetime.now(timezone.utc) - timedelta(minutes=35)).isoformat()
+        _insert_production_result(db_path, old)
+
+        should_skip, _, _ = orchestrator._check_production_lock("test_ch", db_path)
+        assert should_skip is False
+
+    def test_proceed_when_db_missing(self, tmp_path: Path) -> None:
+        """No DB file → should_skip=False, no error."""
+        orchestrator = _make_orchestrator(tmp_path)
+        db_path = tmp_path / "processed" / "nonexistent.db"
+
+        should_skip, minutes_since, next_window = orchestrator._check_production_lock(
+            "nonexistent", db_path
+        )
+        assert should_skip is False
+        assert minutes_since == 0
+        assert next_window == ""
+
+    def test_proceed_when_table_missing(self, tmp_path: Path) -> None:
+        """DB exists but production_results table missing → should_skip=False."""
+        orchestrator = _make_orchestrator(tmp_path)
+        db_path = tmp_path / "processed" / "test_ch.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db_path)
+        conn.close()  # empty DB, no tables
+
+        should_skip, _, _ = orchestrator._check_production_lock("test_ch", db_path)
+        assert should_skip is False
+
+    def test_next_window_is_6h_after_last_run(self, tmp_path: Path) -> None:
+        """next_window_str must be last_run + 6h formatted as a UTC timestamp."""
+        orchestrator = _make_orchestrator(tmp_path)
+        db_path = tmp_path / "processed" / "test_ch.db"
+        last_run = datetime.now(timezone.utc) - timedelta(minutes=5)
+        _insert_production_result(db_path, last_run.isoformat())
+
+        _, _, next_window = orchestrator._check_production_lock("test_ch", db_path)
+        expected_hour = (last_run + timedelta(hours=6)).strftime("%H:%M UTC")
+        assert expected_hour in next_window
+
+    def test_run_channel_skipped_when_lock_active(self, tmp_path: Path) -> None:
+        """run_channel must return is_valid=True, zero topics, when lock fires."""
+        orchestrator = _make_orchestrator(tmp_path)
+        channel = _make_channel(channel_key="test_ch")
+        db_path = tmp_path / "processed" / "test_ch.db"
+        recent = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        _insert_production_result(db_path, recent)
+
+        mock_pipeline = _make_mock_pipeline()
+        with patch.object(orchestrator, "_load_topics", return_value=[
+            {"topic_id": "t1", "keyword": "test", "category": "money", "score": 80},
+        ]):
+            with patch.object(orchestrator, "_build_pipeline", return_value=mock_pipeline):
+                with patch.object(orchestrator, "_setup_channel_output"):
+                    result = orchestrator.run_channel(channel)
+
+        assert result.is_valid is True
+        assert result.topics_processed == 0
+        assert result.topics_succeeded == 0
+        assert "Skipped" in result.error
+        mock_pipeline.run.assert_not_called()
+
+    def test_run_channel_proceeds_when_no_lock(self, tmp_path: Path) -> None:
+        """run_channel must run normally when no recent production result exists."""
+        orchestrator = _make_orchestrator(tmp_path)
+        channel = _make_channel(channel_key="test_ch")
+        mock_pipeline = _make_mock_pipeline()
+
+        with patch.object(orchestrator, "_load_topics", return_value=[
+            {"topic_id": "t1", "keyword": "test", "category": "money", "score": 80},
+        ]):
+            with patch.object(orchestrator, "_build_pipeline", return_value=mock_pipeline):
+                with patch.object(orchestrator, "_setup_channel_output"):
+                    result = orchestrator.run_channel(channel)
+
+        assert result.topics_succeeded == 1
+        mock_pipeline.run.assert_called_once()

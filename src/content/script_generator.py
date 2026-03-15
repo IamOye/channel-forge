@@ -1,14 +1,14 @@
 """
 script_generator.py — ScriptGenerator
 
-Generates a 50-55 second YouTube Shorts script with 4 timed parts,
+Generates a 45-50 second YouTube Shorts script with 4 timed parts,
 following the Palki Sharma 7-part narrative formula packed into:
   Hook       — Provocative opening (Part 1)
   Statement  — Analogy/micro-story + fact/data point (Parts 2–3)
   Twist      — Escalation + reframe (Parts 4–5)
   Question   — Direct question to viewer + CTA (Parts 6–7)
 
-Target: 110–120 words for natural 50–55 second delivery.
+Target: 95–105 words for natural 45–50 second delivery.
 Script must contain at least one question mark.
 
 Usage:
@@ -68,28 +68,28 @@ GOOD: "In America, 78 percent of full-time workers live paycheck to paycheck.
 Given a topic, an opening hook, and an exact CTA line, write a 4-part script that
 follows this 7-beat narrative arc:
 
-PART 1 — hook (15–20 words)
+PART 1 — hook (12–17 words)
 Drop the viewer into tension immediately. State the uncomfortable truth bluntly.
 Use the provided hook verbatim.
 
-PART 2 — statement (35–45 words)
+PART 2 — statement (28–38 words)
 Pack in beats 2 and 3:
   Beat 2: A specific, relatable micro-scenario the viewer can picture themselves in.
-           Not a statistic — a situation. (2–3 sentences)
+           Not a statistic — a situation. (2 sentences)
   Beat 3: One sharp, credible number or fact that validates the tension. No fluff. (1 sentence)
 
-PART 3 — twist (30–40 words)
+PART 3 — twist (23–33 words)
 Pack in beats 4 and 5:
   Beat 4: Deepen the problem. Show it is worse than the viewer realised. (1–2 sentences)
-  Beat 5: The reframe — the insight moment that makes them feel they just learned something. (1–2 sentences)
+  Beat 5: The reframe — the insight moment that makes them feel they just learned something. (1 sentence)
 
-PART 4 — question (25–35 words)
+PART 4 — question (20–27 words)
 Pack in beats 6 and 7:
   Beat 6: One personal, direct question that pulls the viewer in. (1 sentence, ends with ?)
   Beat 7: The exact CTA text provided, word for word. Do NOT rephrase or improvise.
 
 WRITING RULES — follow these strictly:
-- Total word count across all 4 parts: 100–120 words. HARD MAXIMUM: 120 words total. Count carefully before responding.
+- Total word count across all 4 parts: 85–105 words. HARD MAXIMUM: 105 words total. Count carefully before responding.
 - Never use em dashes (—) in the script body
 - Never use "it is worth noting", "in conclusion", "furthermore", "moreover"
 - Write as if talking to one specific person
@@ -114,15 +114,15 @@ Respond ONLY with a JSON object, no markdown:
 # Validation constants
 # ---------------------------------------------------------------------------
 
-MAX_WORDS = 121   # hard ceiling; scripts of ≥121 words fail (target 100–120)
-RETRY_WORD_LIMIT = 120  # trigger one brevity retry if word_count > this
+MAX_WORDS = 106   # hard ceiling; scripts of ≥106 words fail (target 85–105)
+RETRY_WORD_LIMIT = 105  # trigger one brevity retry if word_count > this
 REQUIRED_PARTS = ("hook", "statement", "twist", "question")
 
 PART_WORD_LIMITS = {
-    "hook":      (15, 25),
-    "statement": (35, 50),
-    "twist":     (30, 45),
-    "question":  (25, 40),
+    "hook":      (12, 20),
+    "statement": (28, 38),
+    "twist":     (23, 33),
+    "question":  (20, 27),
 }
 
 
@@ -408,13 +408,13 @@ class ScriptGenerator:
             " ".join(parts.get(p, "") for p in REQUIRED_PARTS).split()
         )
         logger.warning(
-            "Script too long (%d words) — retrying with 110-word cap", word_count
+            "Script too long (%d words) — retrying with 95-word cap", word_count
         )
         retry_prompt = (
             f"Topic: {topic}\n"
             f"Hook (use verbatim): {hook}\n"
             f"Your script was too long at {word_count} words. "
-            f"Rewrite it in 110 words maximum. "
+            f"Rewrite it in 95 words maximum. "
             f"Keep the same 7-part structure but make every sentence shorter and punchier.\n"
             f"\nWrite the 4-part script now."
         )

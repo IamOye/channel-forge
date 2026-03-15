@@ -18,7 +18,7 @@ Usage:
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -155,6 +155,19 @@ class MultiChannelOrchestrator:
         )
 
         result = ChannelRunResult(channel_key=channel_key, channel_name=channel_name)
+
+        # Production lock: skip if a run completed in the last 30 minutes
+        should_skip, minutes_since, next_window = self._check_production_lock(
+            channel_key, db_path
+        )
+        if should_skip:
+            logger.info(
+                "[orchestrator] Skipping %s — production ran %d minutes ago. "
+                "Next window: %s",
+                channel_key, minutes_since, next_window,
+            )
+            result.error = f"Skipped: production ran {minutes_since} minutes ago"
+            return result
 
         try:
             self._setup_channel_output(output_dir)
@@ -312,3 +325,58 @@ class MultiChannelOrchestrator:
             logger.debug("Channel output dir ready: %s", output_dir)
         except Exception as exc:
             logger.warning("Could not create output dir %s: %s", output_dir, exc)
+
+    def _check_production_lock(
+        self, channel_key: str, db_path: Path
+    ) -> tuple[bool, int, str]:
+        """
+        Check whether a production run completed for this channel in the last 30 minutes.
+
+        Queries ``production_results`` in the channel's DB.  Fails safely —
+        any DB error returns ``(False, 0, "")`` so a missing or corrupt DB never
+        blocks production.
+
+        Returns:
+            (should_skip, minutes_since_last_run, next_window_str)
+        """
+        import sqlite3
+
+        LOCK_MINUTES = 30
+
+        try:
+            if not db_path.exists():
+                return False, 0, ""
+
+            now = datetime.now(timezone.utc)
+            threshold = now - timedelta(minutes=LOCK_MINUTES)
+
+            conn = sqlite3.connect(db_path)
+            try:
+                row = conn.execute(
+                    "SELECT MAX(completed_at) FROM production_results "
+                    "WHERE completed_at >= ?",
+                    (threshold.isoformat(),),
+                ).fetchone()
+            finally:
+                conn.close()
+
+            last_run_str = row[0] if row and row[0] else None
+            if last_run_str is None:
+                return False, 0, ""
+
+            last_run = datetime.fromisoformat(last_run_str)
+            if last_run.tzinfo is None:
+                last_run = last_run.replace(tzinfo=timezone.utc)
+
+            minutes_since = max(0, int((now - last_run).total_seconds() / 60))
+            next_window = last_run + timedelta(hours=6)
+            next_window_str = next_window.strftime("%Y-%m-%d %H:%M UTC")
+
+            return True, minutes_since, next_window_str
+
+        except Exception as exc:
+            logger.warning(
+                "[orchestrator] Production lock check failed for '%s' (proceeding): %s",
+                channel_key, exc,
+            )
+            return False, 0, ""

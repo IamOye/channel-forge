@@ -33,12 +33,14 @@ def _insert_usage(db_path: Path, rows: list[tuple]) -> None:
     conn = sqlite3.connect(db_path)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS elevenlabs_usage (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            date TEXT NOT NULL,
-            topic_id TEXT NOT NULL,
-            chars_used INTEGER NOT NULL,
-            voice_name TEXT NOT NULL,
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            date          TEXT    NOT NULL,
+            topic_id      TEXT    NOT NULL,
+            chars_used    INTEGER NOT NULL,
+            voice_name    TEXT    NOT NULL,
+            monthly_total INTEGER DEFAULT 0,
+            pct_used      REAL    DEFAULT 0,
+            created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
         )
     """)
     conn.executemany(
@@ -395,3 +397,242 @@ class TestSchedulerElevenLabsJob:
         report = get_usage_report(db_path=db, monthly_limit=30000, reset_day=1)
         assert report["pct_used"] < 67
         assert report["status"] == "OK — plenty of headroom"
+
+
+# ---------------------------------------------------------------------------
+# Pre-generation budget check (_budget_check)
+# ---------------------------------------------------------------------------
+
+class TestBudgetPreCheck:
+    def test_skip_when_adding_would_exceed_95_pct(self, tmp_path: Path) -> None:
+        """28 000 used + 600 estimate = 28 600 > 28 500 (95% of 30 000) → skip."""
+        gen = _make_gen(tmp_path)
+        today = date.today().isoformat()
+        _insert_usage(gen.db_path, [(today, "t1", 28000, "Adam")])
+        with patch.dict("os.environ", {"ELEVENLABS_MONTHLY_LIMIT": "30000", "ELEVENLABS_RESET_DAY": "1"}):
+            should_skip, chars_remaining = gen._budget_check(600)
+        assert should_skip is True
+        assert chars_remaining == 2000
+
+    def test_proceed_when_under_95_pct(self, tmp_path: Path) -> None:
+        """20 000 used + 500 estimate = 20 500 < 28 500 (95%) → proceed."""
+        gen = _make_gen(tmp_path)
+        today = date.today().isoformat()
+        _insert_usage(gen.db_path, [(today, "t1", 20000, "Adam")])
+        with patch.dict("os.environ", {"ELEVENLABS_MONTHLY_LIMIT": "30000", "ELEVENLABS_RESET_DAY": "1"}):
+            should_skip, chars_remaining = gen._budget_check(500)
+        assert should_skip is False
+        assert chars_remaining == 10000
+
+    def test_generate_returns_invalid_result_when_skipped(self, tmp_path: Path) -> None:
+        """generate() must return is_valid=False without calling ElevenLabs API."""
+        gen = _make_gen(tmp_path)
+        today = date.today().isoformat()
+        _insert_usage(gen.db_path, [(today, "t1", 28500, "Adam")])
+        with patch.dict("os.environ", {"ELEVENLABS_MONTHLY_LIMIT": "30000", "ELEVENLABS_RESET_DAY": "1"}):
+            with patch("httpx.post") as mock_post:
+                result = gen.generate(
+                    {"full_script": "a" * 600},
+                    topic_id="test_topic",
+                    category="money",
+                )
+        mock_post.assert_not_called()
+        assert result.is_valid is False
+        assert result.validation_errors
+        assert "Monthly character limit" in result.validation_errors[0]
+
+    def test_generate_error_message_contains_chars_remaining(self, tmp_path: Path) -> None:
+        """The validation error must include the remaining char count."""
+        gen = _make_gen(tmp_path)
+        today = date.today().isoformat()
+        _insert_usage(gen.db_path, [(today, "t1", 28000, "Adam")])
+        with patch.dict("os.environ", {"ELEVENLABS_MONTHLY_LIMIT": "30000", "ELEVENLABS_RESET_DAY": "1"}):
+            with patch("httpx.post"):
+                result = gen.generate(
+                    {"full_script": "a" * 600},
+                    topic_id="test_topic",
+                    category="money",
+                )
+        assert "2000" in result.validation_errors[0]
+
+    def test_budget_check_proceeds_on_db_error(self, tmp_path: Path) -> None:
+        """If DB query fails, _budget_check must return (False, 0) so production continues."""
+        gen = _make_gen(tmp_path)
+        # Point db_path at a directory so sqlite3.connect succeeds but query fails
+        bad_db = tmp_path / "not_a_db"
+        bad_db.mkdir()
+        gen.db_path = bad_db / "channel_forge.db"
+        # Create a file that isn't a valid SQLite DB
+        gen.db_path.write_bytes(b"not a database")
+        should_skip, chars_remaining = gen._budget_check(500)
+        assert should_skip is False
+        assert chars_remaining == 0
+
+
+# ---------------------------------------------------------------------------
+# init_db — elevenlabs_usage table
+# ---------------------------------------------------------------------------
+
+
+class TestInitDbElevenLabs:
+    def test_elevenlabs_usage_in_main_ddl(self) -> None:
+        from scripts.init_db import MAIN_DDL_PARTS
+        all_ddl = "\n".join(MAIN_DDL_PARTS)
+        assert "elevenlabs_usage" in all_ddl
+
+    def test_init_db_creates_elevenlabs_usage_table(self, tmp_path: Path) -> None:
+        from scripts.init_db import create_db, MAIN_DDL_PARTS, verify_db
+        db = tmp_path / "test.db"
+        create_db(db, MAIN_DDL_PARTS)
+        assert "elevenlabs_usage" in verify_db(db)
+
+
+# ---------------------------------------------------------------------------
+# _save_usage — monthly_total and pct_used columns
+# ---------------------------------------------------------------------------
+
+
+class TestSaveUsageExtended:
+    def test_save_usage_stores_monthly_total(self, tmp_path: Path) -> None:
+        """monthly_total must equal prior usage + new chars."""
+        gen = _make_gen(tmp_path)
+        today = date.today().isoformat()
+        _insert_usage(gen.db_path, [(today, "t0", 1000, "Adam")])
+        with patch.dict("os.environ", {"ELEVENLABS_MONTHLY_LIMIT": "30000", "ELEVENLABS_RESET_DAY": "1"}):
+            gen._save_usage("t1", 500, "Adam")
+        conn = sqlite3.connect(gen.db_path)
+        row = conn.execute(
+            "SELECT monthly_total FROM elevenlabs_usage WHERE topic_id='t1'"
+        ).fetchone()
+        conn.close()
+        assert row is not None
+        assert row[0] == 1500  # 1000 existing + 500 new
+
+    def test_save_usage_stores_pct_used(self, tmp_path: Path) -> None:
+        """pct_used must be chars/limit * 100."""
+        gen = _make_gen(tmp_path)
+        with patch.dict("os.environ", {"ELEVENLABS_MONTHLY_LIMIT": "10000", "ELEVENLABS_RESET_DAY": "1"}):
+            gen._save_usage("t1", 1000, "Adam")
+        conn = sqlite3.connect(gen.db_path)
+        row = conn.execute(
+            "SELECT pct_used FROM elevenlabs_usage WHERE topic_id='t1'"
+        ).fetchone()
+        conn.close()
+        assert row is not None
+        assert abs(row[0] - 10.0) < 0.5  # 1000/10000 = 10%
+
+    def test_save_usage_pct_grows_with_second_record(self, tmp_path: Path) -> None:
+        """Second record's pct_used must be higher than first."""
+        gen = _make_gen(tmp_path)
+        with patch.dict("os.environ", {"ELEVENLABS_MONTHLY_LIMIT": "10000", "ELEVENLABS_RESET_DAY": "1"}):
+            gen._save_usage("t1", 1000, "Adam")
+            gen._save_usage("t2", 1000, "Adam")
+        conn = sqlite3.connect(gen.db_path)
+        rows = conn.execute(
+            "SELECT topic_id, pct_used FROM elevenlabs_usage ORDER BY id"
+        ).fetchall()
+        conn.close()
+        assert rows[1][1] > rows[0][1]
+
+    def test_save_usage_does_not_raise_on_missing_parent(self, tmp_path: Path) -> None:
+        """_save_usage must not raise even when db parent dir doesn't exist."""
+        gen = VoiceoverGenerator(api_key="fake", db_path=tmp_path / "deep" / "nested" / "db.sqlite")
+        gen._save_usage("t1", 500, "Adam")  # should succeed (mkdir is called inside)
+
+    def test_save_usage_second_call_monthly_total_accumulates(self, tmp_path: Path) -> None:
+        """Each successive _save_usage row has a larger monthly_total."""
+        gen = _make_gen(tmp_path)
+        with patch.dict("os.environ", {"ELEVENLABS_MONTHLY_LIMIT": "30000", "ELEVENLABS_RESET_DAY": "1"}):
+            gen._save_usage("t1", 500, "Adam")
+            gen._save_usage("t2", 500, "Adam")
+        conn = sqlite3.connect(gen.db_path)
+        totals = [r[0] for r in conn.execute(
+            "SELECT monthly_total FROM elevenlabs_usage ORDER BY id"
+        ).fetchall()]
+        conn.close()
+        assert totals == [500, 1000]
+
+
+# ---------------------------------------------------------------------------
+# get_usage_report — output shape and status labels
+# ---------------------------------------------------------------------------
+
+
+class TestReportFields:
+    def test_report_has_all_required_fields(self, tmp_path: Path) -> None:
+        from scripts.check_elevenlabs_usage import get_usage_report
+        report = get_usage_report(db_path=tmp_path / "new.db", monthly_limit=30000, reset_day=1)
+        required = {
+            "month_label", "monthly_limit", "monthly_total", "pct_used",
+            "chars_remaining", "videos_produced", "avg_chars_per_video",
+            "videos_remaining", "reset_date", "status", "daily_breakdown",
+        }
+        assert required.issubset(set(report.keys()))
+
+    def test_report_monthly_limit_matches_input(self, tmp_path: Path) -> None:
+        from scripts.check_elevenlabs_usage import get_usage_report
+        report = get_usage_report(db_path=tmp_path / "new.db", monthly_limit=50000, reset_day=1)
+        assert report["monthly_limit"] == 50000
+
+    def test_report_status_ok_below_67(self, tmp_path: Path) -> None:
+        from scripts.check_elevenlabs_usage import get_usage_report
+        db = tmp_path / "usage.db"
+        _insert_usage(db, [(date.today().isoformat(), "t1", 5000, "Adam")])
+        report = get_usage_report(db_path=db, monthly_limit=30000, reset_day=1)
+        assert report["status"] == "OK — plenty of headroom"
+
+    def test_report_status_warning_at_70(self, tmp_path: Path) -> None:
+        from scripts.check_elevenlabs_usage import get_usage_report
+        db = tmp_path / "usage.db"
+        _insert_usage(db, [(date.today().isoformat(), "t1", 21000, "Adam")])
+        report = get_usage_report(db_path=db, monthly_limit=30000, reset_day=1)
+        assert "WARNING" in report["status"]
+
+    def test_report_status_caution_at_90(self, tmp_path: Path) -> None:
+        from scripts.check_elevenlabs_usage import get_usage_report
+        db = tmp_path / "usage.db"
+        _insert_usage(db, [(date.today().isoformat(), "t1", 27000, "Adam")])
+        report = get_usage_report(db_path=db, monthly_limit=30000, reset_day=1)
+        assert "CAUTION" in report["status"]
+
+    def test_report_chars_remaining_correct(self, tmp_path: Path) -> None:
+        from scripts.check_elevenlabs_usage import get_usage_report
+        db = tmp_path / "usage.db"
+        _insert_usage(db, [(date.today().isoformat(), "t1", 10000, "Adam")])
+        report = get_usage_report(db_path=db, monthly_limit=30000, reset_day=1)
+        assert report["chars_remaining"] == 20000
+
+    def test_report_daily_breakdown_is_list(self, tmp_path: Path) -> None:
+        from scripts.check_elevenlabs_usage import get_usage_report
+        report = get_usage_report(db_path=tmp_path / "new.db", monthly_limit=30000, reset_day=1)
+        assert isinstance(report["daily_breakdown"], list)
+
+
+# ---------------------------------------------------------------------------
+# Warning message content
+# ---------------------------------------------------------------------------
+
+
+class TestWarningContent:
+    def test_warning_67_mentions_videos(self, tmp_path: Path, caplog) -> None:
+        gen = _make_gen(tmp_path)
+        today = date.today().isoformat()
+        _insert_usage(gen.db_path, [(today, f"t{i}", 1000, "Adam") for i in range(22)])
+        with patch.dict("os.environ", {"ELEVENLABS_MONTHLY_LIMIT": "30000", "ELEVENLABS_RESET_DAY": "1"}):
+            with caplog.at_level("WARNING", logger="src.media.voiceover"):
+                gen._check_monthly_usage()
+        assert any(
+            "video" in r.message.lower()
+            for r in caplog.records if r.levelname == "WARNING"
+        )
+
+    def test_critical_95_mentions_reset_date(self, tmp_path: Path, caplog) -> None:
+        gen = _make_gen(tmp_path)
+        _insert_usage(gen.db_path, [(date.today().isoformat(), "t1", 28500, "Adam")])
+        with patch.dict("os.environ", {"ELEVENLABS_MONTHLY_LIMIT": "30000", "ELEVENLABS_RESET_DAY": "1"}):
+            with caplog.at_level("CRITICAL", logger="src.media.voiceover"):
+                gen._check_monthly_usage()
+        assert any(
+            "Reset date" in r.message or "reset" in r.message.lower()
+            for r in caplog.records if r.levelname == "CRITICAL"
+        )

@@ -161,6 +161,26 @@ class VoiceoverGenerator:
         text = self._build_text(script_dict)
         output_path = self.output_dir / f"{topic_id}_voice.mp3"
 
+        # Pre-generation budget check: don't waste chars if near monthly limit
+        estimated_chars = len(text)
+        should_skip, chars_remaining = self._budget_check(estimated_chars)
+        if should_skip:
+            msg = (
+                f"Monthly character limit nearly exhausted. "
+                f"Skipping production to preserve remaining {chars_remaining} characters."
+            )
+            logger.critical("[voiceover] %s", msg)
+            return VoiceoverResult(
+                topic_id=topic_id,
+                audio_path="",
+                voice_name=voice_name,
+                voice_id=voice_id,
+                duration_seconds=0.0,
+                is_valid=False,
+                validation_errors=[msg],
+                words_path="",
+            )
+
         logger.info(
             "Generating voiceover: topic_id=%s, voice=%s, chars=%d",
             topic_id, voice_name, len(text),
@@ -213,22 +233,56 @@ class VoiceoverGenerator:
     def _save_usage(self, topic_id: str, chars_used: int, voice_name: str) -> None:
         """Persist a usage record to the elevenlabs_usage table. Failures are swallowed."""
         try:
+            monthly_limit = int(os.getenv("ELEVENLABS_MONTHLY_LIMIT", str(_MONTHLY_LIMIT)))
+            reset_day = int(os.getenv("ELEVENLABS_RESET_DAY", str(_RESET_DAY)))
+            today = date.today()
+            month_start = today.replace(day=reset_day)
+            if today.day < reset_day:
+                if today.month == 1:
+                    month_start = month_start.replace(year=today.year - 1, month=12)
+                else:
+                    month_start = month_start.replace(month=today.month - 1)
+
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
             conn = sqlite3.connect(self.db_path)
             try:
                 conn.execute("""
                     CREATE TABLE IF NOT EXISTS elevenlabs_usage (
-                        id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                        date       TEXT    NOT NULL,
-                        topic_id   TEXT    NOT NULL,
-                        chars_used INTEGER NOT NULL,
-                        voice_name TEXT    NOT NULL,
-                        created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+                        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                        date          TEXT    NOT NULL,
+                        topic_id      TEXT    NOT NULL,
+                        chars_used    INTEGER NOT NULL,
+                        voice_name    TEXT    NOT NULL,
+                        monthly_total INTEGER DEFAULT 0,
+                        pct_used      REAL    DEFAULT 0,
+                        created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
                     )
                 """)
+                # Migrate: add new columns if they don't exist yet
+                for col, coltype in [
+                    ("monthly_total", "INTEGER DEFAULT 0"),
+                    ("pct_used", "REAL DEFAULT 0"),
+                ]:
+                    try:
+                        conn.execute(f"ALTER TABLE elevenlabs_usage ADD COLUMN {col} {coltype}")
+                    except Exception:
+                        pass  # column already exists
+
+                # Compute cumulative monthly total including this record
+                row = conn.execute(
+                    "SELECT SUM(chars_used) FROM elevenlabs_usage WHERE date >= ?",
+                    (month_start.isoformat(),),
+                ).fetchone()
+                prev_total = int(row[0] or 0)
+                new_total = prev_total + chars_used
+                pct_used = new_total / monthly_limit * 100 if monthly_limit > 0 else 0.0
+
                 conn.execute(
-                    "INSERT INTO elevenlabs_usage (date, topic_id, chars_used, voice_name) VALUES (?, ?, ?, ?)",
-                    (date.today().isoformat(), topic_id, chars_used, voice_name),
+                    "INSERT INTO elevenlabs_usage "
+                    "(date, topic_id, chars_used, voice_name, monthly_total, pct_used) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (today.isoformat(), topic_id, chars_used, voice_name,
+                     new_total, round(pct_used, 1)),
                 )
                 conn.commit()
             finally:
@@ -255,12 +309,14 @@ class VoiceoverGenerator:
             try:
                 conn.execute("""
                     CREATE TABLE IF NOT EXISTS elevenlabs_usage (
-                        id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                        date       TEXT    NOT NULL,
-                        topic_id   TEXT    NOT NULL,
-                        chars_used INTEGER NOT NULL,
-                        voice_name TEXT    NOT NULL,
-                        created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+                        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                        date          TEXT    NOT NULL,
+                        topic_id      TEXT    NOT NULL,
+                        chars_used    INTEGER NOT NULL,
+                        voice_name    TEXT    NOT NULL,
+                        monthly_total INTEGER DEFAULT 0,
+                        pct_used      REAL    DEFAULT 0,
+                        created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
                     )
                 """)
                 row = conn.execute(
@@ -317,6 +373,56 @@ class VoiceoverGenerator:
                 )
         except Exception as exc:
             logger.warning("[voiceover] Failed to check monthly usage: %s", exc)
+
+    def _budget_check(self, estimated_chars: int) -> tuple[bool, int]:
+        """
+        Check if generating ``estimated_chars`` would push monthly total above 95%.
+
+        Returns:
+            (should_skip, chars_remaining) — if should_skip is True, caller must
+            abort the API call.  Fails safely: returns (False, 0) on any error so
+            that a DB outage never blocks production.
+        """
+        try:
+            monthly_limit = int(os.getenv("ELEVENLABS_MONTHLY_LIMIT", str(_MONTHLY_LIMIT)))
+            reset_day = int(os.getenv("ELEVENLABS_RESET_DAY", str(_RESET_DAY)))
+            today = date.today()
+            month_start = today.replace(day=reset_day)
+            if today.day < reset_day:
+                if today.month == 1:
+                    month_start = month_start.replace(year=today.year - 1, month=12)
+                else:
+                    month_start = month_start.replace(month=today.month - 1)
+
+            conn = sqlite3.connect(self.db_path)
+            try:
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS elevenlabs_usage (
+                        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                        date          TEXT    NOT NULL,
+                        topic_id      TEXT    NOT NULL,
+                        chars_used    INTEGER NOT NULL,
+                        voice_name    TEXT    NOT NULL,
+                        monthly_total INTEGER DEFAULT 0,
+                        pct_used      REAL    DEFAULT 0,
+                        created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+                    )
+                """)
+                row = conn.execute(
+                    "SELECT SUM(chars_used) FROM elevenlabs_usage WHERE date >= ?",
+                    (month_start.isoformat(),),
+                ).fetchone()
+            finally:
+                conn.close()
+
+            monthly_total = int(row[0] or 0)
+            chars_remaining = max(0, monthly_limit - monthly_total)
+            threshold = monthly_limit * _WARN_95_PCT
+            should_skip = (monthly_total + estimated_chars) > threshold
+            return should_skip, chars_remaining
+        except Exception as exc:
+            logger.warning("[voiceover] Budget pre-check failed (proceeding): %s", exc)
+            return False, 0
 
     @staticmethod
     def _select_voice(category: str) -> tuple[str, str]:

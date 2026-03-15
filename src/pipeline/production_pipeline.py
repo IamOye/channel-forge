@@ -321,30 +321,62 @@ class ProductionPipeline:
         gen = VoiceoverGenerator(api_key=self.elevenlabs_api_key)
         return gen.generate(script_dict=script_dict, topic_id=topic_id, category=category)
 
-    def _run_pixabay(self, topic_id: str, script_dict: dict, category: str) -> _MultiFetchResult:
-        """Fetch 2 video clips + 2 photo clips (Ken Burns) and interleave them.
+    # Words that indicate a high-energy (confrontational / urgent) topic
+    HIGH_ENERGY_WORDS: list[str] = [
+        "broke", "trap", "salary", "boss",
+        "debt", "paycheck", "fired", "poor",
+        "steal", "lie", "scam", "warning",
+    ]
 
-        Clip order: video → photo → video → photo
+    def _detect_energy(self, hook: str) -> str:
+        """Return 'high' if hook contains a HIGH_ENERGY_WORDS keyword, else 'reflective'."""
+        hook_lower = hook.lower()
+        for word in self.HIGH_ENERGY_WORDS:
+            if word in hook_lower:
+                return "high"
+        return "reflective"
+
+    def _run_pixabay(self, topic_id: str, script_dict: dict, category: str) -> _MultiFetchResult:
+        """Fetch video + Ken Burns photo clips and interleave them.
+
+        Clip mix is dynamic based on hook energy level:
+          HIGH energy  → 3 video clips + 1 photo clip
+          Reflective   → 2 video clips + 2 photo clips
+
+        Clip order: video → photo → video → (photo or video) → ...
         """
         from src.media.pixabay_fetcher import PixabayFetcher
         from src.media.video_builder import VideoBuilder, VIDEO_DURATION
 
         fetcher = PixabayFetcher(api_key=self.pixabay_api_key)
 
-        # ── 2 video clips (action / situational) ──────────────────────────────
-        video_phrases = self._extract_broll_keywords(script_dict, count=2)
+        # ── Determine clip mix based on hook energy ────────────────────────────
+        hook = script_dict.get("hook", "")
+        energy = self._detect_energy(hook)
+        if energy == "high":
+            n_video, n_photo = 3, 1
+        else:
+            n_video, n_photo = 2, 2
+
+        logger.info(
+            "[pipeline] Clip mix: %d video + %d photo (energy: %s)",
+            n_video, n_photo, energy,
+        )
+
+        # ── Video clips (action / situational) ────────────────────────────────
+        video_phrases = self._extract_broll_keywords(script_dict, count=n_video)
         video_paths = fetcher.fetch_multiple(
             topic_id=topic_id,
             keywords_list=video_phrases,
-            count=2,
+            count=n_video,
         )
 
-        # ── 2 photo clips with Ken Burns (conceptual / emotional) ──────────────
+        # ── Photo clips with Ken Burns (conceptual / emotional) ────────────────
         photo_phrases = self._extract_photo_phrases(script_dict)
         builder = VideoBuilder()
         ken_burns_paths: list[str] = []
 
-        for i, phrase in enumerate(photo_phrases[:2]):
+        for i, phrase in enumerate(photo_phrases[:n_photo]):
             photos = fetcher.fetch_photos(
                 topic_id=f"{topic_id}_kb{i}",
                 phrase=phrase,
