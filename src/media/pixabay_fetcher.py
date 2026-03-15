@@ -9,8 +9,10 @@ Usage:
     print(result.video_path)
 """
 
+import json
 import logging
 import os
+import random
 import shutil
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -60,6 +62,26 @@ REQUEST_TIMEOUT = 30.0                  # seconds for API calls
 DOWNLOAD_TIMEOUT = 30.0                 # seconds for file downloads
 
 OUTPUT_DIR = Path("data/raw")
+
+# Portrait ratio constraints — clips outside this range stretch badly in 9:16 frame
+MIN_PORTRAIT_RATIO = 0.50   # below this: too narrow (very tall, unusual)
+MAX_PORTRAIT_RATIO = 0.62   # above this: too wide → stretched when cropped to 1080×1920
+
+# Guaranteed high-quality fallback Pixabay video IDs (portrait, human, financial)
+FALLBACK_CLIP_IDS: list[int] = [
+    233390,  # person on phone worried
+    253998,  # man with tablet concerned
+    2124,    # businessman interview
+    8252,    # businessman luxury office
+    27453,   # stock charts analysis
+    10822,   # person laptop concerned
+    13111,   # investment portfolio review
+]
+
+# Minimum relevance score to accept a clip (Claude scores 1–10)
+_MIN_RELEVANCE_SCORE = 6
+# Trigger additional human-focused search if fewer than this many clips pass scoring
+_MIN_CLIPS_AFTER_SCORING = 4
 
 
 # ---------------------------------------------------------------------------
@@ -135,10 +157,15 @@ class PixabayFetcher:
         api_key: str | None = None,
         output_dir: str | Path = OUTPUT_DIR,
         min_duration: int = MIN_VIDEO_DURATION_SECONDS,
+        anthropic_api_key: str | None = None,
     ) -> None:
         self.api_key = api_key if api_key is not None else os.getenv("PIXABAY_API_KEY", "")
         self.output_dir = Path(output_dir)
         self.min_duration = min_duration
+        self.anthropic_api_key = (
+            anthropic_api_key if anthropic_api_key is not None
+            else os.getenv("ANTHROPIC_API_KEY", "")
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -196,25 +223,32 @@ class PixabayFetcher:
         topic_id: str,
         keywords_list: list[str],
         count: int = 4,
+        topic: str = "",
+        script_preview: str = "",
     ) -> list[str]:
         """
-        Fetch multiple stock videos — one per keyword phrase — and return local paths.
+        Fetch multiple stock video clips and return local paths.
 
-        For each phrase, all qualifying API candidates are tried in order until one
-        downloads successfully (passes size and corruption checks).  If every candidate
-        for a phrase fails, the last successfully downloaded clip is copied as a
-        fallback so the video always has enough b-roll.
+        Flow:
+          1. Collect all qualifying candidates from every keyword phrase (deduped).
+          2. If ``topic`` and ``anthropic_api_key`` are set, score candidates for
+             relevance via Claude (FIX 2); reject below score 6.  When fewer than
+             ``_MIN_CLIPS_AFTER_SCORING`` pass, one additional human-focused search
+             is run.
+          3. Download up to ``count`` clips.
+          4. If fewer than 2 clips were downloaded, fill remaining slots from the
+             curated ``FALLBACK_CLIP_IDS`` library (FIX 3).
 
         Args:
-            topic_id: Unique identifier used in output filenames
-                      (e.g. "stoic_001" → "stoic_001_stock_0.mp4", …).
-            keywords_list: Keyword phrases to search; one video per phrase.
-            count: Maximum number of clips to fetch (uses first `count` phrases).
+            topic_id: Unique identifier used in output filenames.
+            keywords_list: Keyword phrases to search.
+            count: Maximum number of clips to return.
+            topic: Video topic string used for relevance scoring (optional).
+            script_preview: First ~40 words of script, used for scoring (optional).
 
         Returns:
-            List of local file paths. Falls back to clip duplication so the
-            returned list length equals the number of phrases attempted (after
-            the first successful download).
+            List of local file paths (may be shorter than ``count`` if fallback
+            also fails).
 
         Raises:
             ValueError: If PIXABAY_API_KEY is not configured.
@@ -223,48 +257,185 @@ class PixabayFetcher:
             raise ValueError("PIXABAY_API_KEY not set")
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        paths: list[str] = []
         seen_ids: set[int] = set()
-        last_good_path: str | None = None
 
-        for i, phrase in enumerate(keywords_list[:count]):
-            output_path = self.output_dir / f"{topic_id}_stock_{i}.mp4"
-            candidates = self._query_api(phrase)
-
-            downloaded = False
-            for video in candidates:
-                if video.pixabay_id in seen_ids:
-                    logger.debug(
-                        "Duplicate pixabay_id=%d skipped for phrase=%r",
-                        video.pixabay_id, phrase,
-                    )
-                    continue
-
-                ok = self._download_verified(video.download_url, output_path)
-                if ok:
+        # 1. Collect all candidates from every keyword phrase (deduped)
+        all_candidates: list[PixabayVideo] = []
+        for phrase in keywords_list[:count]:
+            for video in self._query_api(phrase):
+                if video.pixabay_id not in seen_ids:
+                    all_candidates.append(video)
                     seen_ids.add(video.pixabay_id)
-                    paths.append(str(output_path))
-                    last_good_path = str(output_path)
-                    logger.info(
-                        "Fetched clip %d: pixabay_id=%d phrase=%r -> %s",
-                        len(paths), video.pixabay_id, phrase, output_path,
-                    )
-                    downloaded = True
-                    break
 
-            if not downloaded:
-                if last_good_path is not None:
-                    shutil.copy2(last_good_path, output_path)
+        # 2. Relevance scoring (FIX 2) — only if topic + Anthropic key are available
+        if topic and all_candidates and self.anthropic_api_key:
+            all_candidates = self.score_clip_relevance(all_candidates, topic, script_preview)
+            if len(all_candidates) < _MIN_CLIPS_AFTER_SCORING:
+                extra_query = f"human financial person {topic}"
+                logger.info(
+                    "[pixabay] Only %d clips after scoring — running extra search: %r",
+                    len(all_candidates), extra_query,
+                )
+                for video in self._query_api(extra_query):
+                    if video.pixabay_id not in seen_ids:
+                        all_candidates.append(video)
+                        seen_ids.add(video.pixabay_id)
+
+        # 3. Download up to `count` clips
+        paths: list[str] = []
+        for video in all_candidates:
+            if len(paths) >= count:
+                break
+            output_path = self.output_dir / f"{topic_id}_stock_{len(paths)}.mp4"
+            ok = self._download_verified(video.download_url, output_path)
+            if ok:
+                paths.append(str(output_path))
+                logger.info(
+                    "Fetched clip %d: pixabay_id=%d -> %s",
+                    len(paths), video.pixabay_id, output_path,
+                )
+
+        # 4. Fallback from curated library if fewer than 2 clips found (FIX 3)
+        if len(paths) < 2:
+            logger.warning(
+                "[pixabay] Only %d clip(s) after main search — filling from fallback library",
+                len(paths),
+            )
+            paths = self._fill_from_fallback(topic_id, paths, seen_ids, count)
+
+        return paths
+
+    # ------------------------------------------------------------------
+    # Relevance scoring (FIX 2)
+    # ------------------------------------------------------------------
+
+    def score_clip_relevance(
+        self,
+        clips: list[PixabayVideo],
+        topic: str,
+        script_preview: str,
+    ) -> list[PixabayVideo]:
+        """Score clip relevance via Claude API; return only clips scoring >= 6.
+
+        Falls back to returning all clips unchanged if the API call fails or
+        ``anthropic_api_key`` is not set.
+
+        Args:
+            clips: Candidate clips to evaluate.
+            topic: Video topic (e.g. "money habits").
+            script_preview: First ~40 words of the script for context.
+
+        Returns:
+            Filtered list of clips with relevance score >= 6.
+        """
+        if not self.anthropic_api_key or not clips:
+            return clips
+
+        try:
+            import anthropic  # lazy import
+
+            client = anthropic.Anthropic(api_key=self.anthropic_api_key)
+            clip_descriptions = [
+                {"clip_id": v.pixabay_id, "tags": v.tags, "duration": v.duration}
+                for v in clips
+            ]
+            prompt = (
+                "Rate each stock video clip's relevance to this YouTube Short topic "
+                "and script.\n"
+                "Score 1-10. Be strict — animals, nature, abstract scenes, empty "
+                "rooms score 1-3. Human financial situations score 7-10.\n\n"
+                f"Topic: {topic}\n"
+                f"Script (first 40 words): {script_preview[:200]}\n\n"
+                f"Clips to rate:\n{json.dumps(clip_descriptions, indent=2)}\n\n"
+                'Return JSON array only: [{"clip_id": x, "score": y, "reason": "z"}]'
+            )
+            response = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=1024,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            raw = response.content[0].text.strip()
+            if raw.startswith("```"):
+                raw = raw.split("```")[1]
+                if raw.startswith("json"):
+                    raw = raw[4:]
+            scores_data = json.loads(raw)
+            score_map = {item["clip_id"]: item["score"] for item in scores_data}
+
+            filtered = [v for v in clips if score_map.get(v.pixabay_id, 0) >= _MIN_RELEVANCE_SCORE]
+            logger.info(
+                "[pixabay] Relevance scoring: %d clips → %d passed (score >= %d)",
+                len(clips), len(filtered), _MIN_RELEVANCE_SCORE,
+            )
+            return filtered
+
+        except Exception as exc:
+            logger.warning(
+                "[pixabay] Relevance scoring failed (returning all clips): %s", exc
+            )
+            return clips
+
+    # ------------------------------------------------------------------
+    # Fallback clip library (FIX 3)
+    # ------------------------------------------------------------------
+
+    def _fill_from_fallback(
+        self,
+        topic_id: str,
+        existing_paths: list[str],
+        seen_ids: set[int],
+        target_count: int,
+    ) -> list[str]:
+        """Fill remaining clip slots from FALLBACK_CLIP_IDS when fewer than 2 found.
+
+        Queries each fallback ID from the Pixabay API (by ID) and downloads the
+        first available clip.  Skips IDs already downloaded.  Failures per clip
+        are caught and logged; the method never raises.
+
+        Args:
+            topic_id: Used to name output files.
+            existing_paths: Already-downloaded clip paths.
+            seen_ids: Pixabay IDs already downloaded (mutated in-place).
+            target_count: Desired total number of clips.
+
+        Returns:
+            Updated paths list (may still be short if all fallback fetches fail).
+        """
+        paths = list(existing_paths)
+        need = max(2, target_count) - len(paths)
+        if need <= 0:
+            return paths
+
+        candidates = [fid for fid in FALLBACK_CLIP_IDS if fid not in seen_ids]
+        random.shuffle(candidates)
+
+        for fid in candidates:
+            if need <= 0:
+                break
+            try:
+                resp = httpx.get(
+                    _PIXABAY_API_URL,
+                    params={"key": self.api_key, "id": fid},
+                    timeout=REQUEST_TIMEOUT,
+                )
+                resp.raise_for_status()
+                hits = resp.json().get("hits", [])
+                if not hits:
+                    continue
+                url, _, _ = self._best_url(hits[0].get("videos", {}))
+                if not url:
+                    continue
+                output_path = self.output_dir / f"{topic_id}_stock_{len(paths)}.mp4"
+                if self._download_verified(url, output_path):
+                    seen_ids.add(fid)
                     paths.append(str(output_path))
-                    logger.warning(
-                        "No clip for phrase=%r — duplicated %s as fallback clip %d",
-                        phrase, last_good_path, i,
+                    need -= 1
+                    logger.info(
+                        "[pixabay] Filled fallback slot %d with clip_id=%d",
+                        len(paths) - 1, fid,
                     )
-                else:
-                    logger.warning(
-                        "No clip for phrase=%r and no fallback clip available yet (clip %d skipped)",
-                        phrase, i,
-                    )
+            except Exception as exc:
+                logger.warning("[pixabay] Fallback clip %d failed: %s", fid, exc)
 
         return paths
 
@@ -328,6 +499,16 @@ class PixabayFetcher:
 
             if width < MIN_VIDEO_WIDTH or height < MIN_VIDEO_HEIGHT:
                 continue
+
+            # FIX 1: Reject clips whose aspect ratio falls outside portrait range
+            if height > 0:
+                ratio = width / height
+                if ratio < MIN_PORTRAIT_RATIO or ratio > MAX_PORTRAIT_RATIO:
+                    logger.debug(
+                        "[pixabay] Rejected clip %d — ratio %.2f too wide for portrait",
+                        hit.get("id", 0), ratio,
+                    )
+                    continue
 
             results.append(PixabayVideo(
                 pixabay_id=hit.get("id", 0),
