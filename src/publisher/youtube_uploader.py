@@ -194,7 +194,7 @@ class QuotaTracker:
                 "QuotaTracker: DB not found at %s — quota row not saved", self.db_path
             )
 
-        # Threshold alerts
+        # Threshold alerts + Telegram notifications
         if self.daily_limit > 0:
             pct = new_cumulative / self.daily_limit
             remaining = max(0, self.daily_limit - new_cumulative)
@@ -207,6 +207,12 @@ class QuotaTracker:
                 logger.warning(
                     "YouTube quota at 80%% — %d units remaining today", remaining
                 )
+                uploads_left = remaining // QUOTA_UNITS["video_upload"]
+                try:
+                    from src.notifications.telegram_notifier import TelegramNotifier
+                    TelegramNotifier().notify_youtube_quota_warning(new_cumulative, uploads_left)
+                except Exception:
+                    pass
 
         return new_cumulative
 
@@ -321,11 +327,23 @@ class YouTubeUploader:
                 self.quota_tracker.record("thumbnail_upload", QUOTA_UNITS["thumbnail_upload"])
 
             logger.info("Upload complete: topic_id=%s -> %s", topic_id, url)
+            _title = metadata.get("title", "")
+            # Notification 1 — video uploaded successfully
+            try:
+                from src.notifications.telegram_notifier import TelegramNotifier
+                TelegramNotifier().notify_video_uploaded(
+                    title=_title,
+                    youtube_url=url,
+                    duration=0.0,   # duration not available here; enriched by pipeline
+                    topic=topic_id,
+                )
+            except Exception:
+                pass
             return UploadResult(
                 topic_id=topic_id,
                 youtube_video_id=video_id,
                 youtube_url=url,
-                title=metadata.get("title", ""),
+                title=_title,
                 is_valid=True,
                 publish_at=publish_at or "",
             )
@@ -502,6 +520,13 @@ class YouTubeUploader:
         logger.warning(
             "YouTube quota exceeded — upload queued for next day: %s", queue_file
         )
+        # Count queued files for notification
+        queued_count = len(list(_QUOTA_QUEUE_DIR.glob("*.json")))
+        try:
+            from src.notifications.telegram_notifier import TelegramNotifier
+            TelegramNotifier().notify_youtube_quota_exceeded(queued_count)
+        except Exception:
+            pass
 
     @staticmethod
     def _validate_inputs(video_path: Path, metadata: dict) -> list[str]:

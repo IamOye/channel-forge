@@ -30,7 +30,7 @@ class TestBuildScheduler:
 
         scheduler = build_scheduler(timezone_name="UTC")
         jobs = scheduler.get_jobs()
-        assert len(jobs) == 7
+        assert len(jobs) == 8
 
     def test_job_ids_are_correct(self) -> None:
         from src.scheduler import build_scheduler
@@ -40,6 +40,7 @@ class TestBuildScheduler:
         assert ids == {
             "scraper", "production", "analytics", "optimization",
             "competitor_research", "elevenlabs_usage", "reddit_scraper",
+            "daily_summary",
         }
 
     def test_job_names_are_set(self) -> None:
@@ -56,14 +57,14 @@ class TestBuildScheduler:
         from src.scheduler import build_scheduler
 
         scheduler = build_scheduler(timezone_name="America/New_York")
-        assert len(scheduler.get_jobs()) == 7
+        assert len(scheduler.get_jobs()) == 8
 
     def test_env_timezone_used_when_no_override(self) -> None:
         from src.scheduler import build_scheduler
 
         with patch.dict("os.environ", {"UPLOAD_TIMEZONE": "Europe/London"}):
             scheduler = build_scheduler()
-        assert len(scheduler.get_jobs()) == 7
+        assert len(scheduler.get_jobs()) == 8
 
     def test_default_timezone_is_africa_lagos(self) -> None:
         """When no env var and no override, Africa/Lagos is used without error."""

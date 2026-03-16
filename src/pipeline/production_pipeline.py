@@ -592,6 +592,16 @@ class ProductionPipeline:
             logger.error(msg)
             steps.append(StepResult(step=step_name, success=False, error=str(exc)))
             errors.append(msg)
+            # Notification 6 — production error
+            try:
+                from src.notifications.telegram_notifier import TelegramNotifier
+                TelegramNotifier().notify_production_error(
+                    topic=step_name,
+                    step_name=step_name,
+                    error_message=str(exc),
+                )
+            except Exception:
+                pass
             return None
 
     def _fail(

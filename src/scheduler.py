@@ -135,6 +135,15 @@ def run_startup_tasks(db_path: Path | None = None) -> None:
     except Exception as exc:
         logger.error("[scheduler] Startup scrape failed (non-fatal): %s", exc)
     logger.info("[scheduler] Startup tasks complete")
+    # Notification 8 — scheduler started
+    try:
+        from src.notifications.telegram_notifier import TelegramNotifier
+        TelegramNotifier().notify_scheduler_started(
+            next_scrape_time="next scheduled hour",
+            next_production_time="next scheduled hour + 1",
+        )
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -380,6 +389,69 @@ def run_weekly_optimization() -> None:
         )
 
 
+def run_daily_summary() -> None:
+    """Send a daily summary Telegram notification at 23:00 WAT."""
+    import sqlite3
+    from datetime import date
+
+    start = datetime.now(timezone.utc)
+    logger.info("[scheduler] run_daily_summary START %s", start.isoformat())
+    try:
+        today_str = date.today().isoformat()
+        db = _DEFAULT_DB
+
+        # Videos uploaded today
+        videos_uploaded = 0
+        chars_used = 0
+        units_used = 0
+        try:
+            conn = sqlite3.connect(db)
+            try:
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM production_results WHERE is_valid=1 AND completed_at LIKE ?",
+                    (f"{today_str}%",),
+                ).fetchone()
+                videos_uploaded = int(row[0] or 0) if row else 0
+
+                row = conn.execute(
+                    "SELECT COALESCE(SUM(chars_used),0) FROM elevenlabs_usage WHERE date=?",
+                    (today_str,),
+                ).fetchone()
+                chars_used = int(row[0] or 0) if row else 0
+
+                row = conn.execute(
+                    "SELECT COALESCE(SUM(units_used),0) FROM youtube_quota_usage WHERE date=?",
+                    (today_str,),
+                ).fetchone()
+                units_used = int(row[0] or 0) if row else 0
+            finally:
+                conn.close()
+        except Exception as db_exc:
+            logger.warning("[scheduler] daily_summary DB query failed: %s", db_exc)
+
+        monthly_limit = int(os.getenv("ELEVENLABS_MONTHLY_LIMIT", "30000"))
+        pct_el = chars_used / monthly_limit * 100 if monthly_limit > 0 else 0.0
+
+        from src.notifications.telegram_notifier import TelegramNotifier
+        TelegramNotifier().notify_daily_summary(
+            date=today_str,
+            videos_uploaded=videos_uploaded,
+            views_today=0,         # requires YouTube Analytics API; reported separately
+            new_subs=0,
+            total_subs=0,
+            chars_used=chars_used,
+            chars_limit=monthly_limit,
+            pct_elevenlabs=pct_el,
+            units_used=units_used,
+            next_run_time="01:00 WAT",
+        )
+    except Exception as exc:
+        logger.error("[scheduler] run_daily_summary ERROR: %s", exc)
+    finally:
+        elapsed = (datetime.now(timezone.utc) - start).total_seconds()
+        logger.info("[scheduler] run_daily_summary END (%.1fs)", elapsed)
+
+
 # ---------------------------------------------------------------------------
 # Scheduler factory
 # ---------------------------------------------------------------------------
@@ -475,6 +547,16 @@ def build_scheduler(timezone_name: str | None = None) -> BlockingScheduler:
         name="Weekly Optimization",
         replace_existing=True,
         misfire_grace_time=600,
+    )
+
+    # --- Daily summary: 23:00 WAT ---
+    scheduler.add_job(
+        run_daily_summary,
+        trigger=CronTrigger(hour=23, minute=0, timezone=tz),
+        id="daily_summary",
+        name="Daily Summary",
+        replace_existing=True,
+        misfire_grace_time=300,
     )
 
     n_jobs = len(scheduler.get_jobs())

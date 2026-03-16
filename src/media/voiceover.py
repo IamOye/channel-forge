@@ -354,12 +354,21 @@ class VoiceoverGenerator:
 
             fraction = monthly_total / monthly_limit if monthly_limit > 0 else 0.0
 
+            reset_date_str = reset_date.strftime("%B %d, %Y")
             if fraction >= _WARN_95_PCT:
                 logger.critical(
                     "[voiceover] ElevenLabs at 95%% monthly limit — production will stop at 100%%. "
                     "Reset date: %s",
-                    reset_date.strftime("%B %d, %Y"),
+                    reset_date_str,
                 )
+                try:
+                    from src.notifications.telegram_notifier import TelegramNotifier
+                    TelegramNotifier().notify_elevenlabs_critical(
+                        chars_remaining=chars_remaining,
+                        reset_date=reset_date_str,
+                    )
+                except Exception:
+                    pass
             elif fraction >= _WARN_85_PCT:
                 logger.warning(
                     "[voiceover] ElevenLabs at 85%% monthly limit — consider upgrading or pausing "
@@ -371,6 +380,17 @@ class VoiceoverGenerator:
                     "Approximately %d videos left this month.",
                     chars_remaining, videos_remaining,
                 )
+                try:
+                    from src.notifications.telegram_notifier import TelegramNotifier
+                    TelegramNotifier().notify_elevenlabs_warning(
+                        chars_used=monthly_total,
+                        monthly_limit=monthly_limit,
+                        pct=pct_used,
+                        videos_left=videos_remaining,
+                        reset_date=reset_date_str,
+                    )
+                except Exception:
+                    pass
         except Exception as exc:
             logger.warning("[voiceover] Failed to check monthly usage: %s", exc)
 

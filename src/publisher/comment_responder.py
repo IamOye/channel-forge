@@ -246,6 +246,8 @@ class CommentResponder:
         commenter_name: str = "",
         category: str = "money",
         trigger_type: str = TRIGGER_GENERAL,
+        video_title: str = "",
+        video_url: str = "",
     ) -> ReplyResult:
         """
         Generate a personalised reply to a YouTube comment.
@@ -255,6 +257,8 @@ class CommentResponder:
             commenter_name: Display name of the commenter (empty if unknown).
             category: Channel category slug ("money", "career", "success").
             trigger_type: One of TRIGGER_* constants.
+            video_title: Title of the video being commented on (used for HOT_LEAD alerts).
+            video_url: URL of the video (used for HOT_LEAD alerts).
 
         Returns:
             ReplyResult with the final reply text (≤500 chars).
@@ -303,6 +307,19 @@ class CommentResponder:
         )
         if errors:
             logger.warning("Reply validation issues: %s", errors)
+
+        # Notification 9 — hot lead alert
+        if trigger_type == TRIGGER_HOT_LEAD:
+            try:
+                from src.notifications.telegram_notifier import TelegramNotifier
+                TelegramNotifier().notify_hot_lead(
+                    commenter_name=commenter_name or "unknown",
+                    video_title=video_title or "(unknown video)",
+                    comment_text=comment_text,
+                    video_url=video_url or "",
+                )
+            except Exception:
+                pass
 
         return result
 
