@@ -325,6 +325,32 @@ def run_competitor_research() -> None:
         logger.info("[scheduler] run_competitor_research END (%.1fs)", elapsed)
 
 
+def run_reddit_scraper() -> None:
+    """Scrape Reddit finance/career/success subreddits for fresh topics (every 6 h)."""
+    start = datetime.now(timezone.utc)
+    logger.info("[scheduler] run_reddit_scraper START %s", start.isoformat())
+    try:
+        from src.crawler.reddit_scraper import RedditScraper  # lazy
+
+        scraper = RedditScraper()
+        for category in ("money", "career", "success"):
+            try:
+                topics = scraper.scrape_finance_subreddits(category=category)
+                logger.info(
+                    "[scheduler] Reddit topics saved for '%s': %d",
+                    category, len(topics),
+                )
+            except Exception as exc:
+                logger.error(
+                    "[scheduler] Reddit scrape failed for '%s': %s", category, exc
+                )
+    except Exception as exc:
+        logger.error("[scheduler] run_reddit_scraper ERROR: %s", exc)
+    finally:
+        elapsed = (datetime.now(timezone.utc) - start).total_seconds()
+        logger.info("[scheduler] run_reddit_scraper END (%.1fs)", elapsed)
+
+
 def run_weekly_optimization() -> None:
     """Analyze performance data and inject optimized topics (runs weekly)."""
     start = datetime.now(timezone.utc)
@@ -424,6 +450,16 @@ def build_scheduler(timezone_name: str | None = None) -> BlockingScheduler:
         name="Competitor Research",
         replace_existing=True,
         misfire_grace_time=600,
+    )
+
+    # --- Reddit scraper: every 6 h at 02:00, 08:00, 14:00, 20:00 ---
+    scheduler.add_job(
+        run_reddit_scraper,
+        trigger=CronTrigger(hour="2,8,14,20", minute=0, timezone=tz),
+        id="reddit_scraper",
+        name="Reddit Scraper",
+        replace_existing=True,
+        misfire_grace_time=300,
     )
 
     # --- Optimization: every Sunday at 02:00 ---
