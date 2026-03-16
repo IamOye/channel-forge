@@ -5,6 +5,7 @@ All Google API client calls are mocked — no real OAuth or network activity.
 """
 
 import json
+import sqlite3
 from pathlib import Path
 from unittest.mock import MagicMock, patch, mock_open
 
@@ -14,6 +15,8 @@ from src.publisher.youtube_uploader import (
     CHUNK_SIZE,
     DEFAULT_CATEGORY_ID,
     MAX_RETRIES,
+    QUOTA_UNITS,
+    QuotaTracker,
     UploadResult,
     YouTubeUploader,
 )
@@ -341,3 +344,212 @@ class TestExecuteUpload:
         }):
             with pytest.raises(FakeHttpError):
                 uploader._execute_upload(service, {}, video)
+
+
+# ---------------------------------------------------------------------------
+# QuotaTracker helpers
+# ---------------------------------------------------------------------------
+
+_QUOTA_DDL = """
+CREATE TABLE IF NOT EXISTS youtube_quota_usage (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    date             TEXT    NOT NULL,
+    operation        TEXT    NOT NULL,
+    units_used       INTEGER NOT NULL,
+    cumulative_daily INTEGER NOT NULL,
+    created_at       TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
+
+def _make_quota_db(tmp_path: Path) -> Path:
+    """Create a minimal DB with the youtube_quota_usage table."""
+    db = tmp_path / "cf.db"
+    conn = sqlite3.connect(db)
+    conn.executescript(_QUOTA_DDL)
+    conn.commit()
+    conn.close()
+    return db
+
+
+# ---------------------------------------------------------------------------
+# QuotaTracker unit tests
+# ---------------------------------------------------------------------------
+
+class TestQuotaTracker:
+    def test_get_daily_usage_no_db_returns_zero(self, tmp_path) -> None:
+        qt = QuotaTracker(db_path=tmp_path / "missing.db", daily_limit=10_000)
+        assert qt.get_daily_usage() == 0
+
+    def test_get_daily_usage_empty_table_returns_zero(self, tmp_path) -> None:
+        db = _make_quota_db(tmp_path)
+        qt = QuotaTracker(db_path=db, daily_limit=10_000)
+        assert qt.get_daily_usage() == 0
+
+    def test_record_inserts_row_and_returns_cumulative(self, tmp_path) -> None:
+        db = _make_quota_db(tmp_path)
+        qt = QuotaTracker(db_path=db, daily_limit=10_000)
+
+        result = qt.record("video_upload", 1600)
+        assert result == 1600
+        assert qt.get_daily_usage() == 1600
+
+    def test_record_accumulates_across_calls(self, tmp_path) -> None:
+        db = _make_quota_db(tmp_path)
+        qt = QuotaTracker(db_path=db, daily_limit=10_000)
+
+        qt.record("video_upload", 1600)
+        qt.record("thumbnail_upload", 50)
+        assert qt.get_daily_usage() == 1650
+
+    def test_can_upload_true_when_under_limit(self, tmp_path) -> None:
+        db = _make_quota_db(tmp_path)
+        qt = QuotaTracker(db_path=db, daily_limit=10_000)
+        qt.record("video_upload", 1600)
+        assert qt.can_upload() is True
+
+    def test_can_upload_false_when_at_limit(self, tmp_path) -> None:
+        db = _make_quota_db(tmp_path)
+        qt = QuotaTracker(db_path=db, daily_limit=1600)
+        qt.record("video_upload", 1600)
+        assert qt.can_upload() is False
+
+    def test_units_remaining_decreases_after_record(self, tmp_path) -> None:
+        db = _make_quota_db(tmp_path)
+        qt = QuotaTracker(db_path=db, daily_limit=10_000)
+        qt.record("video_upload", 1600)
+        assert qt.units_remaining() == 8_400
+
+    def test_units_remaining_never_negative(self, tmp_path) -> None:
+        db = _make_quota_db(tmp_path)
+        qt = QuotaTracker(db_path=db, daily_limit=100)
+        qt.record("video_upload", 1600)
+        assert qt.units_remaining() == 0
+
+    def test_warning_logged_at_80_percent(self, tmp_path) -> None:
+        db = _make_quota_db(tmp_path)
+        qt = QuotaTracker(db_path=db, daily_limit=10_000)
+        # 8 000 units = exactly 80 %
+        with patch("src.publisher.youtube_uploader.logger") as mock_log:
+            qt.record("video_upload", 8_000)
+            # warning should be called (80 % threshold)
+            warning_msgs = [str(c) for c in mock_log.warning.call_args_list]
+            assert any("80%" in m for m in warning_msgs)
+
+    def test_critical_logged_at_95_percent(self, tmp_path) -> None:
+        db = _make_quota_db(tmp_path)
+        qt = QuotaTracker(db_path=db, daily_limit=10_000)
+        # 9 500 units = exactly 95 %
+        with patch("src.publisher.youtube_uploader.logger") as mock_log:
+            qt.record("video_upload", 9_500)
+            critical_msgs = [str(c) for c in mock_log.critical.call_args_list]
+            assert any("critical" in m.lower() for m in critical_msgs)
+
+    def test_record_missing_db_logs_warning_and_returns(self, tmp_path) -> None:
+        qt = QuotaTracker(db_path=tmp_path / "missing.db", daily_limit=10_000)
+        # Should not raise; returns 0 + units
+        result = qt.record("video_upload", 1600)
+        assert result == 1600
+
+    def test_daily_limit_from_env(self, tmp_path) -> None:
+        with patch.dict("os.environ", {"YOUTUBE_DAILY_QUOTA_LIMIT": "5000"}):
+            qt = QuotaTracker(db_path=tmp_path / "x.db")
+            assert qt.daily_limit == 5000
+
+
+# ---------------------------------------------------------------------------
+# YouTubeUploader quota integration tests
+# ---------------------------------------------------------------------------
+
+class TestUploadQuota:
+    def test_upload_blocked_when_quota_exhausted(self, tmp_path) -> None:
+        """When can_upload() is False the upload is skipped and queued."""
+        video = tmp_path / "out.mp4"
+        video.write_bytes(b"v" * 100)
+
+        db = _make_quota_db(tmp_path)
+        qt = QuotaTracker(db_path=db, daily_limit=0)   # limit=0 → always exhausted
+
+        uploader = YouTubeUploader(
+            channel_key="test",
+            credentials_dir=tmp_path,
+            quota_tracker=qt,
+        )
+
+        queue_dir = tmp_path / "queue"
+        with patch("src.publisher.youtube_uploader._QUOTA_QUEUE_DIR", queue_dir):
+            result = uploader.upload("q001", video, METADATA)
+
+        assert result.is_valid is False
+        assert any("quota exceeded" in e for e in result.validation_errors)
+        # Queue file must have been written
+        queue_files = list(queue_dir.glob("q001_*.json"))
+        assert len(queue_files) == 1
+        payload = json.loads(queue_files[0].read_text())
+        assert payload["topic_id"] == "q001"
+
+    def test_upload_records_video_units_on_success(self, tmp_path) -> None:
+        """Successful upload must record 1600 units."""
+        video = tmp_path / "out.mp4"
+        video.write_bytes(b"v" * 100)
+        _write_credentials(tmp_path)
+
+        db = _make_quota_db(tmp_path)
+        qt = QuotaTracker(db_path=db, daily_limit=10_000)
+        uploader = _make_uploader(tmp_path)
+        uploader.quota_tracker = qt
+
+        with patch.object(uploader, "_load_credentials", return_value=MagicMock()):
+            with patch.object(uploader, "_build_service", return_value=MagicMock()):
+                with patch.object(uploader, "_execute_upload", return_value="vid_q"):
+                    result = uploader.upload("q002", video, METADATA)
+
+        assert result.is_valid is True
+        assert qt.get_daily_usage() == QUOTA_UNITS["video_upload"]  # 1600
+
+    def test_upload_records_thumbnail_units_when_provided(self, tmp_path) -> None:
+        """Thumbnail upload adds 50 units on top of the 1600 video units."""
+        video = tmp_path / "out.mp4"
+        video.write_bytes(b"v" * 100)
+        thumb = tmp_path / "thumb.jpg"
+        thumb.write_bytes(b"j" * 100)
+        _write_credentials(tmp_path)
+
+        db = _make_quota_db(tmp_path)
+        qt = QuotaTracker(db_path=db, daily_limit=10_000)
+        uploader = _make_uploader(tmp_path)
+        uploader.quota_tracker = qt
+
+        with patch.object(uploader, "_load_credentials", return_value=MagicMock()):
+            with patch.object(uploader, "_build_service", return_value=MagicMock()):
+                with patch.object(uploader, "_execute_upload", return_value="vid_t"):
+                    with patch.object(uploader, "_upload_thumbnail"):
+                        result = uploader.upload("q003", video, METADATA, thumbnail_path=thumb)
+
+        assert result.is_valid is True
+        expected = QUOTA_UNITS["video_upload"] + QUOTA_UNITS["thumbnail_upload"]  # 1650
+        assert qt.get_daily_usage() == expected
+
+    def test_queue_file_contains_all_fields(self, tmp_path) -> None:
+        """Queued JSON must contain all payload fields."""
+        video = tmp_path / "out.mp4"
+        video.write_bytes(b"v" * 100)
+
+        db = _make_quota_db(tmp_path)
+        qt = QuotaTracker(db_path=db, daily_limit=0)
+        uploader = YouTubeUploader(
+            channel_key="ch1",
+            credentials_dir=tmp_path,
+            quota_tracker=qt,
+        )
+
+        queue_dir = tmp_path / "queue"
+        with patch("src.publisher.youtube_uploader._QUOTA_QUEUE_DIR", queue_dir):
+            uploader.upload("q004", video, METADATA, publish_at="2025-06-01T08:00:00Z")
+
+        payload = json.loads(list(queue_dir.glob("q004_*.json"))[0].read_text())
+        for key in ("topic_id", "video_path", "metadata", "publish_at",
+                    "thumbnail_path", "queued_at", "channel_key"):
+            assert key in payload
+        assert payload["channel_key"] == "ch1"
+        assert payload["publish_at"] == "2025-06-01T08:00:00Z"

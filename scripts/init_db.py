@@ -222,6 +222,19 @@ CREATE INDEX IF NOT EXISTS idx_comp_views     ON competitor_topics (view_count D
 CREATE INDEX IF NOT EXISTS idx_comp_used      ON competitor_topics (used);
 """
 
+YOUTUBE_QUOTA_DDL = """
+CREATE TABLE IF NOT EXISTS youtube_quota_usage (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    date             TEXT    NOT NULL,           -- YYYY-MM-DD UTC
+    operation        TEXT    NOT NULL,           -- 'video_upload' | 'thumbnail_upload' | 'metadata_update'
+    units_used       INTEGER NOT NULL,
+    cumulative_daily INTEGER NOT NULL,
+    created_at       TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_quota_date ON youtube_quota_usage (date);
+"""
+
 ELEVENLABS_USAGE_DDL = """
 CREATE TABLE IF NOT EXISTS elevenlabs_usage (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -243,7 +256,7 @@ MAIN_DDL_PARTS = [
     TRENDS_DDL, SAFETY_DDL, SCORES_DDL, TITLES_DDL, VIDEO_IDEAS_DDL,
     SCORED_TOPICS_DDL, UPLOADED_VIDEOS_DDL, VIDEO_METRICS_DDL,
     OPTIMIZATION_LOG_DDL, PRODUCTION_RESULTS_DDL, COMPETITOR_TOPICS_DDL,
-    ELEVENLABS_USAGE_DDL,
+    ELEVENLABS_USAGE_DDL, YOUTUBE_QUOTA_DDL,
 ]
 
 
@@ -304,6 +317,14 @@ def migrate_db(db_path: Path) -> None:
                 logger.info("Migration applied: elevenlabs_usage.%s column added (%s)", col, db_path)
             except sqlite3.OperationalError:
                 pass  # column already exists or table doesn't exist yet
+
+        # YouTube quota migration: create youtube_quota_usage table if absent
+        try:
+            conn.executescript(YOUTUBE_QUOTA_DDL)
+            conn.commit()
+            logger.info("Migration applied: youtube_quota_usage table ensured (%s)", db_path)
+        except sqlite3.OperationalError:
+            pass
     finally:
         conn.close()
 
