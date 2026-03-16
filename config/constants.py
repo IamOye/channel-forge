@@ -131,8 +131,8 @@ PRODUCTS: dict[str, dict[str, str]] = {
         "gumroad_url": _os.getenv(
             "GUMROAD_URL_MONEY", "https://gumroad.com/l/placeholder1"
         ),
-        "cta_script":  "Want to know exactly how the wealthy never work for money? Comment YES and I'll send you my free Wealth Systems Blueprint.",
-        "cta_overlay": "FREE GUIDE — Link in Description",
+        "cta_script":  "Want to know the exact 5 systems the wealthy use to earn while sleeping? Comment YES and I will send you the blueprint free.",
+        "cta_overlay": "FREE WEALTH SYSTEMS BLUEPRINT",
     },
     "career": {
         "name":       "Salary Escape Blueprint — 3 Income Streams to Start This Weekend",
@@ -140,8 +140,8 @@ PRODUCTS: dict[str, dict[str, str]] = {
         "gumroad_url": _os.getenv(
             "GUMROAD_URL_CAREER", "https://gumroad.com/l/placeholder2"
         ),
-        "cta_script":  "Tired of your income having a ceiling? Comment YES and I'll send you my free Salary Escape Blueprint.",
-        "cta_overlay": "FREE GUIDE — Link in Description",
+        "cta_script":  "Want 3 income streams you can start this weekend without quitting your job? Comment YES and I will send you the guide free.",
+        "cta_overlay": "FREE SALARY ESCAPE GUIDE",
     },
     "success": {
         "name":       "Success Myths Exposed — The Beliefs Keeping You Broke",
@@ -149,8 +149,8 @@ PRODUCTS: dict[str, dict[str, str]] = {
         "gumroad_url": _os.getenv(
             "GUMROAD_URL_SUCCESS", "https://gumroad.com/l/placeholder3"
         ),
-        "cta_script":  "Want to know why most people never build real wealth? Comment YES and I'll send you my free Success Myths guide.",
-        "cta_overlay": "FREE GUIDE — Link in Description",
+        "cta_script":  "Want to know which success myths are keeping you broke right now? Comment YES and I will send you the full breakdown free.",
+        "cta_overlay": "FREE SUCCESS MYTHS BREAKDOWN",
     },
 }
 
