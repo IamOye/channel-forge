@@ -430,6 +430,37 @@ def run_reddit_scraper() -> None:
         logger.info("[scheduler] run_reddit_scraper END (%.1fs)", elapsed)
 
 
+def run_weekly_disk_cleanup() -> None:
+    """Delete output files older than 7 days to prevent Railway disk from filling up."""
+    import glob
+    from datetime import timedelta
+
+    start = datetime.now(timezone.utc)
+    logger.info("[scheduler] run_weekly_disk_cleanup START %s", start.isoformat())
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).timestamp()
+        patterns = [
+            "data/output/*_final.mp4",
+            "data/output/*_thumb.jpg",
+        ]
+        deleted = 0
+        for pattern in patterns:
+            for path in glob.glob(pattern):
+                try:
+                    if os.path.getmtime(path) < cutoff:
+                        os.remove(path)
+                        logger.info("[scheduler] Cleaned up: %s", path)
+                        deleted += 1
+                except Exception as exc:
+                    logger.warning("[scheduler] Could not delete %s: %s", path, exc)
+        logger.info("[scheduler] Disk cleanup complete: %d file(s) removed", deleted)
+    except Exception as exc:
+        logger.error("[scheduler] run_weekly_disk_cleanup ERROR: %s", exc)
+    finally:
+        elapsed = (datetime.now(timezone.utc) - start).total_seconds()
+        logger.info("[scheduler] run_weekly_disk_cleanup END (%.1fs)", elapsed)
+
+
 def run_weekly_optimization() -> None:
     """Analyze performance data and inject optimized topics (runs weekly)."""
     start = datetime.now(timezone.utc)
@@ -615,6 +646,16 @@ def build_scheduler(timezone_name: str | None = None) -> BlockingScheduler:
         ),
         id="optimization",
         name="Weekly Optimization",
+        replace_existing=True,
+        misfire_grace_time=600,
+    )
+
+    # --- Disk cleanup: every Sunday at 03:00 ---
+    scheduler.add_job(
+        run_weekly_disk_cleanup,
+        trigger=CronTrigger(day_of_week="sun", hour=3, minute=0, timezone=tz),
+        id="disk_cleanup",
+        name="Weekly Disk Cleanup",
         replace_existing=True,
         misfire_grace_time=600,
     )

@@ -303,6 +303,7 @@ class ProductionPipeline:
             "[production] SUCCESS: video_id=%s url=%s",
             result.youtube_video_id, result.youtube_url,
         )
+        self._cleanup_raw_files(topic_id)
         return result
 
     # ------------------------------------------------------------------
@@ -627,6 +628,29 @@ class ProductionPipeline:
         reason = "; ".join(errors) if errors else "unknown"
         logger.error("[production] FAILED: %s", reason)
         return result
+
+    def _cleanup_raw_files(self, topic_id: str) -> None:
+        """Delete temporary raw media files for topic_id after successful upload."""
+        import glob as _glob
+
+        patterns = [
+            f"data/raw/{topic_id}_voice.mp3",
+            f"data/raw/{topic_id}_words.json",
+            f"data/raw/{topic_id}_stock_*.mp4",
+            f"data/raw/{topic_id}_photo_*.jpg",
+            f"data/raw/{topic_id}_ken_burns_*.mp4",
+            f"data/raw/{topic_id}_kb*_photo_*.jpg",
+        ]
+        deleted = 0
+        for pattern in patterns:
+            for path in _glob.glob(pattern):
+                try:
+                    Path(path).unlink(missing_ok=True)
+                    deleted += 1
+                except Exception as exc:
+                    logger.warning("[production] Could not delete %s: %s", path, exc)
+        if deleted:
+            logger.info("[production] Cleaned up %d raw file(s) for topic_id=%s", deleted, topic_id)
 
     def _save_to_db(self, result: PipelineResult) -> None:
         """Persist the pipeline result to the production_results table."""
