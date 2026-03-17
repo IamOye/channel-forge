@@ -534,9 +534,13 @@ class VoiceoverGenerator:
     def _normalize_audio(self, audio_path: Path) -> None:
         """
         Normalize audio to TARGET_LUFS using ffmpeg loudnorm filter.
-        Overwrites the file in place via a temp file.
-        Uses imageio_ffmpeg bundled binary — no PATH configuration needed.
+        Overwrites the file in place via a temp file written to the system
+        temp directory to avoid cross-device rename issues and file locking
+        on Windows / Railway.
         """
+        import tempfile
+        import time
+
         try:
             import imageio_ffmpeg
             ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
@@ -544,26 +548,49 @@ class VoiceoverGenerator:
             logger.debug("imageio_ffmpeg unavailable — skipping loudness normalization: %s", exc)
             return
 
-        temp_path = audio_path.with_suffix(".norm.mp3")
+        # Write normalized output to a temp directory to avoid same-file locking
+        norm_path = Path(tempfile.gettempdir()) / f"{audio_path.stem}.norm.mp3"
         cmd = [
             ffmpeg_exe, "-y",
             "-i", str(audio_path),
             "-af", f"loudnorm=I={TARGET_LUFS}:TP=-1.5:LRA=11",
-            str(temp_path),
+            str(norm_path),
         ]
         try:
-            subprocess.run(
+            proc = subprocess.run(
                 cmd,
                 check=True,
                 capture_output=True,
                 timeout=60,
             )
-            temp_path.replace(audio_path)
+            # Ensure ffmpeg has fully released file handles before renaming
+            time.sleep(0.3)
+
+            # Retry rename — Windows may hold a brief lock after subprocess exits
+            max_retries = 5
+            last_exc: Exception | None = None
+            for attempt in range(max_retries):
+                try:
+                    os.replace(str(norm_path), str(audio_path))
+                    last_exc = None
+                    break
+                except OSError as e:
+                    last_exc = e
+                    if attempt < max_retries - 1:
+                        time.sleep(0.5)
+
+            if last_exc is not None:
+                raise last_exc
+
             logger.info("Normalized audio to %0.1f LUFS: %s", TARGET_LUFS, audio_path)
         except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as exc:
             logger.warning("ffmpeg normalization failed (continuing): %s", exc)
-            if temp_path.exists():
-                temp_path.unlink()
+            if norm_path.exists():
+                norm_path.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning("ffmpeg normalization rename failed after retries (continuing): %s", exc)
+            if norm_path.exists():
+                norm_path.unlink(missing_ok=True)
 
     def _get_duration(self, audio_path: Path) -> float:
         """Get MP3 duration in seconds using mutagen."""
