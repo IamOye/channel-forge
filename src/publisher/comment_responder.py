@@ -32,8 +32,10 @@ Usage
 import logging
 import os
 import re
+import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import anthropic
@@ -405,3 +407,166 @@ class CommentResponder:
             errors.append(f"unknown trigger_type={trigger_type!r}")
 
         return errors
+
+    # ------------------------------------------------------------------
+    # Comment detection + alert (no autopost)
+    # ------------------------------------------------------------------
+
+    def detect_and_alert(
+        self,
+        comments: list[dict[str, str]],
+        db_path: Path | None = None,
+    ) -> list[dict[str, str]]:
+        """
+        Process a list of new YouTube comments: generate suggested replies,
+        save to comment_states DB, and send Telegram alerts.
+
+        No replies are posted to YouTube — all posting requires manual
+        approval through the Telegram approval flow.
+
+        Args:
+            comments: List of dicts with keys:
+                comment_id, video_id, commenter, comment_text,
+                video_title, category, trigger_type
+            db_path: SQLite database path.  Defaults to DB_PATH env / fallback.
+
+        Returns:
+            List of dicts with comment_id and suggested_reply for each
+            comment that was successfully processed.
+        """
+        target = db_path or Path(os.getenv("DB_PATH", "data/processed/channel_forge.db"))
+        results: list[dict[str, str]] = []
+
+        # Check automode — if off, skip reply generation
+        automode = "on"
+        try:
+            conn = sqlite3.connect(target)
+            try:
+                row = conn.execute(
+                    "SELECT value FROM settings WHERE key = 'telegram_automode'"
+                ).fetchone()
+                if row:
+                    automode = row[0]
+            finally:
+                conn.close()
+        except Exception:
+            pass  # default to "on"
+
+        for comment in comments:
+            cid = comment.get("comment_id", "")
+            if not cid:
+                continue
+
+            # Skip already-processed comments
+            try:
+                conn = sqlite3.connect(target)
+                try:
+                    existing = conn.execute(
+                        "SELECT comment_id FROM comment_states WHERE comment_id = ?",
+                        (cid,),
+                    ).fetchone()
+                finally:
+                    conn.close()
+                if existing:
+                    logger.debug("Comment %s already tracked — skipping", cid)
+                    continue
+            except Exception:
+                pass
+
+            suggested_reply = ""
+            if automode == "on":
+                try:
+                    reply_result = self.generate_reply(
+                        comment_text=comment.get("comment_text", ""),
+                        commenter_name=comment.get("commenter", ""),
+                        category=comment.get("category", "money"),
+                        trigger_type=comment.get("trigger_type", TRIGGER_GENERAL),
+                        video_title=comment.get("video_title", ""),
+                    )
+                    if reply_result.is_valid:
+                        suggested_reply = reply_result.text
+                except Exception as exc:
+                    logger.warning("Reply generation failed for %s: %s", cid, exc)
+
+            # Save to comment_states
+            try:
+                conn = sqlite3.connect(target)
+                try:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO comment_states "
+                        "(comment_id, video_id, commenter, comment_text, "
+                        "suggested_reply, state) "
+                        "VALUES (?, ?, ?, ?, ?, 'PENDING_APPROVAL')",
+                        (
+                            cid,
+                            comment.get("video_id", ""),
+                            comment.get("commenter", ""),
+                            comment.get("comment_text", ""),
+                            suggested_reply,
+                        ),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+            except Exception as exc:
+                logger.error("Failed to save comment_state for %s: %s", cid, exc)
+                continue
+
+            # Send Telegram alert
+            try:
+                from src.notifications.telegram_notifier import TelegramNotifier
+
+                TelegramNotifier().send_new_comment_alert(
+                    commenter=comment.get("commenter", "unknown"),
+                    comment_text=comment.get("comment_text", ""),
+                    video_title=comment.get("video_title", ""),
+                    video_id=comment.get("video_id", ""),
+                    comment_id=cid,
+                    suggested_reply=suggested_reply or "(automode off — no suggestion)",
+                )
+            except Exception as exc:
+                logger.warning("Telegram alert failed for %s: %s", cid, exc)
+
+            results.append({"comment_id": cid, "suggested_reply": suggested_reply})
+            logger.info("Comment %s processed — awaiting manual approval", cid)
+
+        return results
+
+    @staticmethod
+    def post_reply(comment_id: str, text: str) -> bool:
+        """
+        Post a reply to a YouTube comment via YouTube Data API v3.
+
+        Returns True on success, False on failure (never raises).
+        """
+        try:
+            from googleapiclient.discovery import build as yt_build
+            from google.oauth2.credentials import Credentials
+            import json
+
+            base_dir = Path(os.path.dirname(os.path.abspath(__file__))).parent.parent
+            creds_dir = base_dir / ".credentials"
+            token_path = creds_dir / "money_debate_token.json"
+
+            if not token_path.exists():
+                logger.error("YouTube token not found: %s", token_path)
+                return False
+
+            token_data = json.loads(token_path.read_text())
+            creds = Credentials.from_authorized_user_info(token_data)
+
+            service = yt_build("youtube", "v3", credentials=creds)
+            service.comments().insert(
+                part="snippet",
+                body={
+                    "snippet": {
+                        "parentId": comment_id,
+                        "textOriginal": text,
+                    }
+                },
+            ).execute()
+            logger.info("YouTube reply posted for comment_id=%s", comment_id)
+            return True
+        except Exception as exc:
+            logger.error("YouTube reply failed for comment_id=%s: %s", comment_id, exc)
+            return False

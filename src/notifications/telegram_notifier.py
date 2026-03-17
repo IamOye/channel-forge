@@ -330,3 +330,43 @@ class TelegramNotifier:
         video_url: str,
     ) -> bool:
         return self.send(self.fmt_hot_lead(commenter_name, video_title, comment_text, video_url))
+
+    # ------------------------------------------------------------------
+    # Notification 10 — New comment alert (approval flow)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def fmt_new_comment_alert(
+        commenter: str,
+        comment_text: str,
+        video_title: str,
+        comment_id: str,
+        suggested_reply: str,
+    ) -> str:
+        return (
+            f"\U0001f4ac <b>New Comment</b>\n"
+            f"\U0001f464 {commenter}\n"
+            f"\U0001f4fa {video_title}\n\n"
+            f"Comment:\n<i>{comment_text}</i>\n\n"
+            f"Suggested reply:\n<i>{suggested_reply}</i>\n\n"
+            f"Commands:\n"
+            f"/approve_{comment_id} \u2014 post as-is\n"
+            f"/edit_{comment_id} \u2014 edit before posting\n"
+            f"/skip_{comment_id} \u2014 skip this comment"
+        )
+
+    def send_new_comment_alert(
+        self,
+        commenter: str,
+        comment_text: str,
+        video_title: str,
+        video_id: str,
+        comment_id: str,
+        suggested_reply: str,
+    ) -> bool:
+        """Send a comment alert and return True on success."""
+        return self.send(
+            self.fmt_new_comment_alert(
+                commenter, comment_text, video_title, comment_id, suggested_reply,
+            )
+        )

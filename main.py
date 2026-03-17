@@ -121,6 +121,26 @@ def _check_ffmpeg() -> None:
         )
 
 
+def _start_telegram_listener() -> None:
+    """Launch the Telegram reply handler in a background daemon thread."""
+    import asyncio
+    import threading
+
+    def _run_listener() -> None:
+        try:
+            from src.publisher.telegram_reply_handler import TelegramReplyHandler
+            handler = TelegramReplyHandler()
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(handler.poll())
+        except Exception as exc:
+            logger.error("Telegram listener crashed: %s", exc)
+
+    thread = threading.Thread(target=_run_listener, daemon=True)
+    thread.start()
+    logger.info("Telegram reply listener started (daemon thread)")
+
+
 def cmd_run() -> int:
     """Start the blocking APScheduler. Press Ctrl-C to stop."""
     setup_credentials()
@@ -138,6 +158,10 @@ def cmd_run() -> int:
     from src.scheduler import build_scheduler, run_startup_tasks  # lazy
 
     run_startup_tasks()  # seed fallback topics + immediate scrape
+
+    # Start Telegram reply listener in background
+    _start_telegram_listener()
+
     scheduler = build_scheduler()
     try:
         logger.info("Scheduler running. Press Ctrl-C to exit.")

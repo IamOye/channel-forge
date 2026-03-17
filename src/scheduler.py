@@ -490,6 +490,102 @@ def run_weekly_optimization() -> None:
         )
 
 
+def run_comment_check() -> None:
+    """Check for new YouTube comments and send Telegram alerts (every 15 min)."""
+    start = datetime.now(timezone.utc)
+    logger.info("[scheduler] run_comment_check START %s", start.isoformat())
+    try:
+        from src.publisher.comment_responder import CommentResponder  # lazy
+
+        # Fetch recent comments from YouTube API
+        comments: list[dict[str, str]] = []
+        try:
+            from googleapiclient.discovery import build as yt_build  # lazy
+            from google.oauth2.credentials import Credentials  # lazy
+            from config.channels import CHANNELS  # lazy
+            import json
+
+            base_dir = Path(os.path.dirname(os.path.abspath(__file__))).parent
+            creds_dir = base_dir / ".credentials"
+
+            for channel in CHANNELS:
+                token_path = creds_dir / f"{channel.channel_key}_token.json"
+                if not token_path.exists():
+                    continue
+                try:
+                    token_data = json.loads(token_path.read_text())
+                    creds = Credentials.from_authorized_user_info(token_data)
+                    service = yt_build("youtube", "v3", credentials=creds)
+
+                    # Get channel's uploaded videos
+                    ch_resp = service.channels().list(
+                        part="contentDetails", mine=True
+                    ).execute()
+                    uploads_id = (
+                        ch_resp.get("items", [{}])[0]
+                        .get("contentDetails", {})
+                        .get("relatedPlaylists", {})
+                        .get("uploads", "")
+                    )
+                    if not uploads_id:
+                        continue
+
+                    # Get recent videos
+                    pl_resp = service.playlistItems().list(
+                        part="snippet", playlistId=uploads_id, maxResults=10
+                    ).execute()
+
+                    for item in pl_resp.get("items", []):
+                        vid = item["snippet"]["resourceId"]["videoId"]
+                        vtitle = item["snippet"]["title"]
+
+                        # Get comment threads for this video
+                        try:
+                            ct_resp = service.commentThreads().list(
+                                part="snippet", videoId=vid,
+                                maxResults=20, order="time",
+                            ).execute()
+                            for thread in ct_resp.get("items", []):
+                                snippet = thread["snippet"]["topLevelComment"]["snippet"]
+                                comments.append({
+                                    "comment_id": thread["snippet"]["topLevelComment"]["id"],
+                                    "video_id": vid,
+                                    "commenter": snippet.get("authorDisplayName", ""),
+                                    "comment_text": snippet.get("textOriginal", ""),
+                                    "video_title": vtitle,
+                                    "category": getattr(channel, "category", "money"),
+                                    "trigger_type": "GENERAL",
+                                })
+                        except Exception as ct_exc:
+                            logger.warning(
+                                "[scheduler] Comment fetch failed for video %s: %s",
+                                vid, ct_exc,
+                            )
+                except Exception as ch_exc:
+                    logger.error(
+                        "[scheduler] Comment check failed for channel '%s': %s",
+                        channel.channel_key, ch_exc,
+                    )
+        except Exception as exc:
+            logger.warning("[scheduler] YouTube comment fetch unavailable: %s", exc)
+
+        if comments:
+            responder = CommentResponder()
+            processed = responder.detect_and_alert(comments)
+            logger.info(
+                "[scheduler] Comment check: %d new comments found, %d processed",
+                len(comments), len(processed),
+            )
+        else:
+            logger.info("[scheduler] Comment check: no new comments")
+
+    except Exception as exc:
+        logger.error("[scheduler] run_comment_check ERROR: %s", exc)
+    finally:
+        elapsed = (datetime.now(timezone.utc) - start).total_seconds()
+        logger.info("[scheduler] run_comment_check END (%.1fs)", elapsed)
+
+
 def run_daily_summary() -> None:
     """Send a daily summary Telegram notification at 23:00 WAT."""
     import sqlite3
@@ -668,6 +764,16 @@ def build_scheduler(timezone_name: str | None = None) -> BlockingScheduler:
         name="Daily Summary",
         replace_existing=True,
         misfire_grace_time=300,
+    )
+
+    # --- Comment check: every 15 minutes ---
+    scheduler.add_job(
+        run_comment_check,
+        trigger=CronTrigger(minute="*/15", timezone=tz),
+        id="comment_check",
+        name="Comment Check",
+        replace_existing=True,
+        misfire_grace_time=120,
     )
 
     n_jobs = len(scheduler.get_jobs())
