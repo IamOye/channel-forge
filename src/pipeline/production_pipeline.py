@@ -44,6 +44,160 @@ logger = logging.getLogger(__name__)
 
 DB_PATH = Path("data/processed/channel_forge.db")
 
+# ---------------------------------------------------------------------------
+# Contrast visual framework
+# ---------------------------------------------------------------------------
+
+CONTRAST_VISUAL_MAP: dict[str, dict[str, list[str]]] = {
+    "hard work vs leverage": {
+        "struggle": [
+            "office worker overtime tired",
+            "construction worker labor sweat",
+            "employee long hours desk",
+        ],
+        "contrast": [
+            "businessman delegation meeting",
+            "passive income laptop beach",
+            "CEO luxury office command",
+        ],
+    },
+    "saving vs investing": {
+        "struggle": [
+            "person counting coins savings",
+            "piggy bank empty broke",
+        ],
+        "contrast": [
+            "stock market growth chart",
+            "investment portfolio wealth",
+            "financial advisor luxury office",
+        ],
+    },
+    "trading time vs owning systems": {
+        "struggle": [
+            "employee clocking in factory",
+            "worker commute rush hour subway",
+            "person exhausted after work",
+        ],
+        "contrast": [
+            "businessman laptop pool villa",
+            "passive income phone notification",
+            "luxury lifestyle freedom beach",
+        ],
+    },
+    "income vs wealth": {
+        "struggle": [
+            "salary payment cash hand",
+            "paycheck deposit bank",
+        ],
+        "contrast": [
+            "real estate property investment",
+            "stock portfolio growth wealthy",
+            "luxury car mansion wealthy",
+        ],
+    },
+    "linear income vs passive income": {
+        "struggle": [
+            "office worker daily routine",
+            "employee paycheck salary",
+        ],
+        "contrast": [
+            "aerial highway luxury cars",
+            "yacht ocean sailing wealthy",
+            "luxury apartment city skyline",
+        ],
+    },
+    "lifestyle inflation vs wealth": {
+        "struggle": [
+            "person shopping luxury goods",
+            "credit card spending mall",
+        ],
+        "contrast": [
+            "investment growth compound",
+            "financial planning wealthy advisor",
+        ],
+    },
+    "job security vs income freedom": {
+        "struggle": [
+            "employee boss meeting nervous",
+            "worker layoff fired stressed",
+            "corporate office trapped cubicle",
+        ],
+        "contrast": [
+            "entrepreneur freedom laptop",
+            "business owner confident smile",
+            "aerial highway freedom drive",
+        ],
+    },
+    "debt as burden vs tool": {
+        "struggle": [
+            "person debt bills stressed",
+            "credit card bills overwhelmed",
+        ],
+        "contrast": [
+            "real estate investor property",
+            "businessman investment deal signing",
+            "luxury property wealth asset",
+        ],
+    },
+    "financial education vs school": {
+        "struggle": [
+            "student graduation debt loans",
+            "young worker entry level job",
+        ],
+        "contrast": [
+            "financial literacy book reading",
+            "investor wealth building strategy",
+        ],
+    },
+    "busy vs productive": {
+        "struggle": [
+            "worker multitasking stressed busy",
+            "employee overtime paperwork",
+        ],
+        "contrast": [
+            "executive focused results meeting",
+            "businessman strategic planning",
+        ],
+    },
+    "default": {
+        "struggle": [
+            "office worker tired commute",
+            "employee stressed bills desk",
+            "person working overtime laptop",
+        ],
+        "contrast": [
+            "aerial highway birds eye view",
+            "luxury car mountain road drive",
+            "yacht ocean wealthy sailing",
+            "businessman city skyline luxury",
+        ],
+    },
+}
+
+REJECTED_TAGS: list[str] = [
+    "fruit", "vegetable", "food", "animal",
+    "dog", "cat", "flower", "plant", "tree",
+    "nature", "forest", "cartoon", "animated",
+    "illustration", "graphic", "abstract",
+]
+
+
+def _match_contrast_theme(topic: str) -> dict[str, list[str]]:
+    """Return the contrast visual map entry that best matches *topic*.
+
+    Iterates through CONTRAST_VISUAL_MAP keys (excluding "default") and checks
+    whether any meaningful word (len > 4) from the theme key appears in the topic.
+    Returns the ``default`` entry when no specific theme is found.
+    """
+    topic_lower = topic.lower()
+    for theme, visuals in CONTRAST_VISUAL_MAP.items():
+        if theme == "default":
+            continue
+        theme_words = theme.replace(" vs ", " ").split()
+        if any(w in topic_lower for w in theme_words if len(w) > 4):
+            return visuals
+    return CONTRAST_VISUAL_MAP["default"]
+
 
 # ---------------------------------------------------------------------------
 # Data models
@@ -238,7 +392,7 @@ class ProductionPipeline:
         # --- Step 4: Stock video(s) ---
         fetch_result = self._run_step(
             "pixabay", steps, errors,
-            lambda: self._run_pixabay(topic_id, script_dict, category),
+            lambda: self._run_pixabay(topic_id, keyword, script_dict, category),
         )
         if fetch_result is None or not fetch_result.is_valid:
             errors.append(f"pixabay failed: {getattr(fetch_result, 'validation_errors', [])}")
@@ -340,7 +494,7 @@ class ProductionPipeline:
                 return "high"
         return "reflective"
 
-    def _run_pixabay(self, topic_id: str, script_dict: dict, category: str) -> _MultiFetchResult:
+    def _run_pixabay(self, topic_id: str, keyword: str, script_dict: dict, category: str) -> _MultiFetchResult:
         """Fetch video + Ken Burns photo clips and interleave them.
 
         Clip mix is dynamic based on hook energy level:
@@ -348,6 +502,7 @@ class ProductionPipeline:
           Reflective   → 2 video clips + 2 photo clips
 
         Clip order: video → photo → video → (photo or video) → ...
+        Photo clips with REJECTED_TAGS are silently skipped.
         """
         from src.media.pixabay_fetcher import PixabayFetcher
         from src.media.video_builder import VideoBuilder, VIDEO_DURATION
@@ -368,7 +523,7 @@ class ProductionPipeline:
         )
 
         # ── Video clips (action / situational) ────────────────────────────────
-        video_phrases = self._extract_broll_keywords(script_dict, count=n_video)
+        video_phrases = self._extract_broll_phrases(keyword, script_dict, count=n_video, energy=energy)
         video_paths = fetcher.fetch_multiple(
             topic_id=topic_id,
             keywords_list=video_phrases,
@@ -376,7 +531,7 @@ class ProductionPipeline:
         )
 
         # ── Photo clips with Ken Burns (conceptual / emotional) ────────────────
-        photo_phrases = self._extract_photo_phrases(script_dict)
+        photo_phrases = self._extract_photo_phrases(script_dict, count=n_photo)
         builder = VideoBuilder()
         ken_burns_paths: list[str] = []
 
@@ -386,6 +541,23 @@ class ProductionPipeline:
                 phrase=phrase,
                 count=1,
             )
+            if photos:
+                # ── Tag validation: reject irrelevant clips ──────────────────
+                filtered: list[dict] = []
+                for photo in photos:
+                    tags_str = str(photo.get("tags", "")).lower()
+                    rejected_tag = next(
+                        (tag for tag in REJECTED_TAGS if tag in tags_str), None
+                    )
+                    if rejected_tag:
+                        logger.info(
+                            "[pixabay] Rejected clip %s — tag '%s' in rejected list",
+                            photo.get("id", "?"), rejected_tag,
+                        )
+                    else:
+                        filtered.append(photo)
+                photos = filtered
+
             if photos:
                 kb_path = Path("data/raw") / f"{topic_id}_ken_burns_{i}.mp4"
                 ok = builder.write_ken_burns_mp4(
@@ -440,53 +612,89 @@ class ProductionPipeline:
         gen = ThumbnailGenerator()
         return gen.generate(hook=hook, topic=topic_id, category=category)
 
-    def _extract_broll_keywords(self, script_dict: dict, count: int = 4) -> list[str]:
-        """Use Claude to derive visually concrete Pixabay search phrases from the script.
+    def _extract_broll_phrases(
+        self,
+        topic: str,
+        script_dict: dict,
+        count: int = 4,
+        energy: str = "reflective",
+    ) -> list[str]:
+        """Generate Pixabay video search phrases using the contrast visual framework.
 
-        Splits the script into 4 parts (hook/statement/twist/question) and asks
-        Claude to suggest one 2–3 word search query per part that a stock video
-        camera could actually film.  Falls back to generic phrases if the API
-        call fails.
+        First checks CONTRAST_VISUAL_MAP for a pre-mapped theme — if matched, returns
+        curated struggle/contrast phrases without an API call.  Falls back to Claude
+        (new contrast-based prompt) for unmatched topics.
+
+        Args:
+            topic:      Topic keyword string (used for theme matching).
+            script_dict: Script parts dict for Claude fallback context.
+            count:      Number of phrases to return.
+            energy:     'high' or 'reflective' — controls struggle/contrast ratio.
         """
+        # ── Theme matching — skip Claude if pre-mapped ─────────────────────
+        theme_visuals = _match_contrast_theme(topic)
+        is_pre_mapped = theme_visuals is not CONTRAST_VISUAL_MAP["default"]
+
+        if energy == "high":
+            n_struggle = max(1, count - 1)
+            n_contrast = 1
+        else:
+            n_struggle = 1
+            n_contrast = max(1, count - 1)
+
+        if is_pre_mapped:
+            matched_key = next(
+                k for k, v in CONTRAST_VISUAL_MAP.items()
+                if k != "default" and v is theme_visuals
+            )
+            logger.info("[broll] Matched theme: %s — using pre-mapped phrases", matched_key)
+            struggle = theme_visuals.get("struggle", [])
+            contrast = theme_visuals.get("contrast", [])
+            result: list[str] = []
+            for i in range(n_struggle):
+                result.append(struggle[i % len(struggle)] if struggle else "office worker stressed")
+            for i in range(n_contrast):
+                result.append(contrast[i % len(contrast)] if contrast else "luxury lifestyle wealthy")
+            return result[:count]
+
+        # ── Claude fallback for unmatched topics ───────────────────────────
         import json as _json
         import anthropic
 
-        parts = [
-            ("hook",      script_dict.get("hook", "")),
-            ("statement", script_dict.get("statement", "")),
-            ("twist",     script_dict.get("twist", "")),
-            ("question",  script_dict.get("question", "")),
-        ]
-        parts_text = "\n".join(
-            f"Part {i+1} ({label}): {text}" for i, (label, text) in enumerate(parts) if text
-        )
+        hook = script_dict.get("hook", "")
 
         prompt = (
-            f"You are a video director selecting b-roll footage for a finance YouTube Short.\n\n"
-            f"Script (4 segments):\n{parts_text}\n\n"
-            "Generate EXACTLY 4 Pixabay search phrases in this specific mix:\n"
-            "  [0] Situational — EMOTION or SITUATION from Part 1 (hook), features a human\n"
-            "  [1] Situational — EMOTION or SITUATION from Part 2 (statement), features a human\n"
-            "  [2] Famous figure — pick ONE: 'Elon Musk speaking', 'Warren Buffett interview',\n"
-            "      'Jeff Bezos presentation', 'Mark Zuckerberg', 'Steve Jobs keynote',\n"
-            "      'Bill Gates interview'\n"
-            "  [3] Financial context — a finance/wealth/work scene matching Parts 3-4\n\n"
-            "RULES for situational clips [0] and [1]:\n"
-            "- Must feature a human being in the shot\n"
-            "- Show the EMOTION or SITUATION, not literal script words\n"
-            "- NEVER: animals, nature, mountains, ocean, abstract, empty rooms, sky, clouds\n"
-            "- 2-3 words only, human faces visible, subject centred\n\n"
-            "EMOTIONAL MAPPING:\n"
-            "  earning money / salary -> 'person receiving paycheck', 'worker getting paid'\n"
-            "  boss / wealthy person -> 'confident businessman office', 'successful entrepreneur'\n"
-            "  working hard / long hours -> 'tired office worker', 'person working late night'\n"
-            "  passive income -> 'person relaxing laptop income'\n"
-            "  financial freedom -> 'happy person financial success'\n"
-            "  debt / broke -> 'person worried bills', 'stressed person looking at phone'\n"
-            "  investment -> 'person reviewing investment portfolio'\n"
-            "  inequality -> 'frustrated employee meeting', 'worker vs executive'\n\n"
-            "Return a JSON array of exactly 4 strings only, no explanation, no markdown:\n"
-            '[\"situational\",\"situational\",\"famous_figure\",\"financial_context\"]'
+            "You are selecting Pixabay video search phrases for a finance YouTube Short.\n\n"
+            f"Topic: {topic}\n"
+            f"Hook: {hook}\n"
+            f"Energy: {energy}\n\n"
+            "The video must show a VISUAL CONTRAST between financial struggle and financial "
+            "freedom. This contrast is what makes finance content emotionally powerful.\n\n"
+            "STRUGGLE visuals (show the pain of average financial life):\n"
+            "- Workers commuting, overtime, tired\n"
+            "- Stressed people with bills, debt\n"
+            "- Corporate employees in cubicles\n"
+            "- Physical labor, construction, warehouse\n"
+            "- People counting cash, empty wallets\n\n"
+            "CONTRAST visuals (show what money buys):\n"
+            "- Aerial highway views from above\n"
+            "- Luxury cars on open roads\n"
+            "- Yachts, villas, rooftop pools\n"
+            "- Confident businesspeople in luxury settings\n"
+            "- Passive income — laptop on beach/pool\n\n"
+            "STRICT RULES:\n"
+            "- Only human subjects or premium vehicles\n"
+            "- No fruits, vegetables, food, animals\n"
+            "- No abstract graphics or cartoons\n"
+            "- No plain office stock without people\n"
+            "- Aerial highway shots are always acceptable\n"
+            "- 2-4 words per phrase maximum\n\n"
+            f"Based on the topic and hook select {count} Pixabay search phrases.\n\n"
+            f"For HIGH energy topics: {n_struggle} struggle + {n_contrast} contrast phrase(s)\n"
+            f"For REFLECTIVE topics: {n_struggle} struggle + {n_contrast} contrast phrase(s)\n\n"
+            "Return ONLY a JSON array of strings.\n"
+            'Example: ["office worker overtime tired", '
+            '"aerial highway luxury cars", "yacht ocean wealthy sailing"]'
         )
 
         try:
@@ -497,33 +705,38 @@ class ProductionPipeline:
                 messages=[{"role": "user", "content": prompt}],
             )
             raw = message.content[0].text.strip()
-            # Strip markdown fences if present
             if raw.startswith("```"):
                 raw = raw.split("```")[1]
                 if raw.startswith("json"):
                     raw = raw[4:]
             phrases = _json.loads(raw.strip())
             if isinstance(phrases, list) and phrases:
-                logger.info("Claude b-roll phrases: %s", phrases)
+                logger.info("[broll] Claude contrast phrases: %s", phrases)
                 return [str(p) for p in phrases[:count]]
         except Exception as exc:
-            logger.warning("Claude b-roll extraction failed (%s) — using fallback", exc)
+            logger.warning("[broll] Claude phrase extraction failed (%s) — using fallback", exc)
 
-        # Fallback: generic category-based phrases
-        from src.media.pixabay_fetcher import KEYWORD_MAP
-        base = KEYWORD_MAP.get("default")
-        return (base * count)[:count]
+        # Final fallback: default contrast map
+        default = CONTRAST_VISUAL_MAP["default"]
+        struggle = default.get("struggle", [])
+        contrast = default.get("contrast", [])
+        result = []
+        for i in range(n_struggle):
+            result.append(struggle[i % len(struggle)] if struggle else "office worker tired commute")
+        for i in range(n_contrast):
+            result.append(contrast[i % len(contrast)] if contrast else "aerial highway birds eye view")
+        return result[:count]
 
-    def _extract_photo_phrases(self, script_dict: dict) -> list[str]:
-        """Use Claude to generate 2 conceptual/emotional stock photo search phrases.
+    def _extract_photo_phrases(self, script_dict: dict, count: int = 2) -> list[str]:
+        """Use Claude to generate stock photo search phrases using the contrast framework.
 
-        Distinct from video b-roll phrases — photos are symbolic/lifestyle-oriented.
-        Falls back to generic phrases if API call fails.
+        Photos represent either the struggle side (relatable pain) or the luxury side
+        (aspirational contrast). Falls back to generic phrases if API call fails.
         """
         import json as _json
         import anthropic
 
-        full_script = " ".join(filter(None, [
+        topic = " ".join(filter(None, [
             script_dict.get("hook", ""),
             script_dict.get("statement", ""),
             script_dict.get("twist", ""),
@@ -531,13 +744,26 @@ class ProductionPipeline:
         ]))
 
         prompt = (
-            "Generate 2 search phrases for stock PHOTOS (not videos) that visually "
-            "represent the emotion and concept of this script.\n"
-            "Think lifestyle, mood, symbolic.\n"
-            "Examples: 'wealthy lifestyle luxury', 'stressed person bills', "
-            "'financial freedom beach laptop', 'empty wallet poverty'\n"
-            f"Script: {full_script}\n"
-            "Return JSON array of 2 strings only."
+            f"Select {count} Pixabay PHOTO search phrases for a finance Short about: {topic}\n\n"
+            "Photos must show either:\n"
+            "STRUGGLE SIDE (relatable pain):\n"
+            "- 'stressed businessman worried phone'\n"
+            "- 'empty wallet broke sad person'\n"
+            "- 'tired worker night overtime'\n"
+            "- 'person bills debt stress'\n"
+            "- 'young professional struggling paycheck'\n\n"
+            "LUXURY SIDE (aspirational contrast):\n"
+            "- 'successful businessman confident suit'\n"
+            "- 'luxury lifestyle wealthy success'\n"
+            "- 'financial freedom beach laptop'\n"
+            "- 'rich entrepreneur mansion pool'\n"
+            "- 'wealthy person luxury car city'\n\n"
+            "RULES:\n"
+            "- Portrait orientation preferred\n"
+            "- Human subjects only — no objects alone\n"
+            "- Emotionally resonant expressions\n"
+            "- No food, animals, plants\n\n"
+            f"Return ONLY a JSON array of {count} strings."
         )
 
         try:
@@ -555,11 +781,11 @@ class ProductionPipeline:
                 ).strip()
             phrases = _json.loads(raw)
             if isinstance(phrases, list):
-                return [str(p).strip() for p in phrases[:2] if str(p).strip()]
+                return [str(p).strip() for p in phrases[:count] if str(p).strip()]
         except Exception as exc:
             logger.warning("[pipeline] Photo phrase extraction failed: %s", exc)
 
-        return ["successful person lifestyle", "financial freedom concept"]
+        return ["successful businessman confident suit", "person bills debt stress"]
 
     def _run_metadata(self, keyword: str, script: str, category: str = "", video_number: int = 0):
         from src.content.metadata_generator import MetadataGenerator
