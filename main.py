@@ -70,6 +70,15 @@ def cmd_run() -> int:
     """Start the blocking APScheduler. Press Ctrl-C to stop."""
     _check_ffmpeg()
     logger.info("Starting ChannelForge scheduler…")
+
+    # Always ensure DB tables exist (handles Railway ephemeral restarts)
+    try:
+        from scripts.init_db import main as init_db  # lazy
+        init_db()
+        logger.info("Database initialised.")
+    except Exception as exc:
+        logger.warning("init_db failed (non-fatal): %s", exc)
+
     from src.scheduler import build_scheduler, run_startup_tasks  # lazy
 
     run_startup_tasks()  # seed fallback topics + immediate scrape

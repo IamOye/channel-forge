@@ -21,6 +21,7 @@ import difflib
 import json
 import logging
 import os
+import socket
 import sqlite3
 import time
 from dataclasses import dataclass, field
@@ -104,6 +105,20 @@ _MAX_TITLE_LEN = 200
 
 _DEFAULT_DB = Path(os.getenv("DB_PATH", "data/processed/channel_forge.db"))
 
+_DATACENTER_HOSTNAMES = (
+    "railway", "render", "heroku", "fly",
+    "aws", "gcp", "azure", "digitalocean", "linode",
+)
+
+
+def _is_datacenter() -> bool:
+    """Return True when running on a known cloud/datacenter host."""
+    try:
+        hostname = socket.gethostname().lower()
+        return any(x in hostname for x in _DATACENTER_HOSTNAMES)
+    except Exception:
+        return False
+
 
 # ---------------------------------------------------------------------------
 # Data model
@@ -167,6 +182,13 @@ class RedditScraper:
         Returns:
             List of RedditTopic objects (already persisted to DB).
         """
+        if _is_datacenter():
+            logger.info(
+                "[reddit] Datacenter IP detected — Reddit scraper disabled on cloud servers. "
+                "Run locally for Reddit topics."
+            )
+            return []
+
         categories_to_scrape = (
             {category: SUBREDDITS[category]}
             if category and category in SUBREDDITS

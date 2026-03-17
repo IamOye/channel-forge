@@ -299,7 +299,10 @@ class ProductionPipeline:
             steps=steps,
         )
         self._save_to_db(result)
-        logger.info("Pipeline complete: topic_id=%s -> %s", topic_id, result.youtube_url)
+        logger.info(
+            "[production] SUCCESS: video_id=%s url=%s",
+            result.youtube_video_id, result.youtube_url,
+        )
         return result
 
     # ------------------------------------------------------------------
@@ -621,6 +624,8 @@ class ProductionPipeline:
             validation_errors=errors,
         )
         self._save_to_db(result)
+        reason = "; ".join(errors) if errors else "unknown"
+        logger.error("[production] FAILED: %s", reason)
         return result
 
     def _save_to_db(self, result: PipelineResult) -> None:

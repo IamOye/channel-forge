@@ -2,6 +2,10 @@
 builder = "nixpacks"
 
 [deploy]
-startCommand = "python3.11 main.py run"
+startCommand = "python scripts/init_db.py && python main.py run"
 restartPolicyType = "always"
 restartPolicyMaxRetries = 10
+
+[[deploy.volumeMounts]]
+mountPath = "/app/data"
+name = "channelforge-data"

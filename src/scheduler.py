@@ -134,6 +134,44 @@ def run_startup_tasks(db_path: Path | None = None) -> None:
         run_all_channel_scrapers()
     except Exception as exc:
         logger.error("[scheduler] Startup scrape failed (non-fatal): %s", exc)
+
+    # Force-seed fallback topics if scored_topics is still empty after scraping
+    # (handles datacenter IP blocks, e.g. Reddit 403 on Railway)
+    import sqlite3 as _sqlite3
+
+    from config.constants import FALLBACK_TOPICS
+
+    target = db_path or _DEFAULT_DB
+    try:
+        conn = _sqlite3.connect(target)
+        try:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM scored_topics WHERE used=0"
+            ).fetchone()[0]
+            if count == 0:
+                logger.warning(
+                    "[scheduler] Scored topics still empty after scrape "
+                    "— force seeding fallback topics"
+                )
+                rows = [
+                    (keyword, category, 50.0, "fallback")
+                    for category, keywords in FALLBACK_TOPICS.items()
+                    for keyword in keywords
+                ]
+                conn.executemany(
+                    "INSERT OR IGNORE INTO scored_topics "
+                    "(keyword, category, score, source) VALUES (?,?,?,?)",
+                    rows,
+                )
+                conn.commit()
+                logger.info(
+                    "[scheduler] Force seeded %d fallback topics", len(rows)
+                )
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.error("[scheduler] Force-seed fallback check failed: %s", exc)
+
     logger.info("[scheduler] Startup tasks complete")
     # Notification 8 — scheduler started
     try:
@@ -199,10 +237,42 @@ def run_all_channel_scrapers() -> None:
 
 def run_all_channel_production() -> None:
     """Run the full production pipeline for every configured channel."""
+    import sqlite3 as _sqlite3
+
     start = datetime.now(timezone.utc)
     logger.info(
         "[scheduler] run_all_channel_production START %s", start.isoformat()
     )
+
+    # Check for empty topic queue before starting production
+    try:
+        conn = _sqlite3.connect(_DEFAULT_DB)
+        try:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM scored_topics WHERE used=0"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        if count == 0:
+            next_time = "next scheduled scrape"
+            logger.warning(
+                "[scheduler] Empty topic queue — no topics available for production. "
+                "Scrapers running now to refill queue."
+            )
+            try:
+                from src.notifications.telegram_notifier import TelegramNotifier
+                TelegramNotifier().send(
+                    "⚠️ <b>Empty Topic Queue</b>\n\n"
+                    "No topics available for production.\n"
+                    "Scrapers running now to refill queue.\n"
+                    f"Next attempt: {next_time}"
+                )
+            except Exception:
+                pass
+            run_all_channel_scrapers()
+    except Exception as exc:
+        logger.warning("[scheduler] Queue check failed (non-fatal): %s", exc)
+
     try:
         from src.pipeline.multi_channel_orchestrator import MultiChannelOrchestrator  # lazy
 
