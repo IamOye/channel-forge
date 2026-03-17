@@ -147,6 +147,18 @@ class TestValidateDuration:
 # ---------------------------------------------------------------------------
 
 class TestVoiceoverGeneratorGenerate:
+    def setup_method(self) -> None:
+        """Neutralise budget check so env/DB state never blocks tests."""
+        patcher = patch(
+            "src.media.voiceover.VoiceoverGenerator._budget_check",
+            return_value=(False, 100_000),
+        )
+        patcher.start()
+        self._budget_patcher = patcher
+
+    def teardown_method(self) -> None:
+        self._budget_patcher.stop()
+
     def _mock_httpx_response(self, content: bytes = b"fake_mp3_audio") -> MagicMock:
         import base64
         resp = MagicMock()
