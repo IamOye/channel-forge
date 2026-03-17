@@ -49,7 +49,9 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-CREDENTIALS_DIR = Path(".credentials")
+# Absolute path: src/publisher/ -> src/ -> project root -> .credentials/
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+CREDENTIALS_DIR = _PROJECT_ROOT / ".credentials"
 DEFAULT_CATEGORY_ID = "22"          # People & Blogs
 CHUNK_SIZE = 5 * 1024 * 1024        # 5 MB resumable upload chunks
 MAX_RETRIES = 3

@@ -45,6 +45,61 @@ logger = logging.getLogger("main")
 
 DB_PATH = Path(os.getenv("DB_PATH", "data/processed/channel_forge.db"))
 
+# Absolute path to this file's directory (project root on Railway)
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+_CREDS_DIR = os.path.join(_BASE_DIR, ".credentials")
+
+
+# ---------------------------------------------------------------------------
+# Credential bootstrap
+# ---------------------------------------------------------------------------
+
+
+def setup_credentials() -> None:
+    """Decode base64 env vars and write credential files using absolute paths.
+
+    Reads YOUTUBE_CLIENT_SECRET_B64 and YOUTUBE_TOKEN_B64 from the environment
+    and writes them to .credentials/ relative to this file.  Using absolute
+    paths avoids failures when Railway changes the working directory.
+    """
+    import base64
+
+    os.makedirs(_CREDS_DIR, exist_ok=True)
+    logger.info("[credentials] CREDS_DIR: %s", _CREDS_DIR)
+
+    secret_b64 = os.getenv("YOUTUBE_CLIENT_SECRET_B64")
+    token_b64  = os.getenv("YOUTUBE_TOKEN_B64")
+
+    logger.info("[credentials] SECRET_B64 present: %s", bool(secret_b64))
+    logger.info("[credentials] TOKEN_B64 present: %s",  bool(token_b64))
+
+    if secret_b64:
+        path = os.path.join(_CREDS_DIR, "money_debate_client_secret.json")
+        try:
+            with open(path, "wb") as f:
+                f.write(base64.b64decode(secret_b64))
+            logger.info("[credentials] Written: %s (%d bytes)", path, os.path.getsize(path))
+        except Exception as exc:
+            logger.error("[credentials] Failed to write secret: %s", exc)
+    else:
+        logger.error("[credentials] YOUTUBE_CLIENT_SECRET_B64 not set!")
+
+    if token_b64:
+        path = os.path.join(_CREDS_DIR, "money_debate_token.json")
+        try:
+            with open(path, "wb") as f:
+                f.write(base64.b64decode(token_b64))
+            logger.info("[credentials] Written: %s (%d bytes)", path, os.path.getsize(path))
+        except Exception as exc:
+            logger.error("[credentials] Failed to write token: %s", exc)
+    else:
+        logger.error("[credentials] YOUTUBE_TOKEN_B64 not set!")
+
+    # Verify files exist after writing
+    for fname in ["money_debate_client_secret.json", "money_debate_token.json"]:
+        fpath = os.path.join(_CREDS_DIR, fname)
+        logger.info("[credentials] %s exists: %s", fpath, os.path.exists(fpath))
+
 
 # ---------------------------------------------------------------------------
 # Command implementations
@@ -68,6 +123,7 @@ def _check_ffmpeg() -> None:
 
 def cmd_run() -> int:
     """Start the blocking APScheduler. Press Ctrl-C to stop."""
+    setup_credentials()
     _check_ffmpeg()
     logger.info("Starting ChannelForge scheduler…")
 
