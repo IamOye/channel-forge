@@ -353,12 +353,22 @@ class YouTubeTrendsScraper:
             "maxResults": self.max_results,
             "key": self.api_key,
         }
+        _RETRYABLE = {429, 500, 502, 503, 504}
         for attempt in range(1, self.retries + 1):
             try:
                 resp = self._client.get(f"{self.BASE_URL}/videos", params=params)
                 resp.raise_for_status()
                 return resp.json().get("items", [])
             except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code
+                if status == 403:
+                    logger.warning(
+                        "YouTube quota exceeded (403) — skipping trending fetch"
+                    )
+                    return []
+                if status not in _RETRYABLE:
+                    logger.warning("YouTube API non-retryable error %d — aborting", status)
+                    return []
                 logger.warning(
                     "YouTube API HTTP error attempt %d/%d: %s",
                     attempt, self.retries, exc,
@@ -384,6 +394,7 @@ class YouTubeTrendsScraper:
             "regionCode": self.region,
             "key": self.api_key,
         }
+        _RETRYABLE = {429, 500, 502, 503, 504}
         for attempt in range(1, self.retries + 1):
             try:
                 resp = self._client.get(f"{self.BASE_URL}/search", params=params)
@@ -410,13 +421,31 @@ class YouTubeTrendsScraper:
                     related_queries=related[:10],
                     raw_json={"total_results": total, "top_titles": related},
                 )
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code
+                if status == 403:
+                    logger.warning(
+                        "YouTube quota exceeded (403) — skipping search for '%s'",
+                        keyword,
+                    )
+                    return None
+                if status not in _RETRYABLE:
+                    logger.warning(
+                        "YouTube search non-retryable error %d for '%s' — aborting",
+                        status, keyword,
+                    )
+                    return None
+                logger.warning(
+                    "YouTube search attempt %d/%d for '%s': %s",
+                    attempt, self.retries, keyword, exc,
+                )
             except Exception as exc:
                 logger.warning(
                     "YouTube search attempt %d/%d for '%s': %s",
                     attempt, self.retries, keyword, exc,
                 )
-                if attempt < self.retries:
-                    time.sleep(2.0 * attempt)
+            if attempt < self.retries:
+                time.sleep(2.0 * attempt)
         return None
 
     def _videos_to_signals(self, videos: list[dict[str, Any]]) -> list[TrendSignal]:
