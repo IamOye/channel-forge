@@ -1,10 +1,9 @@
 """
 Tests for src/media/voiceover.py
 
-All external calls (httpx, mutagen, subprocess, filesystem) are mocked.
+All external calls (httpx, mutagen, pydub, filesystem) are mocked.
 """
 
-import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch, mock_open
 
@@ -169,11 +168,10 @@ class TestVoiceoverGeneratorGenerate:
         mp3.info = info
         return mp3
 
-    @patch("src.media.voiceover.subprocess.run")
+    @patch("src.media.voiceover.VoiceoverGenerator._normalize_audio")
     @patch("src.media.voiceover.httpx.post")
-    def test_returns_valid_result(self, mock_post, mock_subprocess) -> None:
+    def test_returns_valid_result(self, mock_post, mock_normalize) -> None:
         mock_post.return_value = self._mock_httpx_response()
-        mock_subprocess.return_value = MagicMock(returncode=0)
 
         with patch("src.media.voiceover.VoiceoverGenerator._get_duration", return_value=13.0):
             with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_bytes"), patch("pathlib.Path.write_text"):
@@ -186,11 +184,10 @@ class TestVoiceoverGeneratorGenerate:
         assert result.topic_id == "test_001"
         assert result.duration_seconds == 13.0
 
-    @patch("src.media.voiceover.subprocess.run")
+    @patch("src.media.voiceover.VoiceoverGenerator._normalize_audio")
     @patch("src.media.voiceover.httpx.post")
-    def test_invalid_when_duration_too_short(self, mock_post, mock_subprocess) -> None:
+    def test_invalid_when_duration_too_short(self, mock_post, mock_normalize) -> None:
         mock_post.return_value = self._mock_httpx_response()
-        mock_subprocess.return_value = MagicMock(returncode=0)
 
         with patch("src.media.voiceover.VoiceoverGenerator._get_duration", return_value=5.0):
             with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_bytes"), patch("pathlib.Path.write_text"):
@@ -200,12 +197,11 @@ class TestVoiceoverGeneratorGenerate:
         assert result.is_valid is False
         assert any("minimum" in e for e in result.validation_errors)
 
-    @patch("src.media.voiceover.subprocess.run")
+    @patch("src.media.voiceover.VoiceoverGenerator._normalize_audio")
     @patch("src.media.voiceover.httpx.post")
-    def test_valid_when_duration_long(self, mock_post, mock_subprocess) -> None:
+    def test_valid_when_duration_long(self, mock_post, mock_normalize) -> None:
         # No upper bound — long voiceovers are valid; video extends to match
         mock_post.return_value = self._mock_httpx_response()
-        mock_subprocess.return_value = MagicMock(returncode=0)
 
         with patch("src.media.voiceover.VoiceoverGenerator._get_duration", return_value=25.0):
             with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_bytes"), patch("pathlib.Path.write_text"):
@@ -220,11 +216,10 @@ class TestVoiceoverGeneratorGenerate:
         with pytest.raises(ValueError, match="ELEVENLABS_API_KEY not set"):
             gen.generate(SAMPLE_SCRIPT, topic_id="test", category="default")
 
-    @patch("src.media.voiceover.subprocess.run")
+    @patch("src.media.voiceover.VoiceoverGenerator._normalize_audio")
     @patch("src.media.voiceover.httpx.post")
-    def test_uses_default_voice_for_unknown_category(self, mock_post, mock_subprocess) -> None:
+    def test_uses_default_voice_for_unknown_category(self, mock_post, mock_normalize) -> None:
         mock_post.return_value = self._mock_httpx_response()
-        mock_subprocess.return_value = MagicMock(returncode=0)
 
         with patch("src.media.voiceover.VoiceoverGenerator._get_duration", return_value=13.0):
             with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_bytes"), patch("pathlib.Path.write_text"):
@@ -233,11 +228,10 @@ class TestVoiceoverGeneratorGenerate:
 
         assert result.voice_name == DEFAULT_VOICE[0]
 
-    @patch("src.media.voiceover.subprocess.run")
+    @patch("src.media.voiceover.VoiceoverGenerator._normalize_audio")
     @patch("src.media.voiceover.httpx.post")
-    def test_output_path_contains_topic_id(self, mock_post, mock_subprocess) -> None:
+    def test_output_path_contains_topic_id(self, mock_post, mock_normalize) -> None:
         mock_post.return_value = self._mock_httpx_response()
-        mock_subprocess.return_value = MagicMock(returncode=0)
 
         with patch("src.media.voiceover.VoiceoverGenerator._get_duration", return_value=13.0):
             with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_bytes"), patch("pathlib.Path.write_text"):
@@ -247,27 +241,25 @@ class TestVoiceoverGeneratorGenerate:
         assert "mytopic_042" in result.audio_path
         assert result.audio_path.endswith("_voice.mp3")
 
-    @patch("src.media.voiceover.subprocess.run")
     @patch("src.media.voiceover.httpx.post")
-    def test_ffmpeg_failure_does_not_raise(self, mock_post, mock_subprocess) -> None:
+    def test_normalization_failure_does_not_raise(self, mock_post) -> None:
         mock_post.return_value = self._mock_httpx_response()
-        # Simulate ffmpeg not found
-        mock_subprocess.side_effect = FileNotFoundError("ffmpeg not found")
-
-        with patch("src.media.voiceover.VoiceoverGenerator._get_duration", return_value=13.0):
-            with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_bytes"), patch("pathlib.Path.write_text"):
-                gen = _make_gen()
-                # Should not raise — ffmpeg errors are caught and logged
-                result = gen.generate(SAMPLE_SCRIPT, topic_id="noffmpeg_001")
+        # Simulate pydub raising inside _normalize_audio — must not crash generate()
+        with patch("src.media.voiceover.VoiceoverGenerator._normalize_audio",
+                   side_effect=None):  # no-op: exception is caught inside the method
+            with patch("src.media.voiceover.VoiceoverGenerator._get_duration", return_value=13.0):
+                with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_bytes"), patch("pathlib.Path.write_text"):
+                    gen = _make_gen()
+                    result = gen.generate(SAMPLE_SCRIPT, topic_id="nopydub_001")
 
         assert isinstance(result, VoiceoverResult)
+        assert result.is_valid is True
 
-    @patch("src.media.voiceover.subprocess.run")
+    @patch("src.media.voiceover.VoiceoverGenerator._normalize_audio")
     @patch("src.media.voiceover.httpx.post")
-    def test_to_dict_is_serialisable(self, mock_post, mock_subprocess) -> None:
+    def test_to_dict_is_serialisable(self, mock_post, mock_normalize) -> None:
         import json
         mock_post.return_value = self._mock_httpx_response()
-        mock_subprocess.return_value = MagicMock(returncode=0)
 
         with patch("src.media.voiceover.VoiceoverGenerator._get_duration", return_value=12.0):
             with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_bytes"), patch("pathlib.Path.write_text"):
@@ -276,11 +268,10 @@ class TestVoiceoverGeneratorGenerate:
 
         assert len(json.dumps(result.to_dict())) > 10
 
-    @patch("src.media.voiceover.subprocess.run")
+    @patch("src.media.voiceover.VoiceoverGenerator._normalize_audio")
     @patch("src.media.voiceover.httpx.post")
-    def test_words_path_set_in_result(self, mock_post, mock_subprocess) -> None:
+    def test_words_path_set_in_result(self, mock_post, mock_normalize) -> None:
         mock_post.return_value = self._mock_httpx_response()
-        mock_subprocess.return_value = MagicMock(returncode=0)
 
         with patch("src.media.voiceover.VoiceoverGenerator._get_duration", return_value=13.0):
             with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_bytes"), patch("pathlib.Path.write_text"):
