@@ -251,12 +251,22 @@ CREATE INDEX IF NOT EXISTS idx_usage_date    ON elevenlabs_usage (date);
 CREATE INDEX IF NOT EXISTS idx_usage_topic   ON elevenlabs_usage (topic_id);
 """
 
+PRODUCTION_LOCK_DDL = """
+CREATE TABLE IF NOT EXISTS production_lock (
+    id        INTEGER PRIMARY KEY CHECK (id = 1),
+    locked    INTEGER NOT NULL DEFAULT 0,
+    locked_at TEXT,
+    locked_by TEXT
+);
+INSERT OR IGNORE INTO production_lock (id, locked) VALUES (1, 0);
+"""
+
 # Unified main DB gets all tables
 MAIN_DDL_PARTS = [
     TRENDS_DDL, SAFETY_DDL, SCORES_DDL, TITLES_DDL, VIDEO_IDEAS_DDL,
     SCORED_TOPICS_DDL, UPLOADED_VIDEOS_DDL, VIDEO_METRICS_DDL,
     OPTIMIZATION_LOG_DDL, PRODUCTION_RESULTS_DDL, COMPETITOR_TOPICS_DDL,
-    ELEVENLABS_USAGE_DDL, YOUTUBE_QUOTA_DDL,
+    ELEVENLABS_USAGE_DDL, YOUTUBE_QUOTA_DDL, PRODUCTION_LOCK_DDL,
 ]
 
 
@@ -323,6 +333,14 @@ def migrate_db(db_path: Path) -> None:
             conn.executescript(YOUTUBE_QUOTA_DDL)
             conn.commit()
             logger.info("Migration applied: youtube_quota_usage table ensured (%s)", db_path)
+        except sqlite3.OperationalError:
+            pass
+
+        # Production lock migration: create production_lock table if absent
+        try:
+            conn.executescript(PRODUCTION_LOCK_DDL)
+            conn.commit()
+            logger.info("Migration applied: production_lock table ensured (%s)", db_path)
         except sqlite3.OperationalError:
             pass
     finally:

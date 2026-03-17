@@ -17,6 +17,8 @@ Usage:
 """
 
 import logging
+import os
+import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -27,6 +29,85 @@ from dotenv import load_dotenv
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Production mutex — prevents simultaneous job execution
+# ---------------------------------------------------------------------------
+
+def _ensure_lock_table(conn: sqlite3.Connection) -> None:
+    """Create production_lock table and seed row if not present."""
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS production_lock (
+            id        INTEGER PRIMARY KEY CHECK (id = 1),
+            locked    INTEGER NOT NULL DEFAULT 0,
+            locked_at TEXT,
+            locked_by TEXT
+        );
+        INSERT OR IGNORE INTO production_lock (id, locked) VALUES (1, 0);
+    """)
+    conn.commit()
+
+
+def _acquire_lock(db_path: Path) -> bool:
+    """
+    Atomically acquire the production mutex.
+
+    Returns True only if this call flipped locked 0 → 1.
+    Stale locks older than 30 minutes are force-released first.
+    Fails safely — any DB error returns False (does NOT block production).
+    """
+    try:
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db_path)
+        try:
+            _ensure_lock_table(conn)
+
+            # Force-release stale lock (safety timeout: 30 minutes)
+            conn.execute("""
+                UPDATE production_lock
+                SET locked=0, locked_at=NULL, locked_by=NULL
+                WHERE id=1 AND locked=1
+                  AND locked_at < datetime('now', '-30 minutes')
+            """)
+            conn.commit()
+
+            # Atomic acquire — only succeeds if locked=0
+            cursor = conn.execute("""
+                UPDATE production_lock
+                SET locked=1,
+                    locked_at=datetime('now'),
+                    locked_by=?
+                WHERE id=1 AND locked=0
+            """, (str(os.getpid()),))
+            conn.commit()
+            acquired = cursor.rowcount == 1
+            if acquired:
+                logger.info("[orchestrator] Production lock acquired (pid=%s)", os.getpid())
+            return acquired
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.warning("[orchestrator] Could not acquire production lock: %s", exc)
+        return False
+
+
+def _release_lock(db_path: Path) -> None:
+    """Release the production mutex. Logs and swallows errors."""
+    try:
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.execute("""
+                UPDATE production_lock
+                SET locked=0, locked_at=NULL, locked_by=NULL
+                WHERE id=1
+            """)
+            conn.commit()
+            logger.info("[orchestrator] Production lock released")
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.warning("[orchestrator] Could not release production lock: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -108,29 +189,44 @@ class MultiChannelOrchestrator:
         """
         Run the pipeline for every channel in config.channels.CHANNELS.
 
+        A SQLite mutex (production_lock table in channel_forge.db) prevents
+        two scheduler triggers from running simultaneously.  If the lock is
+        already held the call returns immediately with an empty list.
+
         Returns:
             List of ChannelRunResult, one per channel. Never raises —
             individual channel failures are captured in ChannelRunResult.error.
         """
-        from config.channels import CHANNELS  # lazy — allows test mocking
-        channels = [c for c in CHANNELS if getattr(c, "enabled", True)]
+        lock_db = self.base_db_dir / "channel_forge.db"
 
-        if not channels:
-            logger.warning("No enabled channels configured in config/channels.py")
+        if not _acquire_lock(lock_db):
+            logger.warning(
+                "[orchestrator] Production already running — skipping this trigger"
+            )
             return []
 
-        logger.info("Running pipeline for %d channel(s)", len(channels))
-        results: list[ChannelRunResult] = []
-        for channel_cfg in channels:
-            result = self.run_channel(channel_cfg)
-            results.append(result)
-            logger.info(
-                "Channel '%s' done: succeeded=%d failed=%d",
-                channel_cfg.channel_key,
-                result.topics_succeeded,
-                result.topics_failed,
-            )
-        return results
+        try:
+            from config.channels import CHANNELS  # lazy — allows test mocking
+            channels = [c for c in CHANNELS if getattr(c, "enabled", True)]
+
+            if not channels:
+                logger.warning("No enabled channels configured in config/channels.py")
+                return []
+
+            logger.info("Running pipeline for %d channel(s)", len(channels))
+            results: list[ChannelRunResult] = []
+            for channel_cfg in channels:
+                result = self.run_channel(channel_cfg)
+                results.append(result)
+                logger.info(
+                    "Channel '%s' done: succeeded=%d failed=%d",
+                    channel_cfg.channel_key,
+                    result.topics_succeeded,
+                    result.topics_failed,
+                )
+            return results
+        finally:
+            _release_lock(lock_db)
 
     def run_channel(self, channel_cfg) -> ChannelRunResult:
         """
