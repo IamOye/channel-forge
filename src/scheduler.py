@@ -491,10 +491,22 @@ def run_weekly_optimization() -> None:
 
 
 def run_comment_check() -> None:
-    """Check for new YouTube comments and send Telegram alerts (every 15 min)."""
+    """Check for new YouTube comments and send Telegram alerts (every 60 min)."""
     start = datetime.now(timezone.utc)
     logger.info("[scheduler] run_comment_check START %s", start.isoformat())
     try:
+        # Quota gate — skip if daily quota is exhausted
+        try:
+            from src.publisher.youtube_uploader import QuotaTracker, QUOTA_UNITS  # lazy
+
+            tracker = QuotaTracker(db_path=_DEFAULT_DB)
+            if tracker.is_quota_exceeded():
+                logger.info("[comments] Quota exhausted — skipping check")
+                return
+        except Exception as q_exc:
+            logger.debug("[comments] Quota check skipped: %s", q_exc)
+            tracker = None
+
         from src.publisher.comment_responder import CommentResponder  # lazy
 
         # Fetch recent comments from YouTube API
@@ -517,10 +529,13 @@ def run_comment_check() -> None:
                     creds = Credentials.from_authorized_user_info(token_data)
                     service = yt_build("youtube", "v3", credentials=creds)
 
-                    # Get channel's uploaded videos
+                    # Get channel's uploaded videos (1 quota unit)
                     ch_resp = service.channels().list(
                         part="contentDetails", mine=True
                     ).execute()
+                    if tracker:
+                        tracker.record("channels_list", QUOTA_UNITS["channels_list"])
+
                     uploads_id = (
                         ch_resp.get("items", [{}])[0]
                         .get("contentDetails", {})
@@ -530,21 +545,30 @@ def run_comment_check() -> None:
                     if not uploads_id:
                         continue
 
-                    # Get recent videos
+                    # Get recent videos (1 quota unit)
                     pl_resp = service.playlistItems().list(
                         part="snippet", playlistId=uploads_id, maxResults=10
                     ).execute()
+                    if tracker:
+                        tracker.record(
+                            "playlist_items_list", QUOTA_UNITS["playlist_items_list"]
+                        )
 
                     for item in pl_resp.get("items", []):
                         vid = item["snippet"]["resourceId"]["videoId"]
                         vtitle = item["snippet"]["title"]
 
-                        # Get comment threads for this video
+                        # Get comment threads for this video (1 quota unit per video)
                         try:
                             ct_resp = service.commentThreads().list(
                                 part="snippet", videoId=vid,
                                 maxResults=20, order="time",
                             ).execute()
+                            if tracker:
+                                tracker.record(
+                                    "comment_threads_list",
+                                    QUOTA_UNITS["comment_threads_list"],
+                                )
                             for thread in ct_resp.get("items", []):
                                 snippet = thread["snippet"]["topLevelComment"]["snippet"]
                                 comments.append({
@@ -584,6 +608,104 @@ def run_comment_check() -> None:
     finally:
         elapsed = (datetime.now(timezone.utc) - start).total_seconds()
         logger.info("[scheduler] run_comment_check END (%.1fs)", elapsed)
+
+
+def run_quota_recovery() -> None:
+    """Retry pending uploads after YouTube quota resets at 08:00 WAT (runs at 08:05)."""
+    import sqlite3 as _sqlite3
+
+    start = datetime.now(timezone.utc)
+    logger.info("[scheduler] run_quota_recovery START %s", start.isoformat())
+    try:
+        from src.publisher.youtube_uploader import YouTubeUploader, QuotaTracker  # lazy
+        import json as _json
+
+        db = _DEFAULT_DB
+        if not db.exists():
+            logger.info("[scheduler] quota_recovery: DB not found — nothing to retry")
+            return
+
+        conn = _sqlite3.connect(db)
+        try:
+            rows = conn.execute(
+                "SELECT id, topic_id, channel_key, video_path, thumbnail_path, "
+                "metadata_json, publish_at FROM pending_uploads WHERE status = 'pending'"
+            ).fetchall()
+        finally:
+            conn.close()
+
+        if not rows:
+            logger.info("[scheduler] quota_recovery: no pending uploads")
+            return
+
+        logger.info("[scheduler] quota_recovery: %d pending upload(s) to retry", len(rows))
+
+        for row in rows:
+            row_id, topic_id, channel_key, video_path, thumb_path, meta_json, publish_at = row
+            try:
+                metadata = _json.loads(meta_json)
+                tracker = QuotaTracker(db_path=db)
+
+                if tracker.is_quota_exceeded():
+                    logger.warning(
+                        "[scheduler] quota_recovery: quota already exhausted — "
+                        "stopping retries"
+                    )
+                    break
+
+                uploader = YouTubeUploader(
+                    channel_key=channel_key,
+                    quota_tracker=tracker,
+                )
+                result = uploader.upload(
+                    topic_id=topic_id,
+                    video_path=video_path,
+                    metadata=metadata,
+                    publish_at=publish_at or None,
+                    thumbnail_path=thumb_path,
+                )
+
+                if result.is_valid:
+                    # Mark as completed in DB
+                    conn = _sqlite3.connect(db)
+                    try:
+                        conn.execute(
+                            "UPDATE pending_uploads SET status = 'completed', "
+                            "completed_at = datetime('now') WHERE id = ?",
+                            (row_id,),
+                        )
+                        conn.commit()
+                    finally:
+                        conn.close()
+                    logger.info(
+                        "[scheduler] quota_recovery: uploaded %s -> %s",
+                        topic_id, result.youtube_url,
+                    )
+                else:
+                    # Increment retry count
+                    conn = _sqlite3.connect(db)
+                    try:
+                        conn.execute(
+                            "UPDATE pending_uploads SET retry_count = retry_count + 1 "
+                            "WHERE id = ?",
+                            (row_id,),
+                        )
+                        conn.commit()
+                    finally:
+                        conn.close()
+                    logger.warning(
+                        "[scheduler] quota_recovery: retry failed for %s: %s",
+                        topic_id, result.validation_errors,
+                    )
+            except Exception as exc:
+                logger.error(
+                    "[scheduler] quota_recovery: error retrying %s: %s", topic_id, exc
+                )
+    except Exception as exc:
+        logger.error("[scheduler] run_quota_recovery ERROR: %s", exc)
+    finally:
+        elapsed = (datetime.now(timezone.utc) - start).total_seconds()
+        logger.info("[scheduler] run_quota_recovery END (%.1fs)", elapsed)
 
 
 def run_daily_summary() -> None:
@@ -766,10 +888,20 @@ def build_scheduler(timezone_name: str | None = None) -> BlockingScheduler:
         misfire_grace_time=300,
     )
 
-    # --- Comment check: every 15 minutes ---
+    # --- Quota recovery: daily at 08:05 (5 min after YouTube quota reset) ---
+    scheduler.add_job(
+        run_quota_recovery,
+        trigger=CronTrigger(hour=8, minute=5, timezone=tz),
+        id="quota_recovery",
+        name="Quota Recovery",
+        replace_existing=True,
+        misfire_grace_time=300,
+    )
+
+    # --- Comment check: every 60 minutes (hourly at :00) ---
     scheduler.add_job(
         run_comment_check,
-        trigger=CronTrigger(minute="*/15", timezone=tz),
+        trigger=CronTrigger(hour="*", minute=0, timezone=tz),
         id="comment_check",
         name="Comment Check",
         replace_existing=True,

@@ -63,9 +63,12 @@ _RETRYABLE_STATUSES = (500, 502, 503, 504)
 
 # Quota costs per operation (YouTube Data API v3 units)
 QUOTA_UNITS: dict[str, int] = {
-    "video_upload":     1600,
-    "thumbnail_upload":   50,
-    "metadata_update":    50,
+    "video_upload":       1600,
+    "thumbnail_upload":     50,
+    "metadata_update":      50,
+    "channels_list":         1,
+    "playlist_items_list":   1,
+    "comment_threads_list":  1,
 }
 
 DEFAULT_DAILY_QUOTA  = 10_000
@@ -160,6 +163,10 @@ class QuotaTracker:
     def can_upload(self) -> bool:
         """Return True if daily quota has not been reached."""
         return self.get_daily_usage() < self.daily_limit
+
+    def is_quota_exceeded(self) -> bool:
+        """Return True if daily quota has been exhausted."""
+        return self.get_daily_usage() >= self.daily_limit
 
     def units_remaining(self) -> int:
         """Return units available for the rest of today."""
@@ -505,7 +512,7 @@ class YouTubeUploader:
         publish_at: str | None,
         thumbnail_path: str | Path,
     ) -> None:
-        """Save upload payload to quota_queue/ for next-day retry."""
+        """Save upload payload to quota_queue/ dir AND pending_uploads DB table."""
         _QUOTA_QUEUE_DIR.mkdir(parents=True, exist_ok=True)
         ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         payload = {
@@ -519,8 +526,13 @@ class YouTubeUploader:
         }
         queue_file = _QUOTA_QUEUE_DIR / f"{topic_id}_{ts}.json"
         queue_file.write_text(json.dumps(payload, indent=2))
+
+        # Also save to pending_uploads DB table for scheduler recovery
+        self._save_pending_upload(payload)
+
         logger.warning(
-            "YouTube quota exceeded — upload queued for next day: %s", queue_file
+            "YouTube quota exceeded — video queued for upload. "
+            "Quota resets at 08:00 WAT. File: %s", queue_file,
         )
         # Count queued files for notification
         queued_count = len(list(_QUOTA_QUEUE_DIR.glob("*.json")))
@@ -529,6 +541,38 @@ class YouTubeUploader:
             TelegramNotifier().notify_youtube_quota_exceeded(queued_count)
         except Exception:
             pass
+
+    def _save_pending_upload(self, payload: dict[str, Any]) -> None:
+        """Insert a row into pending_uploads for scheduler-based retry."""
+        db_path = self.quota_tracker.db_path
+        if not db_path.exists():
+            logger.warning("pending_uploads: DB not found at %s", db_path)
+            return
+        try:
+            conn = sqlite3.connect(db_path)
+            try:
+                conn.execute(
+                    "INSERT INTO pending_uploads "
+                    "(topic_id, channel_key, video_path, thumbnail_path, "
+                    "metadata_json, publish_at, status) "
+                    "VALUES (?, ?, ?, ?, ?, ?, 'pending')",
+                    (
+                        payload["topic_id"],
+                        payload["channel_key"],
+                        payload["video_path"],
+                        payload["thumbnail_path"],
+                        json.dumps(payload["metadata"]),
+                        payload["publish_at"],
+                    ),
+                )
+                conn.commit()
+                logger.info(
+                    "pending_uploads: queued topic_id=%s for retry", payload["topic_id"]
+                )
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.warning("pending_uploads: DB save failed: %s", exc)
 
     @staticmethod
     def _validate_inputs(video_path: Path, metadata: dict) -> list[str]:

@@ -294,7 +294,7 @@ class TestSchedulerCommentCheck:
         job = next(j for j in scheduler.get_jobs() if j.id == "comment_check")
         assert job.func is run_comment_check
 
-    def test_comment_check_runs_every_15_minutes(self) -> None:
+    def test_comment_check_runs_hourly(self) -> None:
         from apscheduler.triggers.cron import CronTrigger
         from src.scheduler import build_scheduler
         scheduler = build_scheduler("UTC")
@@ -345,4 +345,4 @@ class TestInitDbNewTables:
         conn = sqlite3.connect(db_path)
         row = conn.execute("SELECT value FROM settings WHERE key = 'comment_check_interval'").fetchone()
         conn.close()
-        assert row[0] == "15"
+        assert row[0] == "60"

@@ -286,7 +286,25 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 
 INSERT OR IGNORE INTO settings (key, value) VALUES ('telegram_automode', 'on');
-INSERT OR IGNORE INTO settings (key, value) VALUES ('comment_check_interval', '15');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('comment_check_interval', '60');
+"""
+
+PENDING_UPLOADS_DDL = """
+CREATE TABLE IF NOT EXISTS pending_uploads (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    topic_id        TEXT    NOT NULL,
+    channel_key     TEXT    NOT NULL DEFAULT 'default',
+    video_path      TEXT    NOT NULL,
+    thumbnail_path  TEXT    NOT NULL DEFAULT '',
+    metadata_json   TEXT    NOT NULL DEFAULT '{}',
+    publish_at      TEXT    NOT NULL DEFAULT '',
+    status          TEXT    NOT NULL DEFAULT 'pending',
+    retry_count     INTEGER NOT NULL DEFAULT 0,
+    queued_at       TEXT    NOT NULL DEFAULT (datetime('now')),
+    completed_at    TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_pending_status ON pending_uploads (status);
 """
 
 # Unified main DB gets all tables
@@ -295,7 +313,7 @@ MAIN_DDL_PARTS = [
     SCORED_TOPICS_DDL, UPLOADED_VIDEOS_DDL, VIDEO_METRICS_DDL,
     OPTIMIZATION_LOG_DDL, PRODUCTION_RESULTS_DDL, COMPETITOR_TOPICS_DDL,
     ELEVENLABS_USAGE_DDL, YOUTUBE_QUOTA_DDL, PRODUCTION_LOCK_DDL,
-    COMMENT_STATES_DDL, SETTINGS_DDL,
+    COMMENT_STATES_DDL, SETTINGS_DDL, PENDING_UPLOADS_DDL,
 ]
 
 
@@ -386,6 +404,14 @@ def migrate_db(db_path: Path) -> None:
             conn.executescript(SETTINGS_DDL)
             conn.commit()
             logger.info("Migration applied: settings table ensured (%s)", db_path)
+        except sqlite3.OperationalError:
+            pass
+
+        # Pending uploads migration: create pending_uploads table if absent
+        try:
+            conn.executescript(PENDING_UPLOADS_DDL)
+            conn.commit()
+            logger.info("Migration applied: pending_uploads table ensured (%s)", db_path)
         except sqlite3.OperationalError:
             pass
     finally:
