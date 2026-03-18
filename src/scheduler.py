@@ -359,7 +359,7 @@ def run_elevenlabs_usage_check() -> None:
 
 
 def run_competitor_research() -> None:
-    """Scrape competitor channels and trending finance topics (runs every 12 h)."""
+    """Scrape competitor channels and trending finance topics (daily at 07:30 WAT)."""
     start = datetime.now(timezone.utc)
     logger.info("[scheduler] run_competitor_research START %s", start.isoformat())
     try:
@@ -388,7 +388,7 @@ def run_competitor_research() -> None:
         except Exception as exc:
             logger.error("[scheduler] Trending finance scrape failed: %s", exc)
 
-        # Trending search (recent high-view Shorts) — runs every 12 h
+        # Trending search (recent high-view Shorts) — runs daily at 07:30 WAT
         try:
             trending_search = scraper.scrape_trending_search_topics()
             logger.info(
@@ -839,10 +839,10 @@ def build_scheduler(timezone_name: str | None = None) -> BlockingScheduler:
         misfire_grace_time=300,
     )
 
-    # --- Competitor research: every 12 h at 00:00 and 12:00 ---
+    # --- Competitor research: daily at 06:30 UTC = 07:30 WAT (before 08:00 quota reset) ---
     scheduler.add_job(
         run_competitor_research,
-        trigger=CronTrigger(hour="0,12", minute=0, timezone=tz),
+        trigger=CronTrigger(hour=6, minute=30, timezone=tz),
         id="competitor_research",
         name="Competitor Research",
         replace_existing=True,
