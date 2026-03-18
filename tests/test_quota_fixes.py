@@ -573,3 +573,246 @@ class TestSettingsDefault:
         ).fetchone()
         conn.close()
         assert row[0] == "60"
+
+
+# ---------------------------------------------------------------------------
+# FIX 2 (round 2) — detect_and_alert auto-creates tables
+# ---------------------------------------------------------------------------
+
+class TestDetectAndAlertAutoCreate:
+    """detect_and_alert must work even when comment_states table is missing."""
+
+    def _make_comment(self, cid: str = "c1") -> dict:
+        return {
+            "comment_id": cid,
+            "video_id": "v1",
+            "commenter": "Jordan",
+            "comment_text": "Yes!",
+            "video_title": "Money Tips",
+            "category": "money",
+            "trigger_type": "YES",
+        }
+
+    @patch("src.publisher.comment_responder.anthropic.Anthropic")
+    @patch("src.notifications.telegram_notifier.TelegramNotifier")
+    def test_auto_creates_comment_states_table(
+        self, mock_tg_cls, mock_api_cls, tmp_path: Path,
+    ) -> None:
+        """When comment_states table is absent, detect_and_alert creates it."""
+        from src.publisher.comment_responder import CommentResponder
+
+        # Empty DB — no tables at all
+        db = tmp_path / "empty.db"
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE dummy (id INTEGER)")
+        conn.commit()
+        conn.close()
+
+        mock_client = MagicMock()
+        msg = MagicMock()
+        msg.content = [MagicMock(text="Thanks!")]
+        mock_client.messages.create.return_value = msg
+        mock_api_cls.return_value = mock_client
+        mock_tg_cls.return_value = MagicMock()
+
+        responder = CommentResponder(api_key="fake")
+        results = responder.detect_and_alert([self._make_comment()], db_path=db)
+
+        # Should have processed the comment (table auto-created)
+        assert len(results) == 1
+
+        # Verify the table was created and comment saved
+        conn = sqlite3.connect(db)
+        row = conn.execute(
+            "SELECT comment_id, state FROM comment_states WHERE comment_id = 'c1'"
+        ).fetchone()
+        conn.close()
+        assert row is not None
+        assert row[1] == "PENDING_APPROVAL"
+
+    @patch("src.publisher.comment_responder.anthropic.Anthropic")
+    @patch("src.notifications.telegram_notifier.TelegramNotifier")
+    def test_processes_comments_on_fresh_db(
+        self, mock_tg_cls, mock_api_cls, tmp_path: Path,
+    ) -> None:
+        """On a brand-new DB, all comments should be processed (not skipped)."""
+        from src.publisher.comment_responder import CommentResponder
+
+        db = tmp_path / "fresh.db"
+        # DB file doesn't even exist yet
+
+        mock_client = MagicMock()
+        msg = MagicMock()
+        msg.content = [MagicMock(text="Reply")]
+        mock_client.messages.create.return_value = msg
+        mock_api_cls.return_value = mock_client
+        mock_tg_cls.return_value = MagicMock()
+
+        comments = [self._make_comment(f"c{i}") for i in range(6)]
+        responder = CommentResponder(api_key="fake")
+        results = responder.detect_and_alert(comments, db_path=db)
+
+        assert len(results) == 6
+
+
+# ---------------------------------------------------------------------------
+# FIX 3 (round 2) — 403 during upload queues for retry
+# ---------------------------------------------------------------------------
+
+class TestUpload403QuotaQueuing:
+    """When _execute_upload raises 403, upload() should queue for retry."""
+
+    def _fake_http_error_403(self):
+        """Create a fake 403 HttpError with resp.status attribute."""
+        class FakeResp:
+            status = 403
+        err = Exception("quotaExceeded")
+        err.resp = FakeResp()
+        return err
+
+    def test_403_during_upload_queues_video(self, tmp_path: Path) -> None:
+        db = _make_db(tmp_path)
+        video = tmp_path / "out.mp4"
+        video.write_bytes(b"v" * 100)
+
+        qt = QuotaTracker(db_path=db, daily_limit=10_000)
+        uploader = YouTubeUploader(
+            channel_key="test",
+            credentials_dir=tmp_path,
+            quota_tracker=qt,
+        )
+
+        exc_403 = self._fake_http_error_403()
+
+        queue_dir = tmp_path / "queue"
+        with patch("src.publisher.youtube_uploader._QUOTA_QUEUE_DIR", queue_dir):
+            with patch.object(uploader, "_load_credentials", return_value=MagicMock()):
+                with patch.object(uploader, "_build_service", return_value=MagicMock()):
+                    with patch.object(
+                        uploader, "_execute_upload", side_effect=exc_403
+                    ):
+                        result = uploader.upload(
+                            "t_403", video,
+                            {"title": "Test", "description": "D", "tags": []},
+                        )
+
+        assert result.is_valid is False
+        assert any("queued" in e for e in result.validation_errors)
+
+        # Check pending_uploads DB
+        conn = sqlite3.connect(db)
+        row = conn.execute(
+            "SELECT topic_id, status FROM pending_uploads WHERE topic_id = 't_403'"
+        ).fetchone()
+        conn.close()
+        assert row is not None
+        assert row[1] == "pending"
+
+    def test_403_creates_queue_file(self, tmp_path: Path) -> None:
+        db = _make_db(tmp_path)
+        video = tmp_path / "out.mp4"
+        video.write_bytes(b"v" * 100)
+
+        qt = QuotaTracker(db_path=db, daily_limit=10_000)
+        uploader = YouTubeUploader(
+            channel_key="test",
+            credentials_dir=tmp_path,
+            quota_tracker=qt,
+        )
+
+        exc_403 = self._fake_http_error_403()
+        queue_dir = tmp_path / "queue"
+
+        with patch("src.publisher.youtube_uploader._QUOTA_QUEUE_DIR", queue_dir):
+            with patch.object(uploader, "_load_credentials", return_value=MagicMock()):
+                with patch.object(uploader, "_build_service", return_value=MagicMock()):
+                    with patch.object(
+                        uploader, "_execute_upload", side_effect=exc_403
+                    ):
+                        uploader.upload(
+                            "t_403b", video,
+                            {"title": "Test", "description": "D"},
+                        )
+
+        # JSON file should exist in queue dir
+        queue_files = list(queue_dir.glob("t_403b_*.json"))
+        assert len(queue_files) == 1
+
+    def test_non_403_error_does_not_queue(self, tmp_path: Path) -> None:
+        db = _make_db(tmp_path)
+        video = tmp_path / "out.mp4"
+        video.write_bytes(b"v" * 100)
+
+        qt = QuotaTracker(db_path=db, daily_limit=10_000)
+        uploader = YouTubeUploader(
+            channel_key="test",
+            credentials_dir=tmp_path,
+            quota_tracker=qt,
+        )
+
+        queue_dir = tmp_path / "queue"
+        with patch("src.publisher.youtube_uploader._QUOTA_QUEUE_DIR", queue_dir):
+            with patch.object(uploader, "_load_credentials", return_value=MagicMock()):
+                with patch.object(uploader, "_build_service", return_value=MagicMock()):
+                    with patch.object(
+                        uploader, "_execute_upload",
+                        side_effect=RuntimeError("network timeout"),
+                    ):
+                        result = uploader.upload(
+                            "t_net", video,
+                            {"title": "Test", "description": "D"},
+                        )
+
+        assert result.is_valid is False
+        assert any("network timeout" in e for e in result.validation_errors)
+
+        # Should NOT have queued
+        conn = sqlite3.connect(db)
+        row = conn.execute(
+            "SELECT COUNT(*) FROM pending_uploads"
+        ).fetchone()
+        conn.close()
+        assert row[0] == 0
+
+    def test_403_via_wrapped_cause_also_queues(self, tmp_path: Path) -> None:
+        """When 403 is wrapped in RuntimeError.__cause__, it should still queue."""
+        db = _make_db(tmp_path)
+        video = tmp_path / "out.mp4"
+        video.write_bytes(b"v" * 100)
+
+        qt = QuotaTracker(db_path=db, daily_limit=10_000)
+        uploader = YouTubeUploader(
+            channel_key="test",
+            credentials_dir=tmp_path,
+            quota_tracker=qt,
+        )
+
+        # Create a RuntimeError with a 403 cause
+        class FakeResp:
+            status = 403
+        inner = Exception("quotaExceeded")
+        inner.resp = FakeResp()
+        outer = RuntimeError("Upload failed after 3 retries")
+        outer.__cause__ = inner
+
+        queue_dir = tmp_path / "queue"
+        with patch("src.publisher.youtube_uploader._QUOTA_QUEUE_DIR", queue_dir):
+            with patch.object(uploader, "_load_credentials", return_value=MagicMock()):
+                with patch.object(uploader, "_build_service", return_value=MagicMock()):
+                    with patch.object(
+                        uploader, "_execute_upload", side_effect=outer
+                    ):
+                        result = uploader.upload(
+                            "t_wrapped", video,
+                            {"title": "Test", "description": "D"},
+                        )
+
+        assert result.is_valid is False
+        assert any("queued" in e for e in result.validation_errors)
+
+        conn = sqlite3.connect(db)
+        row = conn.execute(
+            "SELECT topic_id FROM pending_uploads WHERE topic_id = 't_wrapped'"
+        ).fetchone()
+        conn.close()
+        assert row is not None

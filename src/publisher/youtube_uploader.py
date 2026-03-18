@@ -358,6 +358,37 @@ class YouTubeUploader:
             )
 
         except Exception as exc:
+            # Check if this is a 403 quota error — queue for retry if so
+            is_quota_error = False
+            try:
+                if hasattr(exc, "resp") and getattr(exc.resp, "status", 0) == 403:
+                    is_quota_error = True
+                elif hasattr(exc, "__cause__") and hasattr(exc.__cause__, "resp"):
+                    if getattr(exc.__cause__.resp, "status", 0) == 403:
+                        is_quota_error = True
+            except Exception:
+                pass
+
+            if is_quota_error:
+                logger.warning(
+                    "Upload got 403 quota error for topic_id=%s — queuing for retry",
+                    topic_id,
+                )
+                self._queue_for_next_day(
+                    topic_id, video_path, metadata, publish_at, thumbnail_path
+                )
+                return UploadResult(
+                    topic_id=topic_id,
+                    youtube_video_id="",
+                    youtube_url="",
+                    title=metadata.get("title", ""),
+                    is_valid=False,
+                    validation_errors=[
+                        "quota exceeded during upload: video queued for next day"
+                    ],
+                    publish_at=publish_at or "",
+                )
+
             logger.error("Upload failed for topic_id=%s: %s", topic_id, exc)
             return UploadResult(
                 topic_id=topic_id,

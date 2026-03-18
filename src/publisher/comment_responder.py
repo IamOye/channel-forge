@@ -437,6 +437,37 @@ class CommentResponder:
         target = db_path or Path(os.getenv("DB_PATH", "data/processed/channel_forge.db"))
         results: list[dict[str, str]] = []
 
+        # Ensure comment_states + settings tables exist (auto-migrate)
+        try:
+            conn = sqlite3.connect(target)
+            try:
+                conn.executescript("""
+                    CREATE TABLE IF NOT EXISTS comment_states (
+                        comment_id          TEXT PRIMARY KEY,
+                        video_id            TEXT,
+                        commenter           TEXT,
+                        comment_text        TEXT,
+                        suggested_reply     TEXT,
+                        edited_reply        TEXT,
+                        state               TEXT NOT NULL DEFAULT 'PENDING_APPROVAL',
+                        telegram_message_id INTEGER,
+                        created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+                        updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+                    );
+                    CREATE TABLE IF NOT EXISTS settings (
+                        key        TEXT PRIMARY KEY,
+                        value      TEXT,
+                        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                    );
+                    INSERT OR IGNORE INTO settings (key, value)
+                        VALUES ('telegram_automode', 'on');
+                """)
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception as tbl_exc:
+            logger.warning("detect_and_alert: table auto-create failed: %s", tbl_exc)
+
         # Check automode — if off, skip reply generation
         automode = "on"
         try:
@@ -452,10 +483,20 @@ class CommentResponder:
         except Exception:
             pass  # default to "on"
 
+        logger.info(
+            "detect_and_alert: %d comments to process, automode=%s, db=%s",
+            len(comments), automode, target,
+        )
+
         for comment in comments:
             cid = comment.get("comment_id", "")
             if not cid:
                 continue
+
+            logger.debug(
+                "detect_and_alert: checking comment_id=%s video_id=%s author=%r",
+                cid, comment.get("video_id", ""), comment.get("commenter", ""),
+            )
 
             # Skip already-processed comments
             try:
@@ -470,8 +511,10 @@ class CommentResponder:
                 if existing:
                     logger.debug("Comment %s already tracked — skipping", cid)
                     continue
-            except Exception:
-                pass
+            except Exception as dup_exc:
+                logger.warning(
+                    "detect_and_alert: dedup check failed for %s: %s", cid, dup_exc
+                )
 
             suggested_reply = ""
             if automode == "on":

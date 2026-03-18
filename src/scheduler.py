@@ -571,10 +571,16 @@ def run_comment_check() -> None:
                                 )
                             for thread in ct_resp.get("items", []):
                                 snippet = thread["snippet"]["topLevelComment"]["snippet"]
+                                c_id = thread["snippet"]["topLevelComment"]["id"]
+                                c_author = snippet.get("authorDisplayName", "")
+                                logger.debug(
+                                    "[comments] Found: video=%s comment=%s author=%r",
+                                    vid, c_id, c_author,
+                                )
                                 comments.append({
-                                    "comment_id": thread["snippet"]["topLevelComment"]["id"],
+                                    "comment_id": c_id,
                                     "video_id": vid,
-                                    "commenter": snippet.get("authorDisplayName", ""),
+                                    "commenter": c_author,
                                     "comment_text": snippet.get("textOriginal", ""),
                                     "video_title": vtitle,
                                     "category": getattr(channel, "category", "money"),
