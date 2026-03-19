@@ -270,7 +270,7 @@ class VideoBuilder:
             _group_words,
             _load_word_font,
             _render_word_frame,
-            WORD_FONT_SIZE,
+            _word_font_size,
             WORD_ENTRANCE_DUR,
         )
 
@@ -310,7 +310,7 @@ class VideoBuilder:
         start_times: list[float] = []
         if word_timestamps:
             grouped = _group_words(word_timestamps)
-            font = _load_word_font(WORD_FONT_SIZE)
+            font = _load_word_font(canvas_w=W)
             for word in grouped:
                 t_stable = word["start_time"] + WORD_ENTRANCE_DUR + 0.001
                 img = _render_word_frame(t_stable, grouped, W, H, font)
@@ -568,9 +568,9 @@ class VideoBuilder:
         from src.media.caption_renderer import (
             CTA_BG_COLOR,
             CTA_FONT_SIZE,
-            PILL_CORNER_RADIUS,
             WORD_FONT_SEARCH_PATHS,
         )
+        _CTA_CORNER_RADIUS = 12  # local constant for CTA banner rounding
 
         # Load a bold font
         font = None
@@ -606,7 +606,7 @@ class VideoBuilder:
         y1 = y_center - banner_h // 2
         y2 = y1 + banner_h
 
-        draw.rounded_rectangle((x1, y1, x2, y2), radius=PILL_CORNER_RADIUS,
+        draw.rounded_rectangle((x1, y1, x2, y2), radius=_CTA_CORNER_RADIUS,
                                 fill=(*CTA_BG_COLOR, 255))
         draw.text((x1 + pad_x, y1 + pad_y), text, font=font, fill=(0, 0, 0, 255))
 

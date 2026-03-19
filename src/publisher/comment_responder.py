@@ -493,9 +493,11 @@ class CommentResponder:
             if not cid:
                 continue
 
-            logger.debug(
-                "detect_and_alert: checking comment_id=%s video_id=%s author=%r",
-                cid, comment.get("video_id", ""), comment.get("commenter", ""),
+            author = comment.get("commenter", "unknown")
+            text_preview = comment.get("comment_text", "")[:50]
+            logger.info(
+                "[comment] Processing comment %s from %s: %s",
+                cid, author, text_preview,
             )
 
             # Skip already-processed comments
@@ -559,7 +561,9 @@ class CommentResponder:
             try:
                 from src.notifications.telegram_notifier import TelegramNotifier
 
-                TelegramNotifier().send_new_comment_alert(
+                logger.info("[comment] Sending Telegram alert for comment %s", cid)
+                notifier = TelegramNotifier()
+                sent = notifier.send_new_comment_alert(
                     commenter=comment.get("commenter", "unknown"),
                     comment_text=comment.get("comment_text", ""),
                     video_title=comment.get("video_title", ""),
@@ -567,8 +571,18 @@ class CommentResponder:
                     comment_id=cid,
                     suggested_reply=suggested_reply or "(automode off — no suggestion)",
                 )
+                if sent:
+                    logger.info("[comment] Telegram alert sent successfully for %s", cid)
+                else:
+                    logger.warning(
+                        "[comment] Telegram alert returned False for %s "
+                        "(token=%s, chat_id=%s)",
+                        cid,
+                        "set" if notifier.token else "MISSING",
+                        "set" if notifier.chat_id else "MISSING",
+                    )
             except Exception as exc:
-                logger.warning("Telegram alert failed for %s: %s", cid, exc)
+                logger.warning("[comment] Telegram alert failed for %s: %s", cid, exc)
 
             results.append({"comment_id": cid, "suggested_reply": suggested_reply})
             logger.info("Comment %s processed — awaiting manual approval", cid)
