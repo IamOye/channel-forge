@@ -398,6 +398,15 @@ class VideoBuilder:
         import imageio_ffmpeg
         ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
 
+        # ── Pre-check: reject any single clip assigned > 15 seconds ────────
+        MAX_SINGLE_CLIP_SECONDS = 15
+        for i, dur in enumerate(raw_durations):
+            if dur > MAX_SINGLE_CLIP_SECONDS:
+                raise RuntimeError(
+                    f"Clip {i} assigned {dur:.1f}s which exceeds "
+                    f"{MAX_SINGLE_CLIP_SECONDS}s maximum. Add more b-roll clips."
+                )
+
         t_prep = time.perf_counter()
         norm_paths: list[Path] = []
         try:
@@ -835,6 +844,15 @@ class VideoBuilder:
         else:
             per_clip_dur = (actual_duration + (n - 1) * CROSSFADE_DURATION) / n
             raw_durations = [per_clip_dur] * n
+
+        # ── Pre-check: reject any single clip assigned > 15 seconds ────────
+        _MAX_SINGLE_CLIP = 15
+        for i, dur in enumerate(raw_durations):
+            if dur > _MAX_SINGLE_CLIP:
+                raise RuntimeError(
+                    f"Clip {i} assigned {dur:.1f}s which exceeds "
+                    f"{_MAX_SINGLE_CLIP}s maximum. Add more b-roll clips."
+                )
 
         _t1 = time.perf_counter()
         bg_clips = []

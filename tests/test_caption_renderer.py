@@ -13,10 +13,18 @@ from src.media.caption_renderer import (
     CTA_OVERLAY_END,
     CTA_OVERLAY_START,
     CTA_Y_RATIO,
+    HIGHLIGHT_TEXT_COLOR,
+    MIN_CAPTION_FONT_SIZE,
+    WORD_CAPTION_Y_RATIO,
+    WORD_FONT_SIZE_BASE,
+    WORD_STROKE_WIDTH,
+    WORD_TEXT_COLOR,
     CaptionClipSpec,
     CaptionRenderer,
     _group_words,
+    _render_word_frame,
     _visible_at,
+    _word_font_size,
 )
 
 
@@ -86,7 +94,7 @@ class TestBuildSpecs:
         assert specs[0].text == VALID_SCRIPT["hook"]
         assert specs[3].text == VALID_SCRIPT["question"]
 
-    def test_y_position_at_65_percent(self) -> None:
+    def test_y_position_uses_caption_y_ratio(self) -> None:
         renderer = CaptionRenderer(canvas_height=1920)
         specs = renderer.build_specs(VALID_SCRIPT)
         expected_y = int(1920 * CAPTION_Y_RATIO)
@@ -321,3 +329,64 @@ class TestRenderWordByWord:
             clips = renderer.render(VALID_SCRIPT)
 
         assert len(clips) == 4
+
+
+# ---------------------------------------------------------------------------
+# Caption style tests (BUG 1 — no pill background, stroke, font size)
+# ---------------------------------------------------------------------------
+
+class TestCaptionStyle:
+    """Verify VIZIONTIA-style caption rendering: no pills, stroked text, gold highlight."""
+
+    def test_no_pill_background_constants_removed(self) -> None:
+        """Verify that pill/badge background constants no longer exist in module.
+
+        The old pill-based rendering used PILL_BG_COLOR, PILL_CORNER_RADIUS,
+        HIGHLIGHT_PAD_X, HIGHLIGHT_PAD_Y. These must be removed.
+        """
+        import src.media.caption_renderer as mod
+        assert not hasattr(mod, "PILL_BG_COLOR"), "PILL_BG_COLOR still exists — remove pill background"
+        assert not hasattr(mod, "PILL_CORNER_RADIUS"), "PILL_CORNER_RADIUS still exists"
+        assert not hasattr(mod, "HIGHLIGHT_PAD_X"), "HIGHLIGHT_PAD_X still exists"
+        assert not hasattr(mod, "HIGHLIGHT_PAD_Y"), "HIGHLIGHT_PAD_Y still exists"
+        assert not hasattr(mod, "_draw_rounded_rect"), "_draw_rounded_rect still exists"
+
+    def test_font_size_at_360_is_at_least_52(self) -> None:
+        """At 360px canvas width, font size must be >= 52px (spec: 52-60px)."""
+        size = _word_font_size(360)
+        assert size >= 52, f"Font size {size} < 52 at 360px canvas"
+        assert size <= 60, f"Font size {size} > 60 at 360px canvas"
+
+    def test_font_size_scales_proportionally(self) -> None:
+        """At 1080px canvas (3x), font size should be 3x the 360px size."""
+        size_360 = _word_font_size(360)
+        size_1080 = _word_font_size(1080)
+        assert size_1080 == size_360 * 3
+
+    def test_font_size_never_below_minimum(self) -> None:
+        """Even at very small canvas, font size stays >= MIN_CAPTION_FONT_SIZE."""
+        size = _word_font_size(100)
+        assert size >= MIN_CAPTION_FONT_SIZE
+
+    def test_stroke_width_is_present(self) -> None:
+        """WORD_STROKE_WIDTH must be 2-3px."""
+        assert 2 <= WORD_STROKE_WIDTH <= 3
+
+    def test_highlight_color_is_gold(self) -> None:
+        """Highlight text colour must be #FFD700 (gold), not a background."""
+        assert HIGHLIGHT_TEXT_COLOR == (255, 215, 0)
+
+    def test_text_color_is_white(self) -> None:
+        """Non-highlighted word text colour must be white."""
+        assert WORD_TEXT_COLOR == (255, 255, 255)
+
+    def test_caption_position_at_75_to_80_percent(self) -> None:
+        """Captions should be positioned at 75-80% from top of frame."""
+        assert 0.75 <= WORD_CAPTION_Y_RATIO <= 0.80
+
+    def test_get_caption_config_returns_font_size(self) -> None:
+        """get_caption_config must include font_size for quality gate."""
+        renderer = CaptionRenderer(canvas_width=1080, canvas_height=1920)
+        config = renderer.get_caption_config()
+        assert "font_size" in config
+        assert config["font_size"] >= MIN_CAPTION_FONT_SIZE

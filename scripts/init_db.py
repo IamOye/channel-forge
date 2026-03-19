@@ -289,6 +289,18 @@ INSERT OR IGNORE INTO settings (key, value) VALUES ('telegram_automode', 'on');
 INSERT OR IGNORE INTO settings (key, value) VALUES ('comment_check_interval', '60');
 """
 
+QUALITY_HOLDS_DDL = """
+CREATE TABLE IF NOT EXISTS quality_holds (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    topic_id        TEXT    NOT NULL DEFAULT '',
+    video_path      TEXT    NOT NULL,
+    failure_reason  TEXT    NOT NULL,
+    created_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_quality_holds_topic ON quality_holds (topic_id);
+"""
+
 PENDING_UPLOADS_DDL = """
 CREATE TABLE IF NOT EXISTS pending_uploads (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -314,6 +326,7 @@ MAIN_DDL_PARTS = [
     OPTIMIZATION_LOG_DDL, PRODUCTION_RESULTS_DDL, COMPETITOR_TOPICS_DDL,
     ELEVENLABS_USAGE_DDL, YOUTUBE_QUOTA_DDL, PRODUCTION_LOCK_DDL,
     COMMENT_STATES_DDL, SETTINGS_DDL, PENDING_UPLOADS_DDL,
+    QUALITY_HOLDS_DDL,
 ]
 
 
@@ -412,6 +425,14 @@ def migrate_db(db_path: Path) -> None:
             conn.executescript(PENDING_UPLOADS_DDL)
             conn.commit()
             logger.info("Migration applied: pending_uploads table ensured (%s)", db_path)
+        except sqlite3.OperationalError:
+            pass
+
+        # Quality holds migration: create quality_holds table if absent
+        try:
+            conn.executescript(QUALITY_HOLDS_DDL)
+            conn.commit()
+            logger.info("Migration applied: quality_holds table ensured (%s)", db_path)
         except sqlite3.OperationalError:
             pass
     finally:

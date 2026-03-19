@@ -3,6 +3,13 @@ caption_renderer.py — CaptionRenderer
 
 Builds timed caption TextClip objects for each section of a YouTube Shorts script.
 
+Style reference: VIZIONTIA YouTube Shorts captions
+  - ALL CAPS, heavy font (Impact / Arial Black)
+  - White text with 2-3px black stroke outline
+  - Current word highlighted in gold (#FFD700) text colour
+  - NO background pill, box, or badge
+  - Positioned 75-80% from top of frame
+
 Usage:
     renderer = CaptionRenderer(canvas_width=1080, canvas_height=1920)
     clips = renderer.render(script_dict)   # list of moviepy TextClip
@@ -26,7 +33,7 @@ CAPTION_TIMINGS: list[tuple[str, float, float]] = [
     ("question",  10.0, 13.5),
 ]
 
-CAPTION_FONT_CANDIDATES = ["Impact", "Arial-Bold", "Arial", None]
+CAPTION_FONT_CANDIDATES = ["Impact", "Arial-Black", "Arial-Bold", "Arial", None]
 CAPTION_FONT_SIZE = 72
 CAPTION_COLOR     = "white"
 CAPTION_STROKE_COLOR = "black"
@@ -64,41 +71,42 @@ def _resolve_font() -> str | None:
 
     return None
 
-# Vertical position — 65% from the top of the frame
-CAPTION_Y_RATIO = 0.65
+# Vertical position — 77% from the top of the frame
+CAPTION_Y_RATIO = 0.77
 
 
 # ---------------------------------------------------------------------------
 # Word-by-word caption rendering constants
 # ---------------------------------------------------------------------------
 
-# Font size for word captions
-WORD_FONT_SIZE = 68
+# Base font size at 360px canvas width — scales proportionally at higher res
+# At 1080px canvas: 56 * (1080/360) = 168px
+WORD_FONT_SIZE_BASE = 56
 
-# Search paths for bold font (tried in order)
+# Minimum acceptable font size (quality gate threshold)
+MIN_CAPTION_FONT_SIZE = 40
+
+# Search paths for heavy/condensed font (tried in order)
+# Impact → Arial Black → DejaVu Sans Bold (Linux fallback for Railway)
 WORD_FONT_SEARCH_PATHS: list[str | None] = [
-    "C:/Windows/Fonts/arialbd.ttf",    # Arial Bold — Windows
-    "C:/Windows/Fonts/ariblk.ttf",     # Arial Black — Windows
-    "C:/Windows/Fonts/arial.ttf",      # Arial — Windows fallback
-    "/System/Library/Fonts/Arial Bold.ttf",                         # macOS
-    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf", # Linux
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",        # Linux alt
-    None,                               # Pillow default
+    "C:/Windows/Fonts/impact.ttf",                                     # Impact — Windows
+    "C:/Windows/Fonts/ariblk.ttf",                                     # Arial Black — Windows
+    "/usr/share/fonts/truetype/msttcorefonts/Impact.ttf",              # Impact — Linux (msttcorefonts)
+    "/usr/share/fonts/truetype/msttcorefonts/impact.ttf",              # Impact — Linux (lowercase)
+    "/System/Library/Fonts/Impact.ttf",                                # Impact — macOS
+    "/System/Library/Fonts/Supplemental/Impact.ttf",                   # Impact — macOS alt
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",           # DejaVu Sans Bold — Linux final fallback
+    "C:/Windows/Fonts/arialbd.ttf",                                    # Arial Bold — Windows last resort
+    None,                                                               # Pillow default
 ]
 
-HIGHLIGHT_COLOR      = (201, 168, 76)   # Gold #C9A84C
-HIGHLIGHT_TEXT_COLOR = (0, 0, 0)        # Black text on gold
-WORD_TEXT_COLOR      = (255, 255, 255)  # White text for previous words
-WORD_SHADOW_COLOR    = (0, 0, 0, 178)   # Black, ~70% opacity
-WORD_SHADOW_OFFSET   = 3               # px
-PILL_BG_COLOR        = (0, 0, 0, 140)   # Semi-transparent black ~55% opacity
-PILL_CORNER_RADIUS   = 12
-HIGHLIGHT_PAD_X      = 16              # left/right padding in gold pill
-HIGHLIGHT_PAD_Y      = 14              # top/bottom padding in gold pill
-WORD_GAP             = 12              # px gap between word pills
+HIGHLIGHT_TEXT_COLOR = (255, 215, 0)    # Gold #FFD700 — highlighted word text colour only
+WORD_TEXT_COLOR      = (255, 255, 255)  # White — non-highlighted word text colour
+WORD_STROKE_COLOR    = (0, 0, 0)        # Black outline on ALL text
+WORD_STROKE_WIDTH    = 3                # px stroke/outline width
+WORD_GAP             = 14               # px gap between words
 WORD_MAX_PER_LINE    = 3
-WORD_CAPTION_Y_START = 0.68            # top of caption area (fraction of height)
-WORD_CAPTION_Y_END   = 0.85            # bottom of caption area
+WORD_CAPTION_Y_RATIO = 0.77            # 77% from top of frame, centred
 WORD_ENTRANCE_DRIFT  = 4               # px upward drift on word entrance
 WORD_ENTRANCE_DUR    = 0.08            # seconds for entrance animation
 
@@ -107,8 +115,18 @@ WORD_ENTRANCE_DUR    = 0.08            # seconds for entrance animation
 # Word-caption PIL helpers
 # ---------------------------------------------------------------------------
 
-def _load_word_font(size: int = WORD_FONT_SIZE):
-    """Load a bold font for word captions, falling back through WORD_FONT_SEARCH_PATHS."""
+def _word_font_size(canvas_w: int) -> int:
+    """Compute word caption font size scaled to canvas width (56px base at 360px)."""
+    return max(MIN_CAPTION_FONT_SIZE, int(WORD_FONT_SIZE_BASE * canvas_w / 360))
+
+
+def _load_word_font(size: int | None = None, canvas_w: int = 1080):
+    """Load a heavy font for word captions, falling back through WORD_FONT_SEARCH_PATHS.
+
+    If size is None, computes it from canvas_w using the 56px-at-360px base.
+    """
+    if size is None:
+        size = _word_font_size(canvas_w)
     try:
         from PIL import ImageFont
     except ImportError:
@@ -147,19 +165,6 @@ def _visible_at(t: float, grouped: list[dict]) -> tuple[int | None, list[dict]]:
     return current_idx, visible
 
 
-def _draw_rounded_rect(draw, bbox: tuple, radius: int, fill: tuple) -> None:
-    """Draw a filled rounded rectangle; uses Pillow's built-in when available."""
-    try:
-        draw.rounded_rectangle(bbox, radius=radius, fill=fill)
-    except AttributeError:
-        x1, y1, x2, y2 = bbox
-        r = min(radius, (x2 - x1) // 2, (y2 - y1) // 2)
-        draw.rectangle([x1 + r, y1, x2 - r, y2], fill=fill)
-        draw.rectangle([x1, y1 + r, x2, y2 - r], fill=fill)
-        for cx, cy in [(x1, y1), (x2 - 2*r, y1), (x1, y2 - 2*r), (x2 - 2*r, y2 - 2*r)]:
-            draw.ellipse([cx, cy, cx + 2*r, cy + 2*r], fill=fill)
-
-
 def _render_word_frame(
     t: float,
     grouped: list[dict],
@@ -169,10 +174,9 @@ def _render_word_frame(
 ) -> "Image.Image":
     """Render a single word-caption frame as an RGBA PIL Image.
 
-    Previous words: white text, no individual background.
-    Current word: black text, gold rounded-rect background.
-    All previous words share one semi-transparent black pill.
-    New word: subtle 4 px upward drift during first WORD_ENTRANCE_DUR seconds.
+    ALL CAPS text with black stroke outline — no background pill or badge.
+    Current word: gold #FFD700 text colour.
+    Previous words: white text colour.
     """
     from PIL import Image, ImageDraw
 
@@ -182,15 +186,17 @@ def _render_word_frame(
         return img
 
     draw = ImageDraw.Draw(img)
+    font_size = _word_font_size(canvas_w)
 
-    # Measure each visible word
-    entries = []
+    # Measure each visible word (ALL CAPS)
+    entries: list[dict] = []
     for w in visible:
+        text = w["text"].upper()
         try:
-            bb = font.getbbox(w["text"])
+            bb = font.getbbox(text)
             tw, th = bb[2] - bb[0], bb[3] - bb[1]
         except Exception:
-            tw, th = 60, WORD_FONT_SIZE
+            tw, th = 60, font_size
 
         is_cur = (w["word_idx"] == current_idx)
         elapsed = t - w["start_time"]
@@ -198,67 +204,37 @@ def _render_word_frame(
         y_drift = -int(WORD_ENTRANCE_DRIFT * (1.0 - progress))
 
         entries.append({
-            "text":    w["text"],
+            "text":    text,
             "tw":      tw,
             "th":      th,
-            "pill_w":  tw + 2 * HIGHLIGHT_PAD_X,
-            "pill_h":  th + 2 * HIGHLIGHT_PAD_Y,
             "y_drift": y_drift,
             "is_cur":  is_cur,
         })
 
-    total_w = sum(e["pill_w"] for e in entries) + WORD_GAP * (len(entries) - 1)
-    max_pill_h = max(e["pill_h"] for e in entries)
+    total_w = sum(e["tw"] for e in entries) + WORD_GAP * (len(entries) - 1)
+    max_th = max(e["th"] for e in entries)
 
-    # Vertical center of caption area
-    y_mid = int(canvas_h * (WORD_CAPTION_Y_START + WORD_CAPTION_Y_END) / 2)
+    # Vertical position: centred at WORD_CAPTION_Y_RATIO from top
+    y_mid = int(canvas_h * WORD_CAPTION_Y_RATIO)
     x = (canvas_w - total_w) // 2
 
-    # Collect pill regions
-    prev_regions: list[tuple] = []
-    cur_region: tuple | None = None
-
+    # Draw text with stroke — NO background pill/badge of any kind
     for e in entries:
-        y_top = y_mid - e["pill_h"] // 2 + e["y_drift"]
-        region = (x, y_top, x + e["pill_w"], y_top + e["pill_h"], e)
-        if e["is_cur"]:
-            cur_region = region
-        else:
-            prev_regions.append(region)
-        x += e["pill_w"] + WORD_GAP
-
-    # Draw combined black pill behind all previous words
-    if prev_regions:
-        px1 = min(r[0] for r in prev_regions)
-        py1 = min(r[1] for r in prev_regions)
-        px2 = max(r[2] for r in prev_regions)
-        py2 = max(r[3] for r in prev_regions)
-        _draw_rounded_rect(draw, (px1, py1, px2, py2), PILL_CORNER_RADIUS, PILL_BG_COLOR)
-
-    # Draw gold pill behind current word
-    if cur_region:
-        rx1, ry1, rx2, ry2, _ = cur_region
-        _draw_rounded_rect(draw, (rx1, ry1, rx2, ry2), PILL_CORNER_RADIUS,
-                           (*HIGHLIGHT_COLOR, 255))
-
-    # Draw text for each word
-    x = (canvas_w - total_w) // 2
-    for e in entries:
-        y_top = y_mid - e["pill_h"] // 2 + e["y_drift"]
-        tx = x + HIGHLIGHT_PAD_X
-        ty = y_top + HIGHLIGHT_PAD_Y
+        y_top = y_mid - max_th // 2 + e["y_drift"]
 
         if e["is_cur"]:
-            draw.text((tx, ty), e["text"], font=font,
-                      fill=(*HIGHLIGHT_TEXT_COLOR, 255))
+            fill = (*HIGHLIGHT_TEXT_COLOR, 255)   # Gold #FFD700
         else:
-            # Shadow
-            draw.text((tx + WORD_SHADOW_OFFSET, ty + WORD_SHADOW_OFFSET),
-                      e["text"], font=font, fill=WORD_SHADOW_COLOR)
-            draw.text((tx, ty), e["text"], font=font,
-                      fill=(*WORD_TEXT_COLOR, 255))
+            fill = (*WORD_TEXT_COLOR, 255)         # White
 
-        x += e["pill_w"] + WORD_GAP
+        # Text with black stroke outline
+        draw.text(
+            (x, y_top), e["text"], font=font, fill=fill,
+            stroke_width=WORD_STROKE_WIDTH,
+            stroke_fill=(*WORD_STROKE_COLOR, 255),
+        )
+
+        x += e["tw"] + WORD_GAP
 
     return img
 
@@ -410,6 +386,16 @@ class CaptionRenderer:
             y=y_pos,
         )
 
+    def get_caption_config(self) -> dict[str, Any]:
+        """Return caption configuration for quality gate inspection."""
+        return {
+            "font_size": _word_font_size(self.canvas_width),
+            "stroke_width": WORD_STROKE_WIDTH,
+            "highlight_color": HIGHLIGHT_TEXT_COLOR,
+            "text_color": WORD_TEXT_COLOR,
+            "y_ratio": WORD_CAPTION_Y_RATIO,
+        }
+
     def _render_word_by_word(
         self,
         word_timestamps: list[dict],
@@ -436,7 +422,8 @@ class CaptionRenderer:
         from moviepy import TextClip, VideoClip
 
         grouped = _group_words(word_timestamps)
-        font = _load_word_font(WORD_FONT_SIZE)
+        font_size = _word_font_size(self.canvas_width)
+        font = _load_word_font(size=font_size, canvas_w=self.canvas_width)
         W, H = self.canvas_width, self.canvas_height
 
         # Pre-render one stable frame per word state

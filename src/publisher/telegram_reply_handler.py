@@ -299,6 +299,45 @@ class TelegramReplyHandler:
             )
         return "\n".join(lines)
 
+    def handle_held(self) -> str:
+        """Handle /held — list all videos held by the quality gate."""
+        conn = self._get_conn()
+        try:
+            # Auto-create table if it doesn't exist yet
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS quality_holds (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    topic_id        TEXT NOT NULL DEFAULT '',
+                    video_path      TEXT NOT NULL,
+                    failure_reason  TEXT NOT NULL,
+                    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+                )
+                """
+            )
+            rows = conn.execute(
+                "SELECT * FROM quality_holds ORDER BY created_at DESC LIMIT 20"
+            ).fetchall()
+        finally:
+            conn.close()
+
+        if not rows:
+            return "✅ <b>No held videos</b>\nAll videos passed quality gate."
+
+        lines = [f"🚫 <b>Held Videos ({len(rows)})</b>\n"]
+        for i, row in enumerate(rows, 1):
+            topic = row["topic_id"] or "unknown"
+            path = row["video_path"]
+            reason = (row["failure_reason"] or "")[:80]
+            created = row["created_at"] or ""
+            lines.append(
+                f"{i}. <b>{topic}</b>\n"
+                f"   📁 {path}\n"
+                f"   ❌ {reason}\n"
+                f"   🕐 {created}"
+            )
+        return "\n".join(lines)
+
     def handle_automode(self, mode: str) -> str:
         """Handle /automode on|off — toggle auto-generate."""
         mode_lower = mode.strip().lower()
@@ -437,6 +476,10 @@ class TelegramReplyHandler:
         # /pending
         if text == "/pending":
             return self.handle_pending()
+
+        # /held
+        if text == "/held":
+            return self.handle_held()
 
         # /automode on|off
         m = re.match(r"^/automode\s+(\S+)$", text)

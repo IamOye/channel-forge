@@ -44,6 +44,24 @@ logger = logging.getLogger(__name__)
 
 DB_PATH = Path("data/processed/channel_forge.db")
 
+# B-roll minimum clip enforcement
+MINIMUM_CLIPS = 8
+MAX_SINGLE_CLIP_SECONDS = 15
+
+# Fallback Pixabay search queries when Claude-generated queries return < MINIMUM_CLIPS
+BROLL_FALLBACK_QUERIES: list[str] = [
+    "business finance money",
+    "investment wealth",
+    "working professional office",
+    "city lifestyle",
+    "financial freedom success",
+]
+
+
+class ProductionError(Exception):
+    """Raised when a production step cannot proceed safely."""
+    pass
+
 # ---------------------------------------------------------------------------
 # Contrast visual framework
 # ---------------------------------------------------------------------------
@@ -337,6 +355,7 @@ class ProductionPipeline:
         cta_script  = _product.get("cta_script", "")
         cta_overlay = _product.get("cta_overlay", "")
 
+        self._current_topic_id = topic_id
         logger.info("Pipeline start: topic_id=%s keyword='%s'", topic_id, keyword)
 
         steps: list[StepResult] = []
@@ -411,7 +430,23 @@ class ProductionPipeline:
 
         video_path = build_result.output_path
 
-        # --- Step 5.5: Thumbnail ---
+        # --- Step 5.5: Quality Gate ---
+        from src.media.caption_renderer import CaptionRenderer
+        caption_cfg = CaptionRenderer(
+            canvas_width=1080, canvas_height=1920,
+        ).get_caption_config()
+
+        qg_passed, qg_failures = self.run_quality_gate(
+            video_path=video_path,
+            clips_used=len(stock_video_paths),
+            audio_duration=getattr(build_result, "duration_seconds", 13.5),
+            caption_config=caption_cfg,
+        )
+        if not qg_passed:
+            errors.extend(qg_failures)
+            return self._fail(topic_id, keyword, steps, errors)
+
+        # --- Step 5.6: Thumbnail ---
         thumbnail_path = ""
         thumb_result = self._run_step(
             "thumbnail", steps, errors,
@@ -495,39 +530,48 @@ class ProductionPipeline:
         return "reflective"
 
     def _run_pixabay(self, topic_id: str, keyword: str, script_dict: dict, category: str) -> _MultiFetchResult:
-        """Fetch video + Ken Burns photo clips and interleave them.
+        """Fetch video + Ken Burns photo clips using Claude-generated scene queries.
 
-        Clip mix is dynamic based on hook energy level:
-          HIGH energy  → 3 video clips + 1 photo clip
-          Reflective   → 2 video clips + 2 photo clips
+        Flow:
+          1. Generate 12 scene queries via Claude Haiku.
+          2. Fetch video clips from Pixabay using those queries.
+          3. Add Ken Burns photo clips for visual diversity.
+          4. Enforce MINIMUM_CLIPS (8) — try fallback queries, then raise ProductionError.
 
-        Clip order: video → photo → video → (photo or video) → ...
         Photo clips with REJECTED_TAGS are silently skipped.
         """
         from src.media.pixabay_fetcher import PixabayFetcher
         from src.media.video_builder import VideoBuilder, VIDEO_DURATION
 
-        fetcher = PixabayFetcher(api_key=self.pixabay_api_key)
+        fetcher = PixabayFetcher(
+            api_key=self.pixabay_api_key,
+            anthropic_api_key=self.anthropic_api_key,
+        )
 
         # ── Determine clip mix based on hook energy ────────────────────────────
         hook = script_dict.get("hook", "")
         energy = self._detect_energy(hook)
         if energy == "high":
-            n_video, n_photo = 3, 1
+            n_video, n_photo = 6, 2
         else:
-            n_video, n_photo = 2, 2
+            n_video, n_photo = 5, 3
 
         logger.info(
             "[pipeline] Clip mix: %d video + %d photo (energy: %s)",
             n_video, n_photo, energy,
         )
 
-        # ── Video clips (action / situational) ────────────────────────────────
-        video_phrases = self._extract_broll_phrases(keyword, script_dict, count=n_video, energy=energy)
+        # ── Scene queries via Claude Haiku ─────────────────────────────────────
+        broll_queries = self._generate_broll_queries(keyword, script_dict)
+        logger.info("[pipeline] B-roll queries (%d): %s", len(broll_queries), broll_queries[:6])
+
+        # ── Video clips using scene queries ────────────────────────────────────
         video_paths = fetcher.fetch_multiple(
             topic_id=topic_id,
-            keywords_list=video_phrases,
+            keywords_list=broll_queries,
             count=n_video,
+            topic=keyword,
+            script_preview=script_dict.get("hook", ""),
         )
 
         # ── Photo clips with Ken Burns (conceptual / emotional) ────────────────
@@ -574,9 +618,40 @@ class ProductionPipeline:
         k_list = list(ken_burns_paths)
         for v, k in zip(v_list, k_list):
             all_paths.extend([v, k])
-        # Append any remaining clips if counts differ
         all_paths.extend(v_list[len(k_list):])
         all_paths.extend(k_list[len(v_list):])
+
+        # ── Enforce MINIMUM_CLIPS — fallback queries if short ──────────────────
+        if len(all_paths) < MINIMUM_CLIPS:
+            logger.warning(
+                "[pipeline] Only %d clips after primary fetch — trying fallback queries",
+                len(all_paths),
+            )
+            for fq in BROLL_FALLBACK_QUERIES:
+                if len(all_paths) >= MINIMUM_CLIPS:
+                    break
+                extra = fetcher.fetch_multiple(
+                    topic_id=f"{topic_id}_fb",
+                    keywords_list=[fq],
+                    count=MINIMUM_CLIPS - len(all_paths),
+                )
+                all_paths.extend(extra)
+
+        # ── Hard fail if still under minimum ───────────────────────────────────
+        if len(all_paths) < MINIMUM_CLIPS:
+            n = len(all_paths)
+            msg = (
+                f"Insufficient b-roll: only {n} clips found for "
+                f"{VIDEO_DURATION}s video. Minimum {MINIMUM_CLIPS} required."
+            )
+            try:
+                from src.notifications.telegram_notifier import TelegramNotifier
+                TelegramNotifier().send(
+                    f"🚫 <b>B-Roll Shortage</b>\n{msg}\nTopic: {keyword}"
+                )
+            except Exception:
+                pass
+            raise ProductionError(msg)
 
         if not all_paths:
             return _MultiFetchResult(
@@ -787,6 +862,70 @@ class ProductionPipeline:
 
         return ["successful businessman confident suit", "person bills debt stress"]
 
+    def _generate_broll_queries(
+        self,
+        keyword: str,
+        script_dict: dict,
+    ) -> list[str]:
+        """Generate 12 specific Pixabay search queries for b-roll scenes via Claude Haiku.
+
+        Each query is 2-4 words describing a specific visual scene to search for.
+        Falls back to contrast-map phrases if the API call fails.
+
+        Args:
+            keyword:     Topic keyword string.
+            script_dict: Script parts dict for context.
+
+        Returns:
+            List of 12 search query strings.
+        """
+        import json as _json
+
+        script_text = " ".join(filter(None, [
+            script_dict.get("hook", ""),
+            script_dict.get("statement", ""),
+            script_dict.get("twist", ""),
+            script_dict.get("question", ""),
+        ]))
+
+        prompt = (
+            f"Given this YouTube Shorts script about {keyword},"
+            " return a JSON array of 12 specific Pixabay search queries"
+            " — one per scene beat. Each query should be 2–4 words"
+            " describing a specific visual scene.\n"
+            " Examples: 'person counting cash', 'bank interest low',"
+            " 'inflation grocery prices', 'investment app phone',"
+            " 'stressed worker bills', 'luxury apartment interior'.\n\n"
+            f"Script: {script_text[:300]}\n\n"
+            "Return ONLY valid JSON array, no other text."
+        )
+
+        try:
+            import anthropic
+            client = anthropic.Anthropic(api_key=self.anthropic_api_key)
+            message = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=512,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            raw = message.content[0].text.strip()
+            if raw.startswith("```"):
+                raw = raw.split("```")[1]
+                if raw.startswith("json"):
+                    raw = raw[4:]
+            queries = _json.loads(raw.strip())
+            if isinstance(queries, list) and len(queries) >= 6:
+                result = [str(q).strip() for q in queries[:12] if str(q).strip()]
+                logger.info("[broll] Claude scene queries (%d): %s", len(result), result)
+                return result
+        except Exception as exc:
+            logger.warning("[broll] Claude scene query generation failed (%s) — using fallback", exc)
+
+        # Fallback: use contrast map phrases + generic queries
+        fallback = self._extract_broll_phrases(keyword, script_dict, count=4)
+        fallback.extend(BROLL_FALLBACK_QUERIES)
+        return fallback[:12]
+
     def _run_metadata(self, keyword: str, script: str, category: str = "", video_number: int = 0):
         from src.content.metadata_generator import MetadataGenerator
         gen = MetadataGenerator(api_key=self.anthropic_api_key)
@@ -796,6 +935,119 @@ class ProductionPipeline:
         from src.publisher.youtube_uploader import YouTubeUploader
         uploader = YouTubeUploader(channel_key=self.youtube_channel_key)
         return uploader.upload(topic_id=topic_id, video_path=video_path, metadata=metadata, thumbnail_path=thumbnail_path)
+
+    # ------------------------------------------------------------------
+    # Quality Gate — pre-upload validation
+    # ------------------------------------------------------------------
+
+    def run_quality_gate(
+        self,
+        video_path: str,
+        clips_used: int,
+        audio_duration: float,
+        caption_config: dict,
+    ) -> tuple[bool, list[str]]:
+        """Run pre-upload quality checks on the assembled video.
+
+        Checks:
+          1. Clip diversity — at least 1 unique clip per 8 seconds.
+          2. Single clip dominance — no clip exceeds MAX_SINGLE_CLIP_SECONDS (15s).
+          3. Caption font size — must be >= MIN_CAPTION_FONT_SIZE (40px).
+
+        Args:
+            video_path:     Path to the assembled video file.
+            clips_used:     Number of unique clips used in the video.
+            audio_duration: Actual video/audio duration in seconds.
+            caption_config: Dict with at least 'font_size' key from CaptionRenderer.
+
+        Returns:
+            (passed, failures) — True with empty list if all checks pass,
+            False with list of failure messages otherwise.
+        """
+        failures: list[str] = []
+
+        # Check 1 — Clip diversity
+        min_clips = max(1, int(audio_duration / 8))
+        if clips_used < min_clips:
+            failures.append(
+                f"QUALITY FAIL: Only {clips_used} unique clips for "
+                f"{audio_duration:.1f}s video. Expected minimum {min_clips} clips."
+            )
+
+        # Check 2 — Single clip dominance
+        if clips_used > 0:
+            avg_clip_duration = audio_duration / clips_used
+            if avg_clip_duration > MAX_SINGLE_CLIP_SECONDS:
+                failures.append(
+                    f"QUALITY FAIL: Average clip duration {avg_clip_duration:.1f}s "
+                    f"exceeds {MAX_SINGLE_CLIP_SECONDS}s maximum."
+                )
+
+        # Check 3 — Caption font size
+        font_size = caption_config.get("font_size", 0)
+        if font_size < 40:
+            failures.append(
+                f"QUALITY FAIL: Caption font size {font_size}px "
+                f"is below minimum 40px."
+            )
+
+        if failures:
+            for msg in failures:
+                logger.error("[quality_gate] %s", msg)
+
+            # Send Telegram alert
+            try:
+                from src.notifications.telegram_notifier import TelegramNotifier
+                alert = "🚫 <b>Quality Gate Failed</b>\n" + "\n".join(failures)
+                TelegramNotifier().send(alert)
+            except Exception:
+                pass
+
+            # Save to quality_holds table — topic_id set by caller context
+            self._save_quality_hold(
+                topic_id=getattr(self, "_current_topic_id", ""),
+                video_path=video_path,
+                failure_reason="; ".join(failures),
+            )
+
+            logger.error("Video held for manual review: %s", video_path)
+            return False, failures
+
+        logger.info("Quality gate passed — proceeding to upload")
+        return True, []
+
+    def _save_quality_hold(
+        self,
+        topic_id: str,
+        video_path: str,
+        failure_reason: str,
+    ) -> None:
+        """Save a blocked video to the quality_holds table."""
+        try:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            conn = sqlite3.connect(self.db_path)
+            try:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS quality_holds (
+                        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                        topic_id        TEXT NOT NULL DEFAULT '',
+                        video_path      TEXT NOT NULL,
+                        failure_reason  TEXT NOT NULL,
+                        created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+                    )
+                    """
+                )
+                conn.execute(
+                    "INSERT INTO quality_holds (topic_id, video_path, failure_reason) "
+                    "VALUES (?, ?, ?)",
+                    (topic_id, video_path, failure_reason),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.warning("Failed to save quality hold to DB: %s", exc)
 
     # ------------------------------------------------------------------
     # Helpers

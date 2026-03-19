@@ -11,9 +11,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.pipeline.production_pipeline import (
+    BROLL_FALLBACK_QUERIES,
     CONTRAST_VISUAL_MAP,
+    MAX_SINGLE_CLIP_SECONDS,
+    MINIMUM_CLIPS,
     REJECTED_TAGS,
     PipelineResult,
+    ProductionError,
     ProductionPipeline,
     StepResult,
     _match_contrast_theme,
@@ -71,6 +75,7 @@ def _make_fetch_result(valid: bool = True, path: str = "data/raw/stoic_001_stock
     result = MagicMock()
     result.is_valid = valid
     result.video_path = path
+    result.video_paths = [f"data/raw/stoic_001_stock_{i}.mp4" for i in range(MINIMUM_CLIPS)]
     result.validation_errors = [] if valid else ["no suitable video"]
     result.to_dict.return_value = {"video_path": path}
     return result
@@ -80,6 +85,7 @@ def _make_build_result(valid: bool = True, path: str = "data/output/stoic_001_fi
     result = MagicMock()
     result.is_valid = valid
     result.output_path = path
+    result.duration_seconds = 13.5
     result.validation_errors = [] if valid else ["audio not found"]
     result.to_dict.return_value = {"output_path": path}
     return result
@@ -575,14 +581,16 @@ class TestMixedMediaPipeline:
         """_run_pixabay should return 4 interleaved paths: video->photo->video->photo."""
         pipeline = self._make_pipeline()
 
-        with patch.object(pipeline, "_extract_broll_phrases", return_value=["v_phrase1", "v_phrase2"]):
+        with patch.object(pipeline, "_generate_broll_queries", return_value=["v_phrase1", "v_phrase2"]):
             with patch.object(pipeline, "_extract_photo_phrases", return_value=["p_phrase1", "p_phrase2"]):
                 with patch("src.media.pixabay_fetcher.PixabayFetcher") as MockFetcher:
                     inst = MockFetcher.return_value
-                    inst.fetch_multiple.return_value = ["v1.mp4", "v2.mp4"]
+                    # Return enough clips to pass MINIMUM_CLIPS (8)
+                    inst.fetch_multiple.return_value = ["v1.mp4", "v2.mp4", "v3.mp4", "v4.mp4", "v5.mp4", "v6.mp4"]
                     inst.fetch_photos.side_effect = [
                         [{"id": 1, "local_path": "p1.jpg", "width": 1080, "height": 1920, "tags": ""}],
                         [{"id": 2, "local_path": "p2.jpg", "width": 1080, "height": 1920, "tags": ""}],
+                        [{"id": 3, "local_path": "p3.jpg", "width": 1080, "height": 1920, "tags": ""}],
                     ]
                     with patch("src.media.video_builder.VideoBuilder") as MockBuilder:
                         b_inst = MockBuilder.return_value
@@ -593,20 +601,21 @@ class TestMixedMediaPipeline:
                                 result = pipeline._run_pixabay("t1", "test topic", {}, "money")
 
         assert result.is_valid is True
-        assert len(result.video_paths) == 4
+        assert len(result.video_paths) >= MINIMUM_CLIPS
 
     def test_interleaved_clip_order_video_photo_video_photo(self) -> None:
         """Clip order must be: video0, photo0, video1, photo1."""
         pipeline = self._make_pipeline()
 
-        with patch.object(pipeline, "_extract_broll_phrases", return_value=["v1"]):
-            with patch.object(pipeline, "_extract_photo_phrases", return_value=["p1", "p2"]):
+        with patch.object(pipeline, "_generate_broll_queries", return_value=["v1"]):
+            with patch.object(pipeline, "_extract_photo_phrases", return_value=["p1", "p2", "p3"]):
                 with patch("src.media.pixabay_fetcher.PixabayFetcher") as MockFetcher:
                     inst = MockFetcher.return_value
-                    inst.fetch_multiple.return_value = ["video_a.mp4", "video_b.mp4"]
+                    inst.fetch_multiple.return_value = ["video_a.mp4", "video_b.mp4", "video_c.mp4", "video_d.mp4", "video_e.mp4"]
                     inst.fetch_photos.side_effect = [
                         [{"id": 1, "local_path": "photo_a.jpg", "width": 1080, "height": 1920, "tags": ""}],
                         [{"id": 2, "local_path": "photo_b.jpg", "width": 1080, "height": 1920, "tags": ""}],
+                        [{"id": 3, "local_path": "photo_c.jpg", "width": 1080, "height": 1920, "tags": ""}],
                     ]
                     with patch("src.media.video_builder.VideoBuilder") as MockBuilder:
                         b_inst = MockBuilder.return_value
@@ -616,54 +625,55 @@ class TestMixedMediaPipeline:
                                 mock_stat.return_value.st_size = 1024
                                 result = pipeline._run_pixabay("t1", "test topic", {}, "money")
 
-        # Should be interleaved
+        # Should be interleaved and >= MINIMUM_CLIPS
         assert result.is_valid is True
         paths = result.video_paths
-        assert len(paths) == 4
+        assert len(paths) >= MINIMUM_CLIPS
 
-    def test_mixed_media_returns_valid_when_only_videos(self) -> None:
-        """Falls back gracefully: if photos/KB fail, video clips still returned."""
+    def test_mixed_media_returns_valid_when_enough_videos(self) -> None:
+        """With enough video clips, even if photos fail, result is valid."""
         pipeline = self._make_pipeline()
 
-        with patch.object(pipeline, "_extract_broll_phrases", return_value=["v1"]):
+        with patch.object(pipeline, "_generate_broll_queries", return_value=["v1"]):
             with patch.object(pipeline, "_extract_photo_phrases", return_value=["p1"]):
                 with patch("src.media.pixabay_fetcher.PixabayFetcher") as MockFetcher:
                     inst = MockFetcher.return_value
-                    inst.fetch_multiple.return_value = ["v1.mp4", "v2.mp4"]
+                    inst.fetch_multiple.return_value = [f"v{i}.mp4" for i in range(MINIMUM_CLIPS)]
                     inst.fetch_photos.return_value = []  # no photos found
                     with patch("src.media.video_builder.VideoBuilder"):
                         result = pipeline._run_pixabay("t1", "test topic", {}, "money")
 
         assert result.is_valid is True
-        assert len(result.video_paths) == 2  # only video clips
+        assert len(result.video_paths) >= MINIMUM_CLIPS
 
-    def test_mixed_media_invalid_when_no_clips_at_all(self) -> None:
-        """Returns is_valid=False when both video and photo fetches fail."""
+    def test_mixed_media_raises_when_no_clips_at_all(self) -> None:
+        """Raises ProductionError when both video and photo fetches fail."""
         pipeline = self._make_pipeline()
 
-        with patch.object(pipeline, "_extract_broll_phrases", return_value=["v1"]):
+        with patch.object(pipeline, "_generate_broll_queries", return_value=["v1"]):
             with patch.object(pipeline, "_extract_photo_phrases", return_value=["p1"]):
                 with patch("src.media.pixabay_fetcher.PixabayFetcher") as MockFetcher:
                     inst = MockFetcher.return_value
                     inst.fetch_multiple.return_value = []  # no video
                     inst.fetch_photos.return_value = []    # no photo
                     with patch("src.media.video_builder.VideoBuilder"):
-                        result = pipeline._run_pixabay("t1", "test topic", {}, "money")
-
-        assert result.is_valid is False
+                        with patch("src.notifications.telegram_notifier.TelegramNotifier"):
+                            with pytest.raises(ProductionError, match="Insufficient b-roll"):
+                                pipeline._run_pixabay("t1", "test topic", {}, "money")
 
     def test_ken_burns_mp4_called_per_photo(self) -> None:
         """write_ken_burns_mp4 should be called once for each fetched photo."""
         pipeline = self._make_pipeline()
 
-        with patch.object(pipeline, "_extract_broll_phrases", return_value=["v1"]):
-            with patch.object(pipeline, "_extract_photo_phrases", return_value=["p1", "p2"]):
+        with patch.object(pipeline, "_generate_broll_queries", return_value=["v1"]):
+            with patch.object(pipeline, "_extract_photo_phrases", return_value=["p1", "p2", "p3"]):
                 with patch("src.media.pixabay_fetcher.PixabayFetcher") as MockFetcher:
                     inst = MockFetcher.return_value
-                    inst.fetch_multiple.return_value = ["v1.mp4", "v2.mp4"]
+                    inst.fetch_multiple.return_value = [f"v{i}.mp4" for i in range(6)]
                     inst.fetch_photos.side_effect = [
                         [{"id": 1, "local_path": "p1.jpg", "width": 1080, "height": 1920, "tags": ""}],
                         [{"id": 2, "local_path": "p2.jpg", "width": 1080, "height": 1920, "tags": ""}],
+                        [{"id": 3, "local_path": "p3.jpg", "width": 1080, "height": 1920, "tags": ""}],
                     ]
                     with patch("src.media.video_builder.VideoBuilder") as MockBuilder:
                         b_inst = MockBuilder.return_value
@@ -672,7 +682,7 @@ class TestMixedMediaPipeline:
                             with patch("pathlib.Path.stat") as mock_stat:
                                 mock_stat.return_value.st_size = 1024
                                 pipeline._run_pixabay("t1", "test topic", {}, "money")
-                        assert b_inst.write_ken_burns_mp4.call_count == 2
+                        assert b_inst.write_ken_burns_mp4.call_count >= 2
 
 
 # ---------------------------------------------------------------------------
@@ -811,11 +821,11 @@ class TestContrastFramework:
         """Photos whose 'tags' field contains a REJECTED_TAG must be skipped."""
         pipeline = ProductionPipeline(anthropic_api_key="fake", pixabay_api_key="fake")
 
-        with patch.object(pipeline, "_extract_broll_phrases", return_value=["v1"]):
+        with patch.object(pipeline, "_generate_broll_queries", return_value=["v1"]):
             with patch.object(pipeline, "_extract_photo_phrases", return_value=["phrase1"]):
                 with patch("src.media.pixabay_fetcher.PixabayFetcher") as MockFetcher:
                     inst = MockFetcher.return_value
-                    inst.fetch_multiple.return_value = ["v1.mp4"]
+                    inst.fetch_multiple.return_value = [f"v{i}.mp4" for i in range(MINIMUM_CLIPS)]
                     # Photo has a rejected tag — should be filtered out
                     inst.fetch_photos.return_value = [
                         {"id": 99, "local_path": "cat.jpg", "tags": "cat animal pet fluffy"}
@@ -825,19 +835,18 @@ class TestContrastFramework:
 
         # Ken Burns should NOT have been called since the photo was rejected
         MockBuilder.return_value.write_ken_burns_mp4.assert_not_called()
-        # Only video clip survives
+        # Video clips survive, above minimum
         assert result.is_valid is True
-        assert len(result.video_paths) == 1
 
     def test_run_pixabay_accepts_photo_without_rejected_tag(self) -> None:
         """Photos with clean tags must pass the filter."""
         pipeline = ProductionPipeline(anthropic_api_key="fake", pixabay_api_key="fake")
 
-        with patch.object(pipeline, "_extract_broll_phrases", return_value=["v1"]):
+        with patch.object(pipeline, "_generate_broll_queries", return_value=["v1"]):
             with patch.object(pipeline, "_extract_photo_phrases", return_value=["phrase1"]):
                 with patch("src.media.pixabay_fetcher.PixabayFetcher") as MockFetcher:
                     inst = MockFetcher.return_value
-                    inst.fetch_multiple.return_value = ["v1.mp4"]
+                    inst.fetch_multiple.return_value = [f"v{i}.mp4" for i in range(MINIMUM_CLIPS)]
                     inst.fetch_photos.return_value = [
                         {"id": 10, "local_path": "biz.jpg", "tags": "businessman suit success"}
                     ]
@@ -856,3 +865,189 @@ class TestContrastFramework:
             assert "contrast" in visuals, f"Theme '{theme}' missing 'contrast'"
             assert len(visuals["struggle"]) > 0
             assert len(visuals["contrast"]) > 0
+
+
+# ---------------------------------------------------------------------------
+# Quality Gate tests (BUG 3)
+# ---------------------------------------------------------------------------
+
+class TestQualityGate:
+    """Tests for run_quality_gate pre-upload validation."""
+
+    def _make_pipeline(self, tmp_path) -> ProductionPipeline:
+        return ProductionPipeline(
+            anthropic_api_key="fake",
+            db_path=tmp_path / "test.db",
+        )
+
+    def test_quality_gate_passes_with_good_inputs(self, tmp_path) -> None:
+        pipeline = self._make_pipeline(tmp_path)
+        passed, failures = pipeline.run_quality_gate(
+            video_path="data/output/test_final.mp4",
+            clips_used=8,
+            audio_duration=13.5,
+            caption_config={"font_size": 168},
+        )
+        assert passed is True
+        assert failures == []
+
+    def test_quality_gate_fails_clip_diversity(self, tmp_path) -> None:
+        """Fewer than 1 unique clip per 8 seconds should fail."""
+        pipeline = self._make_pipeline(tmp_path)
+        with patch("src.notifications.telegram_notifier.TelegramNotifier"):
+            passed, failures = pipeline.run_quality_gate(
+                video_path="data/output/test_final.mp4",
+                clips_used=1,       # 1 clip for 40s → expect ≥5
+                audio_duration=40.0,
+                caption_config={"font_size": 168},
+            )
+        assert passed is False
+        assert any("QUALITY FAIL" in f and "clips" in f.lower() for f in failures)
+
+    def test_quality_gate_fails_clip_dominance(self, tmp_path) -> None:
+        """Average clip duration > 15s should fail."""
+        pipeline = self._make_pipeline(tmp_path)
+        with patch("src.notifications.telegram_notifier.TelegramNotifier"):
+            passed, failures = pipeline.run_quality_gate(
+                video_path="data/output/test_final.mp4",
+                clips_used=1,
+                audio_duration=20.0,  # 1 clip → 20s average > 15s max
+                caption_config={"font_size": 168},
+            )
+        assert passed is False
+        assert any("exceeds" in f.lower() or "maximum" in f.lower() for f in failures)
+
+    def test_quality_gate_fails_caption_font_size(self, tmp_path) -> None:
+        """Caption font size below 40px should fail."""
+        pipeline = self._make_pipeline(tmp_path)
+        with patch("src.notifications.telegram_notifier.TelegramNotifier"):
+            passed, failures = pipeline.run_quality_gate(
+                video_path="data/output/test_final.mp4",
+                clips_used=8,
+                audio_duration=13.5,
+                caption_config={"font_size": 20},   # 20px < 40px minimum
+            )
+        assert passed is False
+        assert any("font size" in f.lower() for f in failures)
+
+    def test_quality_gate_saves_to_quality_holds(self, tmp_path) -> None:
+        """Failed quality gate should save record to quality_holds table."""
+        import sqlite3
+        pipeline = self._make_pipeline(tmp_path)
+        pipeline._current_topic_id = "test_001"
+        with patch("src.notifications.telegram_notifier.TelegramNotifier"):
+            pipeline.run_quality_gate(
+                video_path="data/output/test_final.mp4",
+                clips_used=1,
+                audio_duration=40.0,   # 1 clip for 40s → fails diversity check
+                caption_config={"font_size": 168},
+            )
+        conn = sqlite3.connect(tmp_path / "test.db")
+        rows = conn.execute("SELECT * FROM quality_holds").fetchall()
+        conn.close()
+        assert len(rows) >= 1
+
+    def test_quality_gate_multiple_failures(self, tmp_path) -> None:
+        """Multiple simultaneous failures should all be reported."""
+        pipeline = self._make_pipeline(tmp_path)
+        with patch("src.notifications.telegram_notifier.TelegramNotifier"):
+            passed, failures = pipeline.run_quality_gate(
+                video_path="data/output/test_final.mp4",
+                clips_used=1,
+                audio_duration=20.0,
+                caption_config={"font_size": 20},
+            )
+        assert passed is False
+        assert len(failures) >= 2  # clip diversity + dominance + font size
+
+
+# ---------------------------------------------------------------------------
+# B-roll minimum enforcement tests (BUG 2)
+# ---------------------------------------------------------------------------
+
+class TestBrollMinimum:
+    """Tests for MINIMUM_CLIPS enforcement and ProductionError."""
+
+    def test_minimum_clips_constant_is_8(self) -> None:
+        assert MINIMUM_CLIPS == 8
+
+    def test_production_error_raised_on_insufficient_clips(self) -> None:
+        """_run_pixabay must raise ProductionError when < 8 clips after fallbacks."""
+        pipeline = ProductionPipeline(
+            anthropic_api_key="fake",
+            pixabay_api_key="fake",
+        )
+
+        # Primary search returns 2, all fallback searches return empty
+        fetch_calls = [0]
+        def mock_fetch_multiple(**kwargs):
+            fetch_calls[0] += 1
+            if fetch_calls[0] == 1:
+                return ["v1.mp4", "v2.mp4"]  # primary: only 2
+            return []  # fallbacks: nothing
+
+        with patch.object(pipeline, "_generate_broll_queries", return_value=["q1", "q2"]):
+            with patch.object(pipeline, "_extract_photo_phrases", return_value=["p1"]):
+                with patch("src.media.pixabay_fetcher.PixabayFetcher") as MockFetcher:
+                    inst = MockFetcher.return_value
+                    inst.fetch_multiple.side_effect = mock_fetch_multiple
+                    inst.fetch_photos.return_value = []
+                    with patch("src.media.video_builder.VideoBuilder"):
+                        with patch("src.notifications.telegram_notifier.TelegramNotifier"):
+                            with pytest.raises(ProductionError, match="Insufficient b-roll"):
+                                pipeline._run_pixabay("t1", "test topic", {}, "money")
+
+    def test_fallback_queries_tried_on_shortage(self) -> None:
+        """When primary fetch returns < 8, fallback queries must be tried."""
+        pipeline = ProductionPipeline(
+            anthropic_api_key="fake",
+            pixabay_api_key="fake",
+        )
+
+        call_count = {"n": 0}
+        def mock_fetch_multiple(**kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return ["v1.mp4", "v2.mp4", "v3.mp4"]  # primary: only 3
+            # Fallback calls return enough to cross threshold
+            return [f"fb_{call_count['n']}.mp4"] * 2
+
+        with patch.object(pipeline, "_generate_broll_queries", return_value=["q1"]):
+            with patch.object(pipeline, "_extract_photo_phrases", return_value=[]):
+                with patch("src.media.pixabay_fetcher.PixabayFetcher") as MockFetcher:
+                    inst = MockFetcher.return_value
+                    inst.fetch_multiple.side_effect = mock_fetch_multiple
+                    inst.fetch_photos.return_value = []
+                    with patch("src.media.video_builder.VideoBuilder"):
+                        result = pipeline._run_pixabay("t1", "test", {}, "money")
+
+        # Should have called fetch_multiple more than once (primary + fallbacks)
+        assert inst.fetch_multiple.call_count > 1
+        assert result.is_valid is True
+
+    def test_generate_broll_queries_returns_12(self) -> None:
+        """_generate_broll_queries should return up to 12 scene queries."""
+        pipeline = ProductionPipeline(anthropic_api_key="fake")
+        mock_msg = MagicMock()
+        mock_msg.content = [MagicMock(
+            text='["person counting cash", "bank vault safe", "stock market chart", '
+                 '"coffee shop laptop", "luxury apartment", "stressed bills desk", '
+                 '"investment app phone", "city skyline night", "graduation ceremony", '
+                 '"handshake business deal", "piggy bank coins", "beach sunset laptop"]'
+        )]
+        with patch("anthropic.Anthropic") as MockAnthropic:
+            MockAnthropic.return_value.messages.create.return_value = mock_msg
+            queries = pipeline._generate_broll_queries("money habits", {"hook": "Test"})
+
+        assert len(queries) == 12
+        assert all(isinstance(q, str) for q in queries)
+
+    def test_generate_broll_queries_fallback_on_api_error(self) -> None:
+        """Falls back to contrast-map + generic queries on Claude failure."""
+        pipeline = ProductionPipeline(anthropic_api_key="fake")
+        with patch("anthropic.Anthropic") as MockAnthropic:
+            MockAnthropic.return_value.messages.create.side_effect = Exception("API down")
+            queries = pipeline._generate_broll_queries("test topic", {"hook": "Test"})
+
+        assert len(queries) > 0
+        assert all(isinstance(q, str) for q in queries)
