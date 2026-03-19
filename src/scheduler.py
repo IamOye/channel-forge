@@ -558,6 +558,27 @@ def run_comment_check() -> None:
                         vid = item["snippet"]["resourceId"]["videoId"]
                         vtitle = item["snippet"]["title"]
 
+                        # Check privacy status before fetching comments (1 quota unit)
+                        try:
+                            vid_resp = service.videos().list(
+                                part="status", id=vid
+                            ).execute()
+                            if tracker:
+                                tracker.record("videos_list", QUOTA_UNITS.get("videos_list", 1))
+                            vid_items = vid_resp.get("items", [])
+                            if vid_items:
+                                privacy = vid_items[0].get("status", {}).get("privacyStatus", "public")
+                                if privacy in ("private", "unlisted"):
+                                    logger.debug(
+                                        "[comment] Skipping %s — %s", vid, privacy,
+                                    )
+                                    continue
+                        except Exception as priv_exc:
+                            logger.debug(
+                                "[comment] Privacy check failed for %s, proceeding: %s",
+                                vid, priv_exc,
+                            )
+
                         # Get comment threads for this video (1 quota unit per video)
                         try:
                             ct_resp = service.commentThreads().list(

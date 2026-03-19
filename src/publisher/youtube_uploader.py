@@ -69,6 +69,7 @@ QUOTA_UNITS: dict[str, int] = {
     "channels_list":         1,
     "playlist_items_list":   1,
     "comment_threads_list":  1,
+    "videos_list":           1,
 }
 
 DEFAULT_DAILY_QUOTA  = 10_000
