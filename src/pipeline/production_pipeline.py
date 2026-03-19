@@ -492,6 +492,23 @@ class ProductionPipeline:
             "[production] SUCCESS: video_id=%s url=%s",
             result.youtube_video_id, result.youtube_url,
         )
+
+        # Mark Google Sheet row as USED if this was a manual topic
+        manual_seq = topic_item.get("manual_seq")
+        if manual_seq:
+            try:
+                from src.crawler.gsheet_topic_sync import GSheetTopicSync
+                sync = GSheetTopicSync()
+                sync.mark_used(
+                    seq=manual_seq,
+                    video_id=upload_result.youtube_video_id,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[production] Could not mark Sheet SEQ %d as USED: %s",
+                    manual_seq, exc,
+                )
+
         self._cleanup_raw_files(topic_id)
         return result
 

@@ -798,6 +798,138 @@ def run_daily_summary() -> None:
         logger.info("[scheduler] run_daily_summary END (%.1fs)", elapsed)
 
 
+def run_topic_queue_sync() -> None:
+    """Sync READY topics from Google Sheet into local manual_topics table.
+
+    Runs weekly (Monday 05:00 WAT).  Silently skips if Google Sheet
+    credentials are not configured.
+    """
+    import sqlite3 as _sqlite3
+
+    start = datetime.now(timezone.utc)
+    logger.info("[scheduler] run_topic_queue_sync START %s", start.isoformat())
+    try:
+        sheet_id = os.getenv("GOOGLE_SHEET_ID", "")
+        creds_b64 = os.getenv("GOOGLE_CREDENTIALS_B64", "")
+
+        if not sheet_id or not creds_b64:
+            logger.warning("[topic_sync] Google Sheet not configured — skipping sync")
+            return
+
+        from src.crawler.gsheet_topic_sync import GSheetTopicSync  # lazy
+        sync = GSheetTopicSync(sheet_id=sheet_id, credentials_b64=creds_b64)
+
+        # Get last synced SEQ from settings
+        db = _DEFAULT_DB
+        conn = _sqlite3.connect(db)
+        try:
+            # Ensure tables exist
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS manual_topics (
+                    seq INTEGER PRIMARY KEY, title TEXT NOT NULL,
+                    category TEXT NOT NULL DEFAULT 'money',
+                    hook_angle TEXT NOT NULL DEFAULT '',
+                    priority TEXT NOT NULL DEFAULT 'MEDIUM',
+                    notes TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'QUEUED',
+                    loaded_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    used_at TEXT, video_id TEXT NOT NULL DEFAULT ''
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY, value TEXT,
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                )
+            """)
+            conn.execute(
+                "INSERT OR IGNORE INTO settings (key, value) VALUES ('last_manual_seq', '0')"
+            )
+            conn.commit()
+
+            row = conn.execute(
+                "SELECT value FROM settings WHERE key = 'last_manual_seq'"
+            ).fetchone()
+            last_seq = int(row[0]) if row else 0
+        finally:
+            conn.close()
+
+        # Fetch next 28 READY topics from Sheet
+        topics = sync.get_next_batch(last_seq=last_seq, count=28)
+
+        if not topics:
+            logger.warning(
+                "[topic_sync] No READY topics after SEQ %d — AI queue will be used",
+                last_seq,
+            )
+            try:
+                from src.notifications.telegram_notifier import TelegramNotifier
+                TelegramNotifier().send(
+                    f"⚠️ Topic queue empty — no READY topics after SEQ {last_seq}. "
+                    "Please add topics to Google Sheet."
+                )
+            except Exception:
+                pass
+            return
+
+        # Insert into manual_topics
+        conn = _sqlite3.connect(db)
+        try:
+            for t in topics:
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO manual_topics
+                    (seq, title, category, hook_angle, priority, notes, status)
+                    VALUES (?, ?, ?, ?, ?, ?, 'QUEUED')
+                    """,
+                    (t["seq"], t["title"], t["category"],
+                     t["hook_angle"], t["priority"], t["notes"]),
+                )
+
+            max_seq = max(t["seq"] for t in topics)
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value, updated_at) "
+                "VALUES ('last_manual_seq', ?, datetime('now'))",
+                (str(max_seq),),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        # Update sync log on Sheet
+        min_seq = min(t["seq"] for t in topics)
+        max_seq = max(t["seq"] for t in topics)
+        try:
+            sync.update_sync_log(
+                len(topics), min_seq, max_seq,
+                "Auto-loaded by ChannelForge weekly sync",
+            )
+        except Exception as log_exc:
+            logger.warning("[topic_sync] Sync log update failed: %s", log_exc)
+
+        msg = (
+            f"✅ Topic queue synced — {len(topics)} topics "
+            f"loaded (SEQ {min_seq}→{max_seq})\n"
+            f"Next: {topics[0]['title']}"
+        )
+        logger.info("[topic_sync] %s", msg)
+        try:
+            from src.notifications.telegram_notifier import TelegramNotifier
+            TelegramNotifier().send(msg)
+        except Exception:
+            pass
+
+    except Exception as exc:
+        logger.error("[topic_sync] Sync failed: %s", exc)
+        try:
+            from src.notifications.telegram_notifier import TelegramNotifier
+            TelegramNotifier().send(f"❌ Topic queue sync failed: {exc}")
+        except Exception:
+            pass
+    finally:
+        elapsed = (datetime.now(timezone.utc) - start).total_seconds()
+        logger.info("[scheduler] run_topic_queue_sync END (%.1fs)", elapsed)
+
+
 # ---------------------------------------------------------------------------
 # Scheduler factory
 # ---------------------------------------------------------------------------
@@ -933,6 +1065,16 @@ def build_scheduler(timezone_name: str | None = None) -> BlockingScheduler:
         name="Comment Check",
         replace_existing=True,
         misfire_grace_time=120,
+    )
+
+    # --- Topic Queue Sync: every Monday at 05:00 ---
+    scheduler.add_job(
+        run_topic_queue_sync,
+        trigger=CronTrigger(day_of_week="mon", hour=5, minute=0, timezone=tz),
+        id="topic_queue_sync",
+        name="Topic Queue Sync",
+        replace_existing=True,
+        misfire_grace_time=600,
     )
 
     n_jobs = len(scheduler.get_jobs())

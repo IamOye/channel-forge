@@ -338,7 +338,7 @@ class TestSchedulerCompetitorJob:
     def test_scheduler_now_has_five_jobs(self) -> None:
         from src.scheduler import build_scheduler
         scheduler = build_scheduler(timezone_name="UTC")
-        assert len(scheduler.get_jobs()) == 11
+        assert len(scheduler.get_jobs()) == 12
 
     def test_run_competitor_research_does_not_raise(self) -> None:
         """run_competitor_research must swallow all exceptions."""

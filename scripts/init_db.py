@@ -319,6 +319,26 @@ CREATE TABLE IF NOT EXISTS pending_uploads (
 CREATE INDEX IF NOT EXISTS idx_pending_status ON pending_uploads (status);
 """
 
+MANUAL_TOPICS_DDL = """
+CREATE TABLE IF NOT EXISTS manual_topics (
+    seq         INTEGER PRIMARY KEY,
+    title       TEXT    NOT NULL,
+    category    TEXT    NOT NULL DEFAULT 'money',
+    hook_angle  TEXT    NOT NULL DEFAULT '',
+    priority    TEXT    NOT NULL DEFAULT 'MEDIUM',
+    notes       TEXT    NOT NULL DEFAULT '',
+    status      TEXT    NOT NULL DEFAULT 'QUEUED',
+    loaded_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+    used_at     TEXT,
+    video_id    TEXT    NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_manual_status   ON manual_topics (status);
+CREATE INDEX IF NOT EXISTS idx_manual_category ON manual_topics (category);
+
+INSERT OR IGNORE INTO settings (key, value) VALUES ('last_manual_seq', '0');
+"""
+
 # Unified main DB gets all tables
 MAIN_DDL_PARTS = [
     TRENDS_DDL, SAFETY_DDL, SCORES_DDL, TITLES_DDL, VIDEO_IDEAS_DDL,
@@ -326,7 +346,7 @@ MAIN_DDL_PARTS = [
     OPTIMIZATION_LOG_DDL, PRODUCTION_RESULTS_DDL, COMPETITOR_TOPICS_DDL,
     ELEVENLABS_USAGE_DDL, YOUTUBE_QUOTA_DDL, PRODUCTION_LOCK_DDL,
     COMMENT_STATES_DDL, SETTINGS_DDL, PENDING_UPLOADS_DDL,
-    QUALITY_HOLDS_DDL,
+    QUALITY_HOLDS_DDL, MANUAL_TOPICS_DDL,
 ]
 
 
@@ -433,6 +453,14 @@ def migrate_db(db_path: Path) -> None:
             conn.executescript(QUALITY_HOLDS_DDL)
             conn.commit()
             logger.info("Migration applied: quality_holds table ensured (%s)", db_path)
+        except sqlite3.OperationalError:
+            pass
+
+        # Manual topics migration: create manual_topics table + settings row
+        try:
+            conn.executescript(MANUAL_TOPICS_DDL)
+            conn.commit()
+            logger.info("Migration applied: manual_topics table ensured (%s)", db_path)
         except sqlite3.OperationalError:
             pass
     finally:

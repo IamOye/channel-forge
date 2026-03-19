@@ -85,6 +85,19 @@ class TopicQueue:
             List of topic dicts: {"topic_id", "keyword", "category", "score", "source"}.
         """
         uploaded = uploaded_topics or []
+
+        # Priority 0: Manual topics from Google Sheet queue (highest priority)
+        manual = self._get_manual_topics(category, max_count)
+        if manual:
+            logger.info(
+                "[topic_queue] Returning %d manual topic(s) before AI queue",
+                len(manual),
+            )
+            if len(manual) >= max_count:
+                return manual[:max_count]
+            # Fill remaining slots from AI queue below
+            max_count -= len(manual)
+
         all_candidates = self._gather_all_candidates(category)
 
         # Sort by priority score descending
@@ -141,6 +154,10 @@ class TopicQueue:
                     "priority_score": SOURCE_PRIORITIES["FALLBACK"],
                     "source":         "CLAUDE_GENERATED",
                 })
+
+        # Prepend any manual topics found earlier
+        if manual:
+            selected = manual + selected
 
         logger.info(
             "TopicQueue returned %d topics for category='%s'",
@@ -216,6 +233,63 @@ class TopicQueue:
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    def _get_manual_topics(
+        self,
+        category: str,
+        max_count: int,
+    ) -> list[dict[str, Any]]:
+        """Fetch QUEUED manual topics from the manual_topics table.
+
+        Returns up to ``max_count`` topics ordered by SEQ ascending.
+        Each consumed topic is immediately marked USED in the DB.
+        """
+        if not self.db_path.exists():
+            return []
+
+        results: list[dict[str, Any]] = []
+        try:
+            conn = sqlite3.connect(self.db_path)
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT seq, title, category, hook_angle
+                    FROM manual_topics
+                    WHERE status = 'QUEUED' AND category = ?
+                    ORDER BY seq ASC
+                    LIMIT ?
+                    """,
+                    (category, max_count),
+                ).fetchall()
+
+                for seq, title, cat, hook in rows:
+                    conn.execute(
+                        "UPDATE manual_topics SET status = 'USED', "
+                        "used_at = datetime('now') WHERE seq = ?",
+                        (seq,),
+                    )
+                    results.append({
+                        "topic_id":       f"manual_{seq:03d}",
+                        "keyword":        title,
+                        "category":       cat or category,
+                        "score":          100.0,
+                        "priority_score": 100,
+                        "source":         "MANUAL",
+                        "manual_seq":     seq,
+                        "hook_angle":     hook or "",
+                    })
+                    logger.info("[topic_queue] MANUAL SEQ %d: %s", seq, title)
+
+                if results:
+                    conn.commit()
+            except sqlite3.OperationalError:
+                pass  # table doesn't exist yet
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.warning("[topic_queue] Manual topic query failed: %s", exc)
+
+        return results
 
     def _gather_all_candidates(self, category: str) -> list[dict[str, Any]]:
         """

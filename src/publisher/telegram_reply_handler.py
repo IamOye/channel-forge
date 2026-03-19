@@ -447,6 +447,188 @@ class TelegramReplyHandler:
         )
 
     # ------------------------------------------------------------------
+    # Topic queue commands
+    # ------------------------------------------------------------------
+
+    def handle_addtopic(self, args: str) -> str:
+        """Handle /addtopic [category] [title] — add a topic to the queue."""
+        parts = args.strip().split(None, 1)
+        if len(parts) < 2:
+            return "Usage: /addtopic [category] [title]\nExample: /addtopic money Why banks want you in debt"
+
+        category = parts[0].lower()
+        title = parts[1].strip()
+
+        if category not in ("money", "career", "success"):
+            return f"Invalid category '{category}'. Use: money, career, success"
+
+        # Insert into local DB
+        conn = self._get_conn()
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS manual_topics (
+                    seq INTEGER PRIMARY KEY, title TEXT NOT NULL,
+                    category TEXT NOT NULL DEFAULT 'money',
+                    hook_angle TEXT NOT NULL DEFAULT '', priority TEXT NOT NULL DEFAULT 'MEDIUM',
+                    notes TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'QUEUED',
+                    loaded_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    used_at TEXT, video_id TEXT NOT NULL DEFAULT ''
+                )
+            """)
+            # Get next seq
+            row = conn.execute("SELECT MAX(seq) FROM manual_topics").fetchone()
+            next_seq = (row[0] or 0) + 1 if row else 1
+            conn.execute(
+                "INSERT INTO manual_topics (seq, title, category, status, notes) "
+                "VALUES (?, ?, ?, 'QUEUED', 'via Telegram')",
+                (next_seq, title, category),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        # Also try to add to Google Sheet
+        try:
+            from src.crawler.gsheet_topic_sync import GSheetTopicSync
+            sync = GSheetTopicSync()
+            sheet_seq = sync.append_topic(title=title, category=category, notes="via Telegram")
+            return f"✅ Added SEQ #{sheet_seq}: {title}\n(category: {category}, added to Sheet + DB)"
+        except Exception as exc:
+            logger.warning("[telegram] Sheet append failed: %s", exc)
+            return f"✅ Added SEQ #{next_seq}: {title}\n(category: {category}, DB only — Sheet sync failed)"
+
+    def handle_listtopics(self) -> str:
+        """Handle /listtopics — show next 7 queued topics."""
+        conn = self._get_conn()
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS manual_topics (
+                    seq INTEGER PRIMARY KEY, title TEXT NOT NULL,
+                    category TEXT NOT NULL DEFAULT 'money',
+                    hook_angle TEXT NOT NULL DEFAULT '', priority TEXT NOT NULL DEFAULT 'MEDIUM',
+                    notes TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'QUEUED',
+                    loaded_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    used_at TEXT, video_id TEXT NOT NULL DEFAULT ''
+                )
+            """)
+            rows = conn.execute(
+                "SELECT seq, title, category FROM manual_topics "
+                "WHERE status = 'QUEUED' ORDER BY seq ASC LIMIT 7"
+            ).fetchall()
+        finally:
+            conn.close()
+
+        if not rows:
+            return "📋 <b>No queued topics</b>\nAdd topics via /addtopic or Google Sheet."
+
+        lines = [f"📋 <b>Next {len(rows)} queued topics:</b>\n"]
+        for seq, title, cat in rows:
+            lines.append(f"[{seq}] {title} ({cat})")
+        return "\n".join(lines)
+
+    def handle_weeklystatus(self) -> str:
+        """Handle /weeklystatus — show production stats for this week."""
+        conn = self._get_conn()
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS manual_topics (
+                    seq INTEGER PRIMARY KEY, title TEXT NOT NULL,
+                    category TEXT NOT NULL DEFAULT 'money',
+                    hook_angle TEXT NOT NULL DEFAULT '', priority TEXT NOT NULL DEFAULT 'MEDIUM',
+                    notes TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'QUEUED',
+                    loaded_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    used_at TEXT, video_id TEXT NOT NULL DEFAULT ''
+                )
+            """)
+            queued = conn.execute(
+                "SELECT COUNT(*) FROM manual_topics WHERE status = 'QUEUED'"
+            ).fetchone()[0]
+            used_week = conn.execute(
+                "SELECT COUNT(*) FROM manual_topics WHERE status = 'USED' "
+                "AND used_at >= date('now', 'weekday 0', '-6 days')"
+            ).fetchone()[0]
+            next_row = conn.execute(
+                "SELECT seq, title FROM manual_topics "
+                "WHERE status = 'QUEUED' ORDER BY seq ASC LIMIT 1"
+            ).fetchone()
+        finally:
+            conn.close()
+
+        next_str = f"[{next_row[0]}] {next_row[1]}" if next_row else "(none)"
+        return (
+            f"📊 <b>Week status:</b>\n"
+            f"✅ Produced: {used_week}\n"
+            f"📋 Queued: {queued}\n"
+            f"Next: {next_str}"
+        )
+
+    def handle_skiptopic(self, seq_str: str) -> str:
+        """Handle /skiptopic [seq] — mark topic as SKIP."""
+        try:
+            seq = int(seq_str)
+        except ValueError:
+            return "Usage: /skiptopic [seq number]"
+
+        conn = self._get_conn()
+        try:
+            cur = conn.execute(
+                "UPDATE manual_topics SET status = 'SKIP' WHERE seq = ? AND status = 'QUEUED'",
+                (seq,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        if cur.rowcount == 0:
+            return f"SEQ #{seq} not found or not QUEUED."
+
+        # Try to update Sheet too
+        try:
+            from src.crawler.gsheet_topic_sync import GSheetTopicSync
+            GSheetTopicSync().set_status(seq, "SKIP")
+        except Exception:
+            pass
+
+        return f"⏭ Skipped SEQ #{seq}"
+
+    def handle_holdtopic(self, seq_str: str) -> str:
+        """Handle /holdtopic [seq] — put topic on hold."""
+        try:
+            seq = int(seq_str)
+        except ValueError:
+            return "Usage: /holdtopic [seq number]"
+
+        conn = self._get_conn()
+        try:
+            cur = conn.execute(
+                "UPDATE manual_topics SET status = 'HOLD' WHERE seq = ? AND status = 'QUEUED'",
+                (seq,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        if cur.rowcount == 0:
+            return f"SEQ #{seq} not found or not QUEUED."
+
+        try:
+            from src.crawler.gsheet_topic_sync import GSheetTopicSync
+            GSheetTopicSync().set_status(seq, "HOLD")
+        except Exception:
+            pass
+
+        return f"⏸ SEQ #{seq} on hold"
+
+    def handle_synctopics(self) -> str:
+        """Handle /synctopics — manually trigger topic queue sync."""
+        try:
+            from src.scheduler import run_topic_queue_sync
+            run_topic_queue_sync()
+            return "🔄 Topic queue sync completed — check logs for details."
+        except Exception as exc:
+            return f"❌ Sync failed: {exc}"
+
+    # ------------------------------------------------------------------
     # Message router
     # ------------------------------------------------------------------
 
@@ -480,6 +662,33 @@ class TelegramReplyHandler:
         # /held
         if text == "/held":
             return self.handle_held()
+
+        # /addtopic [category] [title]
+        m = re.match(r"^/addtopic\s+(.+)$", text)
+        if m:
+            return self.handle_addtopic(m.group(1))
+
+        # /listtopics
+        if text == "/listtopics":
+            return self.handle_listtopics()
+
+        # /weeklystatus
+        if text == "/weeklystatus":
+            return self.handle_weeklystatus()
+
+        # /skiptopic [seq]
+        m = re.match(r"^/skiptopic\s+(\S+)$", text)
+        if m:
+            return self.handle_skiptopic(m.group(1))
+
+        # /holdtopic [seq]
+        m = re.match(r"^/holdtopic\s+(\S+)$", text)
+        if m:
+            return self.handle_holdtopic(m.group(1))
+
+        # /synctopics
+        if text == "/synctopics":
+            return self.handle_synctopics()
 
         # /automode on|off
         m = re.match(r"^/automode\s+(\S+)$", text)
