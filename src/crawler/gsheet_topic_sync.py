@@ -75,7 +75,11 @@ class GSheetTopicSync:
         if not self.credentials_b64:
             raise ValueError("GOOGLE_CREDENTIALS_B64 not set")
 
-        creds_json = json.loads(base64.b64decode(self.credentials_b64))
+        b64 = self.credentials_b64.strip()
+        missing = len(b64) % 4
+        if missing:
+            b64 += "=" * (4 - missing)
+        creds_json = json.loads(base64.b64decode(b64))
         creds = Credentials.from_service_account_info(creds_json, scopes=_SCOPES)
         client = gspread.authorize(creds)
         self._sheet = client.open_by_key(self.sheet_id)

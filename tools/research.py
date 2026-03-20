@@ -141,7 +141,11 @@ def add_to_sheet(topics: list) -> tuple[int, int]:
     scopes = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 
     if creds_b64:
-        creds = Credentials.from_service_account_info(json.loads(base64.b64decode(creds_b64)), scopes=scopes)
+        _b64 = creds_b64.strip()
+        _missing = len(_b64) % 4
+        if _missing:
+            _b64 += "=" * (4 - _missing)
+        creds = Credentials.from_service_account_info(json.loads(base64.b64decode(_b64)), scopes=scopes)
     elif creds_file:
         creds = Credentials.from_service_account_file(creds_file, scopes=scopes)
     else:

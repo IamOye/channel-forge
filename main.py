@@ -77,7 +77,11 @@ def setup_credentials() -> None:
         path = os.path.join(_CREDS_DIR, "money_debate_client_secret.json")
         try:
             with open(path, "wb") as f:
-                f.write(base64.b64decode(secret_b64))
+                _sb64 = secret_b64.strip()
+                _smissing = len(_sb64) % 4
+                if _smissing:
+                    _sb64 += "=" * (4 - _smissing)
+                f.write(base64.b64decode(_sb64))
             logger.info("[credentials] Written: %s (%d bytes)", path, os.path.getsize(path))
         except Exception as exc:
             logger.error("[credentials] Failed to write secret: %s", exc)
@@ -88,7 +92,11 @@ def setup_credentials() -> None:
         path = os.path.join(_CREDS_DIR, "money_debate_token.json")
         try:
             with open(path, "wb") as f:
-                f.write(base64.b64decode(token_b64))
+                _tb64 = token_b64.strip()
+                _tmissing = len(_tb64) % 4
+                if _tmissing:
+                    _tb64 += "=" * (4 - _tmissing)
+                f.write(base64.b64decode(_tb64))
             logger.info("[credentials] Written: %s (%d bytes)", path, os.path.getsize(path))
         except Exception as exc:
             logger.error("[credentials] Failed to write token: %s", exc)

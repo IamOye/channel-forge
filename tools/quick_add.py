@@ -74,7 +74,11 @@ def add_to_sheet(title: str, category: str, hook: str) -> int:
     ]
 
     if creds_b64:
-        creds_json = json.loads(base64.b64decode(creds_b64))
+        _b64 = creds_b64.strip()
+        _missing = len(_b64) % 4
+        if _missing:
+            _b64 += "=" * (4 - _missing)
+        creds_json = json.loads(base64.b64decode(_b64))
         creds = Credentials.from_service_account_info(creds_json, scopes=scopes)
     elif creds_file:
         creds = Credentials.from_service_account_file(creds_file, scopes=scopes)
