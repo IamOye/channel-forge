@@ -49,6 +49,13 @@ logger = logging.getLogger("research")
 
 DB_PATH = _PROJECT_ROOT / "data" / "processed" / "channel_forge.db"
 
+
+def _safe_str(value: object) -> str:
+    """Convert any value to a stripped string, treating None as empty."""
+    if value is None:
+        return ""
+    return str(value).strip()
+
 AUTOCOMPLETE_SEEDS = [
     "why your boss", "how to save money",
     "salary negotiation", "passive income",
@@ -104,12 +111,15 @@ def _scrape_reddit() -> list[RawTopic]:
         scraper = RedditScraper()
         results = scraper.scrape_finance_subreddits()
         for r in results:
+            title = _safe_str(r.keyword)
+            if not title:
+                continue
             topics.append(RawTopic(
-                title=r.keyword,
+                title=title,
                 source="reddit",
-                source_detail=f"r/{r.subreddit}",
-                score_hint=float(r.upvotes),
-                extra={"category": r.category, "upvotes": r.upvotes},
+                source_detail=f"r/{_safe_str(r.subreddit)}",
+                score_hint=float(r.upvotes or 0),
+                extra={"category": _safe_str(r.category), "upvotes": r.upvotes or 0},
             ))
         logger.info("[scrape] Reddit: %d topics", len(topics))
     except Exception as exc:
@@ -136,9 +146,10 @@ def _scrape_autocomplete() -> list[RawTopic]:
                 data = json.loads(text[start:])
                 suggestions = [s[0] for s in data[1]] if len(data) > 1 else []
                 for sug in suggestions:
-                    if sug.strip() and sug.strip().lower() != seed.lower():
+                    s = _safe_str(sug)
+                    if s and s.lower() != seed.lower():
                         topics.append(RawTopic(
-                            title=sug.strip(),
+                            title=s,
                             source="autocomplete",
                             source_detail=seed,
                         ))
@@ -158,19 +169,23 @@ def _scrape_trends() -> list[RawTopic]:
         engine = TrendScrapingEngine()
         signals = engine.fetch_all(TREND_KEYWORDS)
         for s in signals:
+            kw = _safe_str(s.keyword)
+            if not kw:
+                continue
             topics.append(RawTopic(
-                title=s.keyword,
+                title=kw,
                 source="trends",
-                source_detail=s.source,
-                score_hint=s.interest_score,
+                source_detail=_safe_str(s.source),
+                score_hint=float(s.interest_score or 0),
             ))
             # Also include related queries as topics
             for rq in (s.related_queries or []):
-                if rq.strip():
+                rq_str = _safe_str(rq)
+                if rq_str:
                     topics.append(RawTopic(
-                        title=rq.strip(),
+                        title=rq_str,
                         source="trends",
-                        source_detail=f"related/{s.keyword}",
+                        source_detail=f"related/{kw}",
                     ))
         logger.info("[scrape] Trends: %d topics", len(topics))
     except Exception as exc:
@@ -188,8 +203,11 @@ def _scrape_competitors() -> list[RawTopic]:
             try:
                 extracted = scraper.scrape_competitor_topics(category)
                 for title in extracted:
+                    t = _safe_str(title)
+                    if not t:
+                        continue
                     topics.append(RawTopic(
-                        title=title,
+                        title=t,
                         source="competitor",
                         source_detail=category,
                     ))
@@ -201,8 +219,11 @@ def _scrape_competitors() -> list[RawTopic]:
             try:
                 suggestions = scraper.scrape_search_autocomplete(category)
                 for sug in suggestions:
+                    s = _safe_str(sug)
+                    if not s:
+                        continue
                     topics.append(RawTopic(
-                        title=sug,
+                        title=s,
                         source="autocomplete",
                         source_detail=f"yt/{category}",
                     ))
@@ -247,9 +268,11 @@ def run_scrape(sources: list[str] | None = None) -> list[RawTopic]:
 # Phase 2: Deduplicate & Clean
 # ---------------------------------------------------------------------------
 
-def _normalise_title(title: str) -> str:
+def _normalise_title(title: str | None) -> str:
     """Lowercase, strip punctuation, collapse whitespace."""
-    t = title.lower().strip()
+    if not title:
+        return ""
+    t = str(title).lower().strip()
     t = re.sub(r"[^\w\s]", "", t)
     t = re.sub(r"\s+", " ", t)
     return t.strip()
@@ -284,7 +307,7 @@ def deduplicate(topics: list[RawTopic]) -> list[RawTopic]:
     result: list[RawTopic] = []
 
     for t in topics:
-        title = t.title.strip()
+        title = _safe_str(t.title)
         if not title:
             continue
 
@@ -329,10 +352,10 @@ def score_topics(topics: list[RawTopic]) -> list[ScoredTopic]:
         logger.warning("[score] ANTHROPIC_API_KEY not set — returning unscored")
         return [
             ScoredTopic(
-                title=t.title, score=0.0, category="money",
-                hook_angle="", reason="unscored",
-                source=t.source, source_detail=t.source_detail,
-                score_hint=t.score_hint,
+                title=_safe_str(t.title) or "untitled", score=0.0,
+                category="money", hook_angle="", reason="unscored",
+                source=_safe_str(t.source), source_detail=_safe_str(t.source_detail),
+                score_hint=float(t.score_hint or 0),
             )
             for t in topics
         ]
@@ -386,26 +409,26 @@ def score_topics(topics: list[RawTopic]) -> list[ScoredTopic]:
                 # Map scored items back to source info
                 title_to_raw = {t.title: t for t in batch}
                 for item in items:
-                    title = item.get("title", "")
+                    title = _safe_str(item.get("title"))
                     raw_topic = title_to_raw.get(title) or (batch[0] if batch else None)
                     scored.append(ScoredTopic(
                         title=title or "untitled",
-                        score=float(item.get("score", 0)),
-                        category=item.get("category", "money"),
-                        hook_angle=item.get("hook_angle", ""),
-                        reason=item.get("reason", ""),
-                        source=raw_topic.source if raw_topic else "unknown",
-                        source_detail=raw_topic.source_detail if raw_topic else "",
-                        score_hint=raw_topic.score_hint if raw_topic else 0,
+                        score=float(item.get("score") or 0),
+                        category=_safe_str(item.get("category")) or "money",
+                        hook_angle=_safe_str(item.get("hook_angle")),
+                        reason=_safe_str(item.get("reason")),
+                        source=_safe_str(raw_topic.source) if raw_topic else "unknown",
+                        source_detail=_safe_str(raw_topic.source_detail) if raw_topic else "",
+                        score_hint=float(raw_topic.score_hint or 0) if raw_topic else 0,
                     ))
             except Exception as exc:
                 logger.warning("[score] Batch %d failed: %s — adding unscored", i, exc)
                 for t in batch:
                     scored.append(ScoredTopic(
-                        title=t.title, score=0.0, category="money",
-                        hook_angle="", reason="scoring failed",
-                        source=t.source, source_detail=t.source_detail,
-                        score_hint=t.score_hint,
+                        title=_safe_str(t.title) or "untitled", score=0.0,
+                        category="money", hook_angle="", reason="scoring failed",
+                        source=_safe_str(t.source), source_detail=_safe_str(t.source_detail),
+                        score_hint=float(t.score_hint or 0),
                     ))
 
             progress.update(task, advance=len(batch))
@@ -451,22 +474,26 @@ def display_topics(scored: list[ScoredTopic], count: int = 50, offset: int = 0) 
         else:
             score_style = "dim"
 
+        cat = _safe_str(t.category) or "money"
         cat_colors = {"money": "green", "career": "cyan", "success": "magenta"}
-        cat_style = cat_colors.get(t.category, "white")
+        cat_style = cat_colors.get(cat, "white")
+        title_display = _safe_str(t.title) or "(untitled)"
+        hook = _safe_str(t.hook_angle)
 
         console.print(
             f" [{score_style}]{i:>3}[/]  "
             f"[{score_style}]{t.score:.1f}[/]  "
-            f"[{cat_style}]{t.category:<8}[/] "
-            f"[bold white]{t.title}[/]"
+            f"[{cat_style}]{cat:<8}[/] "
+            f"[bold white]{title_display}[/]"
         )
-        if t.hook_angle:
-            console.print(f"              [dim italic]Hook: {t.hook_angle}[/]")
+        if hook:
+            console.print(f"              [dim italic]Hook: {hook}[/]")
 
         # Source line
-        source_str = f"{t.source}"
-        if t.source_detail:
-            source_str += f"/{t.source_detail}"
+        source_str = _safe_str(t.source) or "unknown"
+        detail = _safe_str(t.source_detail)
+        if detail:
+            source_str += f"/{detail}"
         if t.score_hint > 0:
             if t.source == "reddit":
                 source_str += f" ({int(t.score_hint)} upvotes)"
@@ -748,10 +775,10 @@ def main() -> None:
     if args.no_score:
         scored = [
             ScoredTopic(
-                title=t.title, score=0.0, category="unknown",
-                hook_angle="", reason="",
-                source=t.source, source_detail=t.source_detail,
-                score_hint=t.score_hint,
+                title=_safe_str(t.title) or "untitled", score=0.0,
+                category="unknown", hook_angle="", reason="",
+                source=_safe_str(t.source), source_detail=_safe_str(t.source_detail),
+                score_hint=float(t.score_hint or 0),
             )
             for t in clean
         ]
