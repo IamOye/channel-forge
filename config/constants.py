@@ -124,6 +124,13 @@ PIXABAY_KEYWORD_MAP: dict[str, str] = {
 
 import os as _os
 
+# CTA trigger keywords per category — used in comment detection + CTA validation
+CTA_TRIGGER_KEYWORDS: dict[str, str] = {
+    "money":   "SYSTEM",
+    "career":  "AUTOMATE",
+    "success": "BLUEPRINT",
+}
+
 PRODUCTS: dict[str, dict[str, str]] = {
     "money": {
         "name":       "The 5 Money Systems Millionaires Use While They Sleep",
@@ -131,7 +138,7 @@ PRODUCTS: dict[str, dict[str, str]] = {
         "gumroad_url": _os.getenv(
             "GUMROAD_URL_MONEY", "https://gumroad.com/l/placeholder1"
         ),
-        "cta_script":  "Want to know the exact 5 systems the wealthy use to earn while sleeping? Comment YES and I will send you the blueprint free.",
+        "cta_script":  "If this hit different, subscribe. We expose this stuff daily. Comment SYSTEM below and I will send you the 5-day money reset free.",
         "cta_overlay": "FREE WEALTH SYSTEMS BLUEPRINT",
     },
     "career": {
@@ -140,7 +147,7 @@ PRODUCTS: dict[str, dict[str, str]] = {
         "gumroad_url": _os.getenv(
             "GUMROAD_URL_CAREER", "https://gumroad.com/l/placeholder2"
         ),
-        "cta_script":  "Want 3 income streams you can start this weekend without quitting your job? Comment YES and I will send you the guide free.",
+        "cta_script":  "Subscribe if nobody told you this before. We post daily. Comment AUTOMATE below and I will send you the salary playbook free.",
         "cta_overlay": "FREE SALARY ESCAPE GUIDE",
     },
     "success": {
@@ -149,7 +156,7 @@ PRODUCTS: dict[str, dict[str, str]] = {
         "gumroad_url": _os.getenv(
             "GUMROAD_URL_SUCCESS", "https://gumroad.com/l/placeholder3"
         ),
-        "cta_script":  "Want to know which success myths are keeping you broke right now? Comment YES and I will send you the full breakdown free.",
+        "cta_script":  "Subscribe. We drop uncomfortable truths every day. Comment BLUEPRINT below and I will send you the AI advantage guide free.",
         "cta_overlay": "FREE SUCCESS MYTHS BREAKDOWN",
     },
 }

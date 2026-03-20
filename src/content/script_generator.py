@@ -321,8 +321,32 @@ class ScriptGenerator:
 
     @staticmethod
     def _cta_matches(question: str, cta_script: str) -> bool:
-        """Return True if cta_script appears verbatim (case-insensitive) in question."""
-        return cta_script.strip().lower() in question.strip().lower()
+        """Return True if question contains both 'subscribe' and the CTA trigger keyword.
+
+        The combined subscribe + lead magnet CTA must contain:
+          1. The word 'subscribe' (case insensitive)
+          2. The trigger keyword from the CTA script (SYSTEM, AUTOMATE, or BLUEPRINT)
+
+        Falls back to verbatim check if no trigger keyword is detected in cta_script.
+        """
+        q_lower = question.strip().lower()
+        cta_lower = cta_script.strip().lower()
+
+        # Extract trigger keyword from CTA script
+        trigger_keywords = ["system", "automate", "blueprint"]
+        trigger = None
+        for kw in trigger_keywords:
+            if kw in cta_lower:
+                trigger = kw
+                break
+
+        if trigger:
+            has_subscribe = "subscribe" in q_lower
+            has_trigger = trigger in q_lower
+            return has_subscribe and has_trigger
+
+        # Fallback: verbatim check for legacy CTAs without trigger keywords
+        return cta_lower in q_lower
 
     def _enforce_cta(
         self,
