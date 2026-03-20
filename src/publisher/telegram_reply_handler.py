@@ -629,6 +629,276 @@ class TelegramReplyHandler:
             return f"❌ Sync failed: {exc}"
 
     # ------------------------------------------------------------------
+    # Research commands
+    # ------------------------------------------------------------------
+
+    def _get_engine(self):
+        """Get a ResearchEngine instance (exclude Reddit on Railway)."""
+        from src.research.research_engine import ResearchEngine
+        return ResearchEngine(exclude_reddit=True, db_path=self.db_path)
+
+    def handle_research(self, args: str) -> str:
+        """Handle /research [source] [category] — start research session."""
+        import threading
+        from src.research.research_engine import ResearchEngine
+
+        parts = args.strip().split() if args.strip() else []
+        source = parts[0].lower() if parts else None
+        category = parts[1].lower() if len(parts) > 1 else None
+
+        if source == "reddit":
+            return (
+                "⚠️ Reddit research must run locally to avoid IP blocks.\n"
+                "Run: python tools/research.py --source reddit\n"
+                "Then: python tools/research.py --sync\n"
+                "Then send /syncreviewed here to sync reviewed topics."
+            )
+
+        valid_sources = ("competitor", "autocomplete", "trends")
+        if source and source not in valid_sources:
+            return f"Invalid source '{source}'. Use: {', '.join(valid_sources)} or omit for all."
+
+        engine = self._get_engine()
+        existing = engine.get_session(self.chat_id)
+        if existing and existing.get("status") == "active":
+            return "⏳ Research already running. Check /researchstatus or /cancelsession"
+
+        # Run in background
+        def _run(chat_id: str, src: str | None, cat: str | None) -> None:
+            try:
+                eng = ResearchEngine(exclude_reddit=True, db_path=self.db_path)
+
+                def cb(msg: str) -> None:
+                    try:
+                        self._send(msg)
+                    except Exception:
+                        pass
+
+                topics = eng.run(source=src, category=cat, progress_callback=cb)
+                if topics:
+                    session_id = eng.create_session(chat_id, topics, source=src or "all", category=cat or "")
+                    # Send first 5
+                    first_5 = topics[:5]
+                    for i, t in enumerate(first_5):
+                        self._send(self._format_topic(t, i + 1))
+                    self._send(
+                        f"✅ Ready! {len(topics)} topics ranked. Showing 1–{len(first_5)}.\n"
+                        "Use /next for more, /add 1,3 to add, /skip 2 to skip."
+                    )
+                else:
+                    self._send("⚠️ No topics found after scoring.")
+            except Exception as exc:
+                logger.error("[research] Background run failed: %s", exc)
+                self._send(f"❌ Research failed: {exc}")
+
+        threading.Thread(target=_run, args=(self.chat_id, source, category), daemon=True).start()
+        src_label = source or "competitor + autocomplete + trends"
+        return f"🔍 Researching {src_label}... I'll update you as each phase completes."
+
+    def _format_topic(self, t, num: int) -> str:
+        """Format a single topic for Telegram display."""
+        hook_str = f" (H:{t.hook_strength:.1f})" if t.hook_strength > 0 else ""
+        rewrite_tag = "✏️ " if t.original_title else ""
+        lines = [
+            "━━━━━━━━━━━━━━━━━━━━",
+            f"#{num} · Score: {t.score:.1f}{hook_str} · {t.category}",
+            "",
+            f"{rewrite_tag}<b>{t.title}</b>",
+        ]
+        if t.original_title and t.original_title != t.title:
+            lines.append(f"📝 Original: {t.original_title}")
+        if t.hook_angle:
+            lines.append(f"🎯 Hook: {t.hook_angle}")
+        source_str = t.source or "unknown"
+        if t.source_detail:
+            source_str += f"/{t.source_detail}"
+        if t.score_hint > 0 and t.source == "reddit":
+            source_str += f" · {int(t.score_hint)} upvotes"
+        lines.append(f"📌 {source_str}")
+        lines.append("━━━━━━━━━━━━━━━━━━━━")
+        return "\n".join(lines)
+
+    def handle_next(self) -> str:
+        """Handle /next — show next 5 topics."""
+        return self._show_topics(5)
+
+    def handle_more(self, args: str) -> str:
+        """Handle /more [n] — show next n topics."""
+        try:
+            n = min(int(args.strip()), 20) if args.strip() else 5
+        except ValueError:
+            n = 5
+        return self._show_topics(n)
+
+    def _show_topics(self, n: int) -> str:
+        """Show next n topics from active session."""
+        engine = self._get_engine()
+        session = engine.get_session(self.chat_id)
+        if not session:
+            return "No active session. Use /research to start."
+
+        topics = engine.get_session_topics(session)
+        idx = session.get("current_index", 0)
+
+        if idx >= len(topics):
+            return "📋 No more topics. Use /done to finish."
+
+        batch = topics[idx:idx + n]
+        for i, t in enumerate(batch):
+            self._send(self._format_topic(t, idx + i + 1))
+
+        new_idx = idx + len(batch)
+        engine.update_session(session["id"], current_index=new_idx)
+
+        return f"Showing {idx + 1}–{new_idx} of {len(topics)}. /next for more, /add to add, /done to finish."
+
+    def handle_research_add(self, args: str) -> str:
+        """Handle /add [numbers] — add topics to Google Sheet."""
+        engine = self._get_engine()
+        session = engine.get_session(self.chat_id)
+        if not session:
+            return "No active session. Use /research to start."
+
+        topics = engine.get_session_topics(session)
+        indices = self._parse_numbers(args)
+        if not indices:
+            return "Usage: /add 1,3,5-8"
+
+        to_add = [topics[i - 1] for i in indices if 1 <= i <= len(topics)]
+        if not to_add:
+            return "No valid topic numbers."
+
+        try:
+            from src.crawler.gsheet_topic_sync import GSheetTopicSync
+            sync = GSheetTopicSync()
+            lines = ["✅ Added to Google Sheet:"]
+            for t in to_add:
+                seq = sync.append_topic(title=t.title, category=t.category,
+                                        hook_angle=t.hook_angle, notes=f"via Telegram | Score: {t.score:.1f}")
+                engine.mark_reviewed(title=t.title, action="added", session_id=session["id"],
+                                     score=t.score, category=t.category, source=t.source,
+                                     original_title=t.original_title)
+                lines.append(f"  SEQ #{seq}: {t.title}")
+
+            added = session.get("topics_added", 0) + len(to_add)
+            engine.update_session(session["id"], topics_added=added)
+            return "\n".join(lines)
+        except Exception as exc:
+            return f"❌ Sheet error: {exc}"
+
+    def handle_research_skip(self, args: str) -> str:
+        """Handle /skip [numbers] — skip topics."""
+        engine = self._get_engine()
+        session = engine.get_session(self.chat_id)
+        if not session:
+            return "No active session."
+
+        topics = engine.get_session_topics(session)
+        indices = self._parse_numbers(args)
+        if not indices:
+            return "Usage: /skip 1,3,5-8"
+
+        to_skip = [topics[i - 1] for i in indices if 1 <= i <= len(topics)]
+        engine.mark_batch_reviewed(to_skip, "skipped", session["id"])
+        skipped = session.get("topics_skipped", 0) + len(to_skip)
+        engine.update_session(session["id"], topics_skipped=skipped)
+        return f"⏭️ Skipped {len(to_skip)} topics — won't appear again"
+
+    def handle_research_edit(self, args: str) -> str:
+        """Handle /edit [number] — enter edit mode for a topic."""
+        # Store the topic number for the next free-text message
+        # For simplicity, return instructions
+        return f"Send me the new title as a reply. Then /add the number to add it."
+
+    def handle_done(self) -> str:
+        """Handle /done — end research session."""
+        engine = self._get_engine()
+        session = engine.get_session(self.chat_id)
+        if not session:
+            return "No active session."
+
+        topics = engine.get_session_topics(session)
+        # Mark unreviewed topics as skipped
+        idx = session.get("current_index", 0)
+        unacted = topics[idx:]
+        if unacted:
+            engine.mark_batch_reviewed(unacted, "skipped", session["id"])
+
+        added = session.get("topics_added", 0)
+        skipped = session.get("topics_skipped", 0) + len(unacted)
+        engine.update_session(session["id"], status="done", topics_skipped=skipped)
+
+        # Count queued topics
+        conn = self._get_conn()
+        try:
+            try:
+                queued = conn.execute(
+                    "SELECT COUNT(*) FROM manual_topics WHERE status = 'QUEUED'"
+                ).fetchone()[0]
+            except Exception:
+                queued = "?"
+        finally:
+            conn.close()
+
+        return (
+            f"📊 Session complete:\n"
+            f"✅ Added: {added} topics\n"
+            f"⏭️ Skipped: {skipped} topics\n"
+            f"📋 Queue has {queued} READY topics\n"
+            f"Next sync: Monday 05:00 WAT"
+        )
+
+    def handle_researchstatus(self) -> str:
+        """Handle /researchstatus."""
+        engine = self._get_engine()
+        session = engine.get_session(self.chat_id)
+        if not session:
+            return "No active session. Use /research to start."
+        status = session.get("status", "unknown")
+        total = session.get("total_topics", 0)
+        idx = session.get("current_index", 0)
+        added = session.get("topics_added", 0)
+        if status == "active":
+            return f"✅ {total} topics ready. Viewed {idx}/{total}. Added {added}. Use /next to continue."
+        return f"Session {status}. Added {added} of {total}."
+
+    def handle_cancelsession(self) -> str:
+        """Handle /cancelsession."""
+        engine = self._get_engine()
+        session = engine.get_session(self.chat_id)
+        if not session:
+            return "No active session."
+        engine.update_session(session["id"], status="cancelled")
+        return "Session cancelled."
+
+    def handle_syncreviewed(self) -> str:
+        """Handle /syncreviewed — import reviewed topics from Google Sheet."""
+        try:
+            engine = self._get_engine()
+            count = engine.import_reviewed_from_sheet()
+            return f"✅ Synced {count} reviewed topics from local sessions. Future research will exclude these."
+        except Exception as exc:
+            return f"❌ Sync failed: {exc}"
+
+    @staticmethod
+    def _parse_numbers(text: str) -> list[int]:
+        """Parse '1,3,5-8' into [1, 3, 5, 6, 7, 8]."""
+        nums: list[int] = []
+        if not text or not text.strip():
+            return nums
+        try:
+            for part in text.split(","):
+                part = part.strip()
+                if "-" in part:
+                    lo, hi = part.split("-", 1)
+                    nums.extend(range(int(lo), int(hi) + 1))
+                else:
+                    nums.append(int(part))
+        except ValueError:
+            pass
+        return sorted(set(nums))
+
+    # ------------------------------------------------------------------
     # Message router
     # ------------------------------------------------------------------
 
@@ -689,6 +959,38 @@ class TelegramReplyHandler:
         # /synctopics
         if text == "/synctopics":
             return self.handle_synctopics()
+
+        # Research commands
+        m = re.match(r"^/research(?:\s+(.*))?$", text)
+        if m:
+            return self.handle_research(m.group(1) or "")
+
+        if text == "/next":
+            return self.handle_next()
+
+        m = re.match(r"^/more(?:\s+(.*))?$", text)
+        if m:
+            return self.handle_more(m.group(1) or "")
+
+        m = re.match(r"^/add\s+(.+)$", text)
+        if m:
+            return self.handle_research_add(m.group(1))
+
+        m = re.match(r"^/skip\s+(\d.*)$", text)
+        if m:
+            return self.handle_research_skip(m.group(1))
+
+        if text == "/done":
+            return self.handle_done()
+
+        if text == "/researchstatus":
+            return self.handle_researchstatus()
+
+        if text == "/cancelsession":
+            return self.handle_cancelsession()
+
+        if text == "/syncreviewed":
+            return self.handle_syncreviewed()
 
         # /automode on|off
         m = re.match(r"^/automode\s+(\S+)$", text)

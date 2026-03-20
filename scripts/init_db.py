@@ -339,6 +339,42 @@ CREATE INDEX IF NOT EXISTS idx_manual_category ON manual_topics (category);
 INSERT OR IGNORE INTO settings (key, value) VALUES ('last_manual_seq', '0');
 """
 
+RESEARCH_REVIEWED_DDL = """
+CREATE TABLE IF NOT EXISTS research_reviewed (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    title            TEXT    NOT NULL,
+    normalised_title TEXT    NOT NULL,
+    original_title   TEXT    NOT NULL DEFAULT '',
+    score            REAL    NOT NULL DEFAULT 0,
+    category         TEXT    NOT NULL DEFAULT 'money',
+    source           TEXT    NOT NULL DEFAULT '',
+    action           TEXT    NOT NULL,
+    session_id       TEXT    NOT NULL DEFAULT '',
+    reviewed_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+    synced_to_sheet  INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_reviewed_norm   ON research_reviewed (normalised_title);
+CREATE INDEX IF NOT EXISTS idx_reviewed_synced ON research_reviewed (synced_to_sheet);
+"""
+
+RESEARCH_SESSIONS_DDL = """
+CREATE TABLE IF NOT EXISTS research_sessions (
+    id              TEXT    PRIMARY KEY,
+    chat_id         TEXT    NOT NULL DEFAULT '',
+    source          TEXT    NOT NULL DEFAULT 'all',
+    category        TEXT    NOT NULL DEFAULT '',
+    status          TEXT    NOT NULL DEFAULT 'active',
+    current_index   INTEGER NOT NULL DEFAULT 0,
+    total_topics    INTEGER NOT NULL DEFAULT 0,
+    topics_added    INTEGER NOT NULL DEFAULT 0,
+    topics_skipped  INTEGER NOT NULL DEFAULT 0,
+    topics_json     TEXT    NOT NULL DEFAULT '[]',
+    created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
 # Unified main DB gets all tables
 MAIN_DDL_PARTS = [
     TRENDS_DDL, SAFETY_DDL, SCORES_DDL, TITLES_DDL, VIDEO_IDEAS_DDL,
@@ -347,6 +383,7 @@ MAIN_DDL_PARTS = [
     ELEVENLABS_USAGE_DDL, YOUTUBE_QUOTA_DDL, PRODUCTION_LOCK_DDL,
     COMMENT_STATES_DDL, SETTINGS_DDL, PENDING_UPLOADS_DDL,
     QUALITY_HOLDS_DDL, MANUAL_TOPICS_DDL,
+    RESEARCH_REVIEWED_DDL, RESEARCH_SESSIONS_DDL,
 ]
 
 
@@ -461,6 +498,22 @@ def migrate_db(db_path: Path) -> None:
             conn.executescript(MANUAL_TOPICS_DDL)
             conn.commit()
             logger.info("Migration applied: manual_topics table ensured (%s)", db_path)
+        except sqlite3.OperationalError:
+            pass
+
+        # Research reviewed migration
+        try:
+            conn.executescript(RESEARCH_REVIEWED_DDL)
+            conn.commit()
+            logger.info("Migration applied: research_reviewed table ensured (%s)", db_path)
+        except sqlite3.OperationalError:
+            pass
+
+        # Research sessions migration
+        try:
+            conn.executescript(RESEARCH_SESSIONS_DDL)
+            conn.commit()
+            logger.info("Migration applied: research_sessions table ensured (%s)", db_path)
         except sqlite3.OperationalError:
             pass
     finally:
