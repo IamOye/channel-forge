@@ -86,7 +86,8 @@ _PIXABAY_PHOTO_API_URL = "https://pixabay.com/api/"
 MAX_PHOTO_PORTRAIT_RATIO = 0.65  # width/height must be below this for portrait photos
 
 # Minimum relevance score to accept a clip (Claude scores 1–10)
-_MIN_RELEVANCE_SCORE = 7
+# 6 for primary video clips (finance stock is limited); photos/illustrations use 7
+_MIN_RELEVANCE_SCORE = 6
 # Trigger additional human-focused search if fewer than this many clips pass scoring
 _MIN_CLIPS_AFTER_SCORING = 4
 
@@ -349,12 +350,13 @@ class PixabayFetcher:
             prompt = (
                 "Rate each stock video clip's relevance to this YouTube Short "
                 "about finance/money.\n"
-                "Score 1-10. Be STRICT:\n"
-                "- Animals, nature, food, children, pets → 1-2\n"
-                "- Abstract scenes, empty rooms, generic landscapes → 2-3\n"
-                "- Generic office/city without financial context → 4-5\n"
-                "- Business meetings, professional settings → 6-7\n"
-                "- Human financial situations, money, investing → 8-10\n\n"
+                "Score 1-10:\n"
+                "- 1-3: Completely irrelevant (animals, nature, sports, food, children)\n"
+                "- 4-5: Abstract scenes, empty rooms, generic landscapes\n"
+                "- 6-7: Business/office/professional content that could plausibly "
+                "accompany finance content even if not directly about money\n"
+                "- 8-10: Explicitly financial content (money, charts, banks, investing, "
+                "wealth, budgets, salary)\n\n"
                 f"Topic: {topic}\n"
                 f"Script (first 40 words): {script_preview[:200]}\n\n"
                 f"Clips to rate:\n{json.dumps(clip_descriptions, indent=2)}\n\n"
@@ -526,20 +528,35 @@ class PixabayFetcher:
         return results
 
     def _download_photo(self, url: str, output_path: Path) -> bool:
-        """Download a photo URL to output_path. Returns True on success."""
-        try:
-            with httpx.stream(
-                "GET", url, timeout=DOWNLOAD_TIMEOUT, follow_redirects=True
-            ) as resp:
-                resp.raise_for_status()
-                with open(output_path, "wb") as f:
-                    for chunk in resp.iter_bytes(chunk_size=65536):
-                        f.write(chunk)
-            return output_path.stat().st_size > 1024  # at least 1 KB
-        except Exception as exc:
-            logger.warning("[pixabay] Photo download failed for %s: %s", url, exc)
-            output_path.unlink(missing_ok=True)
-            return False
+        """Download a photo URL to output_path with retry on 429. Returns True on success."""
+        import time as _time
+
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                with httpx.stream(
+                    "GET", url, timeout=DOWNLOAD_TIMEOUT, follow_redirects=True
+                ) as resp:
+                    if resp.status_code == 429:
+                        wait = 2 ** attempt
+                        logger.info("[pixabay] 429 rate limit — retrying in %ds (attempt %d)", wait, attempt + 1)
+                        _time.sleep(wait)
+                        continue
+                    resp.raise_for_status()
+                    with open(output_path, "wb") as f:
+                        for chunk in resp.iter_bytes(chunk_size=65536):
+                            f.write(chunk)
+                return output_path.stat().st_size > 1024  # at least 1 KB
+            except Exception as exc:
+                if attempt < max_retries - 1:
+                    wait = 2 ** attempt
+                    logger.debug("[pixabay] Photo download attempt %d failed: %s — retrying in %ds", attempt + 1, exc, wait)
+                    _time.sleep(wait)
+                else:
+                    logger.warning("[pixabay] Photo download failed for %s: %s", url, exc)
+
+        output_path.unlink(missing_ok=True)
+        return False
 
     def fetch_illustrations(
         self,

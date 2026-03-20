@@ -172,6 +172,34 @@ def run_startup_tasks(db_path: Path | None = None) -> None:
     except Exception as exc:
         logger.error("[scheduler] Force-seed fallback check failed: %s", exc)
 
+    # Check manual topic queue status
+    try:
+        conn = _sqlite3.connect(target)
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS manual_topics (
+                    seq INTEGER PRIMARY KEY, title TEXT NOT NULL,
+                    category TEXT NOT NULL DEFAULT 'money',
+                    hook_angle TEXT NOT NULL DEFAULT '', priority TEXT NOT NULL DEFAULT 'MEDIUM',
+                    notes TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'QUEUED',
+                    loaded_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    used_at TEXT, video_id TEXT NOT NULL DEFAULT ''
+                )
+            """)
+            manual_count = conn.execute(
+                "SELECT COUNT(*) FROM manual_topics WHERE status = 'QUEUED'"
+            ).fetchone()[0]
+            if manual_count > 0:
+                logger.info("[startup] manual_topics: %d QUEUED topics ready", manual_count)
+            else:
+                logger.warning(
+                    "[startup] manual_topics empty — production will use AI fallback queue"
+                )
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.debug("[startup] manual_topics check failed: %s", exc)
+
     logger.info("[scheduler] Startup tasks complete")
     # Notification 8 — scheduler started
     try:

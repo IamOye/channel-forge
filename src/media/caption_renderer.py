@@ -89,12 +89,17 @@ WORD_FONT_SEARCH_PATHS: list[str | None] = [
     "C:/Windows/Fonts/ariblk.ttf",                                     # Arial Black — Windows
     "/usr/share/fonts/truetype/msttcorefonts/Impact.ttf",              # Impact — Linux (msttcorefonts)
     "/usr/share/fonts/truetype/msttcorefonts/impact.ttf",              # Impact — Linux (lowercase)
+    "/app/fonts/Impact.ttf",                                           # Impact — downloaded on Railway
     "/System/Library/Fonts/Impact.ttf",                                # Impact — macOS
     "/System/Library/Fonts/Supplemental/Impact.ttf",                   # Impact — macOS alt
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",           # DejaVu Sans Bold — Linux final fallback
     "C:/Windows/Fonts/arialbd.ttf",                                    # Arial Bold — Windows last resort
     None,                                                               # Pillow default
 ]
+
+# CDN URL for Impact font — downloaded on first use if not found locally
+_IMPACT_FONT_URL = "https://github.com/matomo-org/travis-scripts/raw/master/fonts/Impact.ttf"
+_IMPACT_CACHE_DIR = "/app/fonts"
 
 HIGHLIGHT_TEXT_COLOR = (255, 215, 0)    # Gold #FFD700 — highlighted word text colour only
 WORD_TEXT_COLOR      = (255, 255, 255)  # White — non-highlighted word text colour
@@ -125,11 +130,34 @@ def _word_stroke_width(canvas_w: int) -> int:
     return max(2, canvas_w // 160)
 
 
+def _download_impact_font() -> str | None:
+    """Download Impact.ttf from CDN if not cached locally. Returns path or None."""
+    import os
+    from pathlib import Path
+
+    cache_path = Path(_IMPACT_CACHE_DIR) / "Impact.ttf"
+    if cache_path.exists() and cache_path.stat().st_size > 10000:
+        return str(cache_path)
+
+    try:
+        import httpx
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        resp = httpx.get(_IMPACT_FONT_URL, timeout=15.0, follow_redirects=True)
+        resp.raise_for_status()
+        cache_path.write_bytes(resp.content)
+        logger.info("[caption] Downloaded Impact font → %s (%d bytes)", cache_path, len(resp.content))
+        return str(cache_path)
+    except Exception as exc:
+        logger.debug("[caption] Impact font download failed: %s", exc)
+        return None
+
+
 def _load_word_font(size: int | None = None, canvas_w: int = 1080):
     """Load a heavy font for word captions, falling back through WORD_FONT_SEARCH_PATHS.
 
     If size is None, computes it from canvas_w.
-    Logs which font was loaded at startup for diagnostics.
+    If no system font found, tries downloading Impact from CDN.
+    Logs which font was loaded for diagnostics.
     """
     if size is None:
         size = _word_font_size(canvas_w)
@@ -137,18 +165,32 @@ def _load_word_font(size: int | None = None, canvas_w: int = 1080):
         from PIL import ImageFont
     except ImportError:
         return None
+
+    # Try each system font path
     for path in WORD_FONT_SEARCH_PATHS:
         if path is None:
-            font = ImageFont.load_default()
-            logger.info("[caption] Font loaded: Pillow default at %dpx", size)
-            return font
+            break  # reached end of list — try download before Pillow default
         try:
             font = ImageFont.truetype(path, size)
             logger.info("[caption] Font loaded: %s at %dpx", path, size)
             return font
         except (IOError, OSError):
             continue
-    return None
+
+    # Try downloading Impact font (Railway / Docker without system fonts)
+    downloaded = _download_impact_font()
+    if downloaded:
+        try:
+            font = ImageFont.truetype(downloaded, size)
+            logger.info("[caption] Font loaded: Impact (downloaded) at %dpx", size)
+            return font
+        except (IOError, OSError):
+            pass
+
+    # Final fallback: Pillow default
+    font = ImageFont.load_default()
+    logger.info("[caption] Font loaded: Pillow default (fallback) at %dpx", size)
+    return font
 
 
 def _group_words(words: list[dict], max_per_line: int = WORD_MAX_PER_LINE) -> list[dict]:
