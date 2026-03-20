@@ -105,9 +105,13 @@ WORD_FONT_SEARCH_PATHS: list[str] = [
     "/System/Library/Fonts/Supplemental/Impact.ttf",
 ]
 
-# CDN URL for Impact font — downloaded on first use if not found locally
-_IMPACT_FONT_URL = "https://github.com/matomo-org/travis-scripts/raw/master/fonts/Impact.ttf"
-_IMPACT_CACHE_DIR = "/app/fonts"
+# Font download URLs (tried in order) and cache directory
+_FONT_DOWNLOAD_URLS = [
+    "https://github.com/dejavu-fonts/dejavu-fonts/raw/master/ttf/DejaVuSans-Bold.ttf",
+    "https://github.com/liberationfonts/liberation-fonts/raw/main/src/LiberationSans-Bold.ttf",
+    "https://github.com/matomo-org/travis-scripts/raw/master/fonts/Impact.ttf",
+]
+_FONT_CACHE_PATH = "/app/fonts/DejaVuSans-Bold.ttf"
 
 HIGHLIGHT_TEXT_COLOR = (255, 215, 0)    # Gold #FFD700 — highlighted word text colour only
 WORD_TEXT_COLOR      = (255, 255, 255)  # White — non-highlighted word text colour
@@ -138,26 +142,36 @@ def _word_stroke_width(canvas_w: int) -> int:
     return max(2, canvas_w // 160)
 
 
-def _download_impact_font() -> str | None:
-    """Download Impact.ttf from CDN if not cached locally. Returns path or None."""
-    import os
-    from pathlib import Path
+def _download_font(dest_path: str = _FONT_CACHE_PATH) -> bool:
+    """Download a scalable font from GitHub CDN. Tries DejaVu, Liberation, Impact.
 
-    cache_path = Path(_IMPACT_CACHE_DIR) / "Impact.ttf"
-    if cache_path.exists() and cache_path.stat().st_size > 10000:
-        return str(cache_path)
+    Returns True if a valid truetype font was downloaded to dest_path.
+    """
+    from PIL import ImageFont
+    import urllib.request
 
-    try:
-        import httpx
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        resp = httpx.get(_IMPACT_FONT_URL, timeout=15.0, follow_redirects=True)
-        resp.raise_for_status()
-        cache_path.write_bytes(resp.content)
-        logger.info("[caption] Downloaded Impact font → %s (%d bytes)", cache_path, len(resp.content))
-        return str(cache_path)
-    except Exception as exc:
-        logger.debug("[caption] Impact font download failed: %s", exc)
-        return None
+    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+
+    # Return immediately if already cached and valid
+    if os.path.exists(dest_path):
+        try:
+            ImageFont.truetype(dest_path, size=20)
+            return True
+        except Exception:
+            pass  # cached file is corrupt — re-download
+
+    for url in _FONT_DOWNLOAD_URLS:
+        try:
+            urllib.request.urlretrieve(url, dest_path)
+            # Verify it is a valid truetype font
+            ImageFont.truetype(dest_path, size=20)
+            logger.info("[caption] Downloaded font from %s to %s", url, dest_path)
+            return True
+        except Exception as exc:
+            logger.warning("[caption] Font download failed from %s: %s", url, exc)
+            continue
+
+    return False
 
 
 def _try_install_system_fonts() -> str | None:
@@ -186,7 +200,7 @@ def _load_word_font(size: int | None = None, canvas_w: int = 1080):
 
     Fallback chain:
       1. System truetype fonts (WORD_FONT_SEARCH_PATHS)
-      2. Downloaded Impact.ttf from CDN
+      2. Downloaded font from CDN (DejaVu → Liberation → Impact)
       3. Runtime apt-get install fonts-dejavu-core
       4. RuntimeError if nothing works
 
@@ -209,17 +223,16 @@ def _load_word_font(size: int | None = None, canvas_w: int = 1080):
             except (IOError, OSError):
                 continue
 
-    # 2. Try downloading Impact font from CDN
-    downloaded = _download_impact_font()
-    if downloaded:
+    # 2. Try downloading font from CDN (DejaVu → Liberation → Impact)
+    if os.path.exists(_FONT_CACHE_PATH) or _download_font(_FONT_CACHE_PATH):
         try:
-            font = ImageFont.truetype(downloaded, size)
-            logger.info("[caption] Font loaded: Impact (downloaded) at %dpx", size)
+            font = ImageFont.truetype(_FONT_CACHE_PATH, size)
+            logger.info("[caption] Font loaded from cache/download at %dpx", size)
             return font
-        except (IOError, OSError):
-            pass
+        except (IOError, OSError) as exc:
+            logger.error("[caption] Cache font failed: %s", exc)
 
-    # 3. Try runtime apt-get install
+    # 3. Try runtime apt-get install as last resort
     installed = _try_install_system_fonts()
     if installed:
         try:
