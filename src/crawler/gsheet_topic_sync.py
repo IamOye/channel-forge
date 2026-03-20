@@ -88,6 +88,38 @@ class GSheetTopicSync:
         logger.info("[gsheet] Connected to sheet %s", self.sheet_id)
 
     # ------------------------------------------------------------------
+    # Sheet reading helper
+    # ------------------------------------------------------------------
+
+    # Expected column headers in the Topic Queue tab
+    _EXPECTED_HEADERS = [
+        "#", "SEQ", "Title / Topic", "Category",
+        "Hook Angle (optional)", "Status",
+        "Priority", "Date Added", "Date Used",
+        "Video ID", "Notes",
+    ]
+
+    def _read_queue_rows(self) -> list[dict[str, Any]]:
+        """Read all rows from Topic Queue tab with explicit headers.
+
+        Uses expected_headers to avoid errors from empty or duplicate columns.
+        """
+        self._connect()
+        try:
+            return self._queue_tab.get_all_records(
+                expected_headers=self._EXPECTED_HEADERS,
+                value_render_option="UNFORMATTED_VALUE",
+            )
+        except Exception as exc:
+            logger.error("[gsheet] Failed to read sheet: %s", exc)
+            logger.error(
+                "[gsheet] Check that the header row of the 'Topic Queue' tab "
+                "has exactly these headers: %s",
+                ", ".join(self._EXPECTED_HEADERS),
+            )
+            raise
+
+    # ------------------------------------------------------------------
     # Read operations
     # ------------------------------------------------------------------
 
@@ -106,8 +138,7 @@ class GSheetTopicSync:
             List of dicts with keys: seq, title, category, hook_angle,
             priority, notes, row_number.
         """
-        self._connect()
-        rows = self._queue_tab.get_all_records()
+        rows = self._read_queue_rows()
         results: list[dict[str, Any]] = []
 
         for i, row in enumerate(rows):
@@ -161,11 +192,10 @@ class GSheetTopicSync:
         Returns:
             True if a row was found and updated.
         """
-        self._connect()
         if not date_used:
             date_used = date.today().strftime("%d-%b-%y")
 
-        rows = self._queue_tab.get_all_records()
+        rows = self._read_queue_rows()
         for i, row in enumerate(rows):
             try:
                 row_seq = int(row.get("SEQ", -1))
@@ -189,8 +219,7 @@ class GSheetTopicSync:
 
         Returns True if found and updated.
         """
-        self._connect()
-        rows = self._queue_tab.get_all_records()
+        rows = self._read_queue_rows()
         for i, row in enumerate(rows):
             try:
                 row_seq = int(row.get("SEQ", -1))
@@ -210,8 +239,7 @@ class GSheetTopicSync:
         notes: str = "",
     ) -> int:
         """Append a new READY row to Topic Queue. Returns the new SEQ number."""
-        self._connect()
-        rows = self._queue_tab.get_all_records()
+        rows = self._read_queue_rows()
         seqs = []
         for r in rows:
             try:
