@@ -56,6 +56,22 @@ def _safe_str(value: object) -> str:
         return ""
     return str(value).strip()
 
+
+def _safe_int(value: object, default: int = 0) -> int:
+    """Convert any value to int, returning default on None/error."""
+    try:
+        return int(value) if value is not None else default
+    except (ValueError, TypeError):
+        return default
+
+
+def _safe_float(value: object, default: float = 0.0) -> float:
+    """Convert any value to float, returning default on None/error."""
+    try:
+        return float(value) if value is not None else default
+    except (ValueError, TypeError):
+        return default
+
 AUTOCOMPLETE_SEEDS = [
     "why your boss", "how to save money",
     "salary negotiation", "passive income",
@@ -118,8 +134,8 @@ def _scrape_reddit() -> list[RawTopic]:
                 title=title,
                 source="reddit",
                 source_detail=f"r/{_safe_str(r.subreddit)}",
-                score_hint=float(r.upvotes or 0),
-                extra={"category": _safe_str(r.category), "upvotes": r.upvotes or 0},
+                score_hint=_safe_float(r.upvotes),
+                extra={"category": _safe_str(r.category), "upvotes": _safe_int(r.upvotes)},
             ))
         logger.info("[scrape] Reddit: %d topics", len(topics))
     except Exception as exc:
@@ -176,7 +192,7 @@ def _scrape_trends() -> list[RawTopic]:
                 title=kw,
                 source="trends",
                 source_detail=_safe_str(s.source),
-                score_hint=float(s.interest_score or 0),
+                score_hint=_safe_float(s.interest_score),
             ))
             # Also include related queries as topics
             for rq in (s.related_queries or []):
@@ -386,7 +402,7 @@ def score_topics(topics: list[RawTopic]) -> list[ScoredTopic]:
                 title=_safe_str(t.title) or "untitled", score=0.0,
                 category="money", hook_angle="", reason="unscored",
                 source=_safe_str(t.source), source_detail=_safe_str(t.source_detail),
-                score_hint=float(t.score_hint or 0),
+                score_hint=_safe_float(t.score_hint),
             )
             for t in topics
         ]
@@ -444,13 +460,13 @@ def score_topics(topics: list[RawTopic]) -> list[ScoredTopic]:
                     raw_topic = title_to_raw.get(title) or (batch[0] if batch else None)
                     scored.append(ScoredTopic(
                         title=title or "untitled",
-                        score=float(item.get("score") or 0),
+                        score=_safe_float(item.get("score")),
                         category=_safe_str(item.get("category")) or "money",
                         hook_angle=_safe_str(item.get("hook_angle")),
                         reason=_safe_str(item.get("reason")),
                         source=_safe_str(raw_topic.source) if raw_topic else "unknown",
                         source_detail=_safe_str(raw_topic.source_detail) if raw_topic else "",
-                        score_hint=float(raw_topic.score_hint or 0) if raw_topic else 0,
+                        score_hint=_safe_float(raw_topic.score_hint) if raw_topic else 0.0,
                     ))
             except Exception as exc:
                 logger.warning("[score] Batch %d failed: %s — adding unscored", i, exc)
@@ -459,7 +475,7 @@ def score_topics(topics: list[RawTopic]) -> list[ScoredTopic]:
                         title=_safe_str(t.title) or "untitled", score=0.0,
                         category="money", hook_angle="", reason="scoring failed",
                         source=_safe_str(t.source), source_detail=_safe_str(t.source_detail),
-                        score_hint=float(t.score_hint or 0),
+                        score_hint=_safe_float(t.score_hint),
                     ))
 
             progress.update(task, advance=len(batch))
@@ -527,9 +543,9 @@ def display_topics(scored: list[ScoredTopic], count: int = 50, offset: int = 0) 
             source_str += f"/{detail}"
         if t.score_hint > 0:
             if t.source == "reddit":
-                source_str += f" ({int(t.score_hint)} upvotes)"
+                source_str += f" ({_safe_int(t.score_hint)} upvotes)"
             elif t.source == "competitor":
-                source_str += f" ({int(t.score_hint):,} views)"
+                source_str += f" ({_safe_int(t.score_hint):,} views)"
         console.print(f"              [dim]From: {source_str}[/]")
         console.print()
 
@@ -809,7 +825,7 @@ def main() -> None:
                 title=_safe_str(t.title) or "untitled", score=0.0,
                 category="unknown", hook_angle="", reason="",
                 source=_safe_str(t.source), source_detail=_safe_str(t.source_detail),
-                score_hint=float(t.score_hint or 0),
+                score_hint=_safe_float(t.score_hint),
             )
             for t in clean
         ]
