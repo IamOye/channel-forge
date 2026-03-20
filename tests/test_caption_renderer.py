@@ -20,6 +20,7 @@ from src.media.caption_renderer import (
     CaptionClipSpec,
     CaptionRenderer,
     _group_words,
+    _load_word_font,
     _render_word_frame,
     _visible_at,
     _word_font_size,
@@ -392,3 +393,23 @@ class TestCaptionStyle:
         config = renderer.get_caption_config()
         assert "font_size" in config
         assert config["font_size"] >= MIN_CAPTION_FONT_SIZE
+
+    def test_font_loads_via_truetype_not_default(self) -> None:
+        """Font must be loaded via truetype (scalable), never load_default (bitmap)."""
+        try:
+            from PIL import ImageFont
+        except ImportError:
+            return  # PIL not installed — skip
+
+        size = _word_font_size(360)
+        font = _load_word_font(size=size, canvas_w=360)
+        assert font is not None, "No font loaded at all"
+
+        # Verify font is a FreeTypeFont (truetype), not a bitmap default
+        assert hasattr(font, "getbbox"), "Font does not support getbbox — likely bitmap"
+        bb = font.getbbox("TEST")
+        height = bb[3] - bb[1]
+        assert height >= MIN_CAPTION_FONT_SIZE, (
+            f"Font renders at {height}px — below minimum {MIN_CAPTION_FONT_SIZE}px. "
+            "Likely using load_default() bitmap font instead of truetype."
+        )

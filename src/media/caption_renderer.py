@@ -16,6 +16,7 @@ Usage:
 """
 
 import logging
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -82,19 +83,26 @@ CAPTION_Y_RATIO = 0.77
 # Minimum acceptable font size (quality gate threshold)
 MIN_CAPTION_FONT_SIZE = 40
 
-# Search paths for heavy/condensed font (tried in order)
-# Impact → Arial Black → DejaVu Sans Bold (Linux fallback for Railway)
-WORD_FONT_SEARCH_PATHS: list[str | None] = [
-    "C:/Windows/Fonts/impact.ttf",                                     # Impact — Windows
-    "C:/Windows/Fonts/ariblk.ttf",                                     # Arial Black — Windows
-    "/usr/share/fonts/truetype/msttcorefonts/Impact.ttf",              # Impact — Linux (msttcorefonts)
-    "/usr/share/fonts/truetype/msttcorefonts/impact.ttf",              # Impact — Linux (lowercase)
-    "/app/fonts/Impact.ttf",                                           # Impact — downloaded on Railway
-    "/System/Library/Fonts/Impact.ttf",                                # Impact — macOS
-    "/System/Library/Fonts/Supplemental/Impact.ttf",                   # Impact — macOS alt
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",           # DejaVu Sans Bold — Linux final fallback
-    "C:/Windows/Fonts/arialbd.ttf",                                    # Arial Bold — Windows last resort
-    None,                                                               # Pillow default
+# Scalable font candidates — ALL must be truetype (never bitmap/default).
+# Ordered by preference: Railway Linux first, then Windows dev, then bundled.
+WORD_FONT_SEARCH_PATHS: list[str] = [
+    # Railway Linux (fonts-dejavu-core / fonts-liberation)
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
+    "/usr/share/fonts/truetype/ubuntu/Ubuntu-B.ttf",
+    # Linux msttcorefonts (if installed)
+    "/usr/share/fonts/truetype/msttcorefonts/Impact.ttf",
+    "/usr/share/fonts/truetype/msttcorefonts/impact.ttf",
+    # Downloaded/bundled path
+    "/app/fonts/Impact.ttf",
+    # Windows dev paths
+    "C:/Windows/Fonts/impact.ttf",
+    "C:/Windows/Fonts/ariblk.ttf",
+    "C:/Windows/Fonts/arialbd.ttf",
+    # macOS
+    "/System/Library/Fonts/Impact.ttf",
+    "/System/Library/Fonts/Supplemental/Impact.ttf",
 ]
 
 # CDN URL for Impact font — downloaded on first use if not found locally
@@ -152,12 +160,37 @@ def _download_impact_font() -> str | None:
         return None
 
 
+def _try_install_system_fonts() -> str | None:
+    """Last resort: install fonts-dejavu-core via apt-get on Railway. Returns path or None."""
+    target = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+    try:
+        import subprocess
+        subprocess.run(
+            ["apt-get", "install", "-y", "fonts-dejavu-core"],
+            capture_output=True, check=True, timeout=30,
+        )
+        if os.path.exists(target):
+            logger.info("[caption] Installed fonts-dejavu-core via apt-get")
+            return target
+    except Exception as exc:
+        logger.debug("[caption] apt-get font install failed: %s", exc)
+    return None
+
+
 def _load_word_font(size: int | None = None, canvas_w: int = 1080):
-    """Load a heavy font for word captions, falling back through WORD_FONT_SEARCH_PATHS.
+    """Load a scalable truetype font for word captions.
+
+    NEVER uses ImageFont.load_default() — that returns a fixed bitmap font
+    that ignores size and renders at ~8px regardless. All paths here use
+    ImageFont.truetype() which respects the requested size.
+
+    Fallback chain:
+      1. System truetype fonts (WORD_FONT_SEARCH_PATHS)
+      2. Downloaded Impact.ttf from CDN
+      3. Runtime apt-get install fonts-dejavu-core
+      4. RuntimeError if nothing works
 
     If size is None, computes it from canvas_w.
-    If no system font found, tries downloading Impact from CDN.
-    Logs which font was loaded for diagnostics.
     """
     if size is None:
         size = _word_font_size(canvas_w)
@@ -166,18 +199,17 @@ def _load_word_font(size: int | None = None, canvas_w: int = 1080):
     except ImportError:
         return None
 
-    # Try each system font path
+    # 1. Try each system font path (all are truetype — no None sentinel)
     for path in WORD_FONT_SEARCH_PATHS:
-        if path is None:
-            break  # reached end of list — try download before Pillow default
-        try:
-            font = ImageFont.truetype(path, size)
-            logger.info("[caption] Font loaded: %s at %dpx", path, size)
-            return font
-        except (IOError, OSError):
-            continue
+        if os.path.exists(path):
+            try:
+                font = ImageFont.truetype(path, size)
+                logger.info("[caption] Font loaded: %s at %dpx", path, size)
+                return font
+            except (IOError, OSError):
+                continue
 
-    # Try downloading Impact font (Railway / Docker without system fonts)
+    # 2. Try downloading Impact font from CDN
     downloaded = _download_impact_font()
     if downloaded:
         try:
@@ -187,10 +219,56 @@ def _load_word_font(size: int | None = None, canvas_w: int = 1080):
         except (IOError, OSError):
             pass
 
-    # Final fallback: Pillow default
-    font = ImageFont.load_default()
-    logger.info("[caption] Font loaded: Pillow default (fallback) at %dpx", size)
-    return font
+    # 3. Try runtime apt-get install
+    installed = _try_install_system_fonts()
+    if installed:
+        try:
+            font = ImageFont.truetype(installed, size)
+            logger.info("[caption] Font loaded: DejaVu Bold (installed) at %dpx", size)
+            return font
+        except (IOError, OSError):
+            pass
+
+    # 4. FATAL — no scalable font found. Do NOT fall back to load_default().
+    logger.error(
+        "[caption] FATAL: No scalable truetype font found. "
+        "Cannot render captions at %dpx. Install fonts-dejavu-core on Railway.", size,
+    )
+    raise RuntimeError(
+        f"[caption] No scalable font found. Cannot render captions at {size}px. "
+        f"Install fonts-dejavu-core on Railway."
+    )
+
+
+def validate_font_rendering(canvas_w: int = 360) -> None:
+    """Validate that the loaded font actually renders at the correct size.
+
+    Creates a tiny test image, renders "TEST" and checks the glyph height.
+    Called at startup to catch font issues early.
+
+    Raises RuntimeError if rendered height < MIN_CAPTION_FONT_SIZE.
+    """
+    size = _word_font_size(canvas_w)
+    font = _load_word_font(size=size, canvas_w=canvas_w)
+    if font is None:
+        return  # PIL not installed — skip validation
+
+    try:
+        bb = font.getbbox("TEST")
+        height = bb[3] - bb[1]
+        logger.info(
+            "[caption] Font size validation: %dpx rendered at %dpx requested ✅",
+            height, size,
+        )
+        if height < MIN_CAPTION_FONT_SIZE:
+            raise RuntimeError(
+                f"[caption] Font renders at {height}px but minimum is "
+                f"{MIN_CAPTION_FONT_SIZE}px. The font is not scalable."
+            )
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        logger.warning("[caption] Font validation could not measure: %s", exc)
 
 
 def _group_words(words: list[dict], max_per_line: int = WORD_MAX_PER_LINE) -> list[dict]:
