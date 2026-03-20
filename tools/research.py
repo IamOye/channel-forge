@@ -279,24 +279,55 @@ def _normalise_title(title: str | None) -> str:
 
 
 def _load_existing_topics() -> set[str]:
-    """Load normalised titles from scored_topics + uploaded_videos in DB."""
+    """Load normalised titles from uploaded_videos + manual_topics in DB.
+
+    Checks against:
+      - uploaded_videos: already produced as a video
+      - manual_topics (USED/QUEUED/HOLD): already in the Sheet queue
+
+    Does NOT check scored_topics — that table is the research pool, not a filter.
+    """
     existing: set[str] = set()
     if not DB_PATH.exists():
         return existing
     try:
         conn = sqlite3.connect(DB_PATH)
         try:
-            for table, col in [("scored_topics", "keyword"), ("uploaded_videos", "title")]:
-                try:
-                    rows = conn.execute(f"SELECT {col} FROM {table}").fetchall()
-                    for (val,) in rows:
-                        existing.add(_normalise_title(val))
-                except sqlite3.OperationalError:
-                    pass  # table doesn't exist
+            # Already-published videos
+            try:
+                rows = conn.execute("SELECT title FROM uploaded_videos").fetchall()
+                for (val,) in rows:
+                    existing.add(_normalise_title(val))
+            except sqlite3.OperationalError:
+                pass
+
+            # Already-published via production_results
+            try:
+                rows = conn.execute(
+                    "SELECT keyword FROM production_results WHERE keyword != ''"
+                ).fetchall()
+                for (val,) in rows:
+                    existing.add(_normalise_title(val))
+            except sqlite3.OperationalError:
+                pass
+
+            # Already in manual queue (USED, QUEUED, or HOLD)
+            try:
+                rows = conn.execute(
+                    "SELECT title FROM manual_topics "
+                    "WHERE status IN ('USED', 'QUEUED', 'HOLD')"
+                ).fetchall()
+                for (val,) in rows:
+                    existing.add(_normalise_title(val))
+            except sqlite3.OperationalError:
+                pass
         finally:
             conn.close()
     except Exception as exc:
         logger.warning("[dedup] DB load failed: %s", exc)
+
+    # Remove empty string if present
+    existing.discard("")
     return existing
 
 
