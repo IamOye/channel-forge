@@ -91,31 +91,54 @@ class GSheetTopicSync:
     # Sheet reading helper
     # ------------------------------------------------------------------
 
-    # Expected column headers in the Topic Queue tab
-    _EXPECTED_HEADERS = [
-        "#", "SEQ", "Title / Topic", "Category",
-        "Hook Angle (optional)", "Status",
-        "Priority", "Date Added", "Date Used",
-        "Video ID", "Notes",
-    ]
-
     def _read_queue_rows(self) -> list[dict[str, Any]]:
-        """Read all rows from Topic Queue tab with explicit headers.
+        """Read all rows from Topic Queue tab using raw values.
 
-        Uses expected_headers to avoid errors from empty or duplicate columns.
+        Uses get_all_values() + manual dict building instead of
+        get_all_records() to avoid gspread header validation issues
+        with empty or duplicate column headers.
+
+        Headers are in row 3 (rows 1-2 are title/subtitle).
+        Data starts at row 4.
         """
         self._connect()
         try:
-            return self._queue_tab.get_all_records(
-                expected_headers=self._EXPECTED_HEADERS,
-                value_render_option="UNFORMATTED_VALUE",
-            )
+            all_values = self._queue_tab.get_all_values()
+            if not all_values:
+                return []
+
+            # Row 3 is headers (index 2), data starts row 4 (index 3)
+            headers = all_values[2] if len(all_values) > 2 else []
+            data_rows = all_values[3:] if len(all_values) > 3 else []
+
+            # Clean headers — strip whitespace
+            headers = [h.strip() for h in headers]
+
+            # Build list of dicts, skipping empty rows
+            results: list[dict[str, Any]] = []
+            for row in data_rows:
+                # Pad row to header length if shorter
+                padded = row + [""] * (len(headers) - len(row))
+                row_dict = {
+                    headers[i]: padded[i]
+                    for i in range(len(headers))
+                    if headers[i]  # skip empty header columns
+                }
+                # Skip completely empty rows
+                if not any(str(v).strip() for v in row_dict.values()):
+                    continue
+                results.append(row_dict)
+
+            return results
+
         except Exception as exc:
             logger.error("[gsheet] Failed to read sheet: %s", exc)
             logger.error(
-                "[gsheet] Check that the header row of the 'Topic Queue' tab "
-                "has exactly these headers: %s",
-                ", ".join(self._EXPECTED_HEADERS),
+                "[gsheet] Expected headers in row 3: "
+                "#, SEQ, Title / Topic, Category, "
+                "Hook Angle (optional), Status, "
+                "Priority, Date Added, Date Used, "
+                "Video ID, Notes"
             )
             raise
 
