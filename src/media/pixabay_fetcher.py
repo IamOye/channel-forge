@@ -67,16 +67,16 @@ OUTPUT_DIR = Path("data/raw")
 MIN_PORTRAIT_RATIO = 0.50   # below this: too narrow (very tall, unusual)
 MAX_PORTRAIT_RATIO = 0.62   # above this: too wide → stretched when cropped to 1080×1920
 
-# Finance-specific fallback search queries (tried in order when primary search fails)
+# Aerial-first fallback search queries (tried in order when primary search fails)
 FALLBACK_QUERIES: list[str] = [
-    "business meeting office professional",
+    "aerial city skyline drone",
+    "drone highway traffic moving",
+    "aerial green landscape nature",
+    "luxury neighbourhood aerial view",
+    "city buildings skyscrapers aerial",
     "money cash currency finance",
-    "smartphone app technology person",
-    "city skyline urban success",
-    "laptop computer working desk",
-    "investment chart graph growth",
-    "handshake deal agreement business",
-    "confident professional walking",
+    "business meeting office professional",
+    "aerial coastline beach drone",
 ]
 
 # Max seconds a single clip should contribute to the output video
@@ -348,16 +348,16 @@ class PixabayFetcher:
                 for v in clips
             ]
             prompt = (
-                "Rate each stock video clip's relevance to this YouTube Short "
-                "about finance/money.\n"
-                "Score 1-10:\n"
-                "- 1-3: Completely irrelevant (animals, nature, sports, food, children)\n"
-                "- 4-5: Abstract scenes, empty rooms, generic landscapes\n"
-                "- 6-7: Business/office/professional content that could plausibly "
-                "accompany finance content even if not directly about money\n"
-                "- 8-10: Explicitly financial content (money, charts, banks, investing, "
-                "wealth, budgets, salary)\n\n"
-                f"Topic: {topic}\n"
+                "Score each Pixabay clip for use in a YouTube Shorts finance video.\n"
+                f"Topic: {topic}\n\n"
+                "Scoring guide:\n"
+                "8-10: Cinematic aerial/drone footage of cities, highways, luxury areas, "
+                "coastlines, landscapes. Any high quality aerial shot.\n"
+                "8-10: Crisp financial imagery (money, charts, banks, professional settings).\n"
+                "6-7:  Office workers, business people, professional settings.\n"
+                "4-5:  Generic street level footage, people walking, non-specific scenes.\n"
+                "1-3:  Animals, food, sports, nature closeups, children, anything unrelated "
+                "to aspirational/financial context.\n\n"
                 f"Script (first 40 words): {script_preview[:200]}\n\n"
                 f"Clips to rate:\n{json.dumps(clip_descriptions, indent=2)}\n\n"
                 'Return JSON array only: [{"clip_id": x, "score": y, "reason": "z"}]'
@@ -663,6 +663,10 @@ class PixabayFetcher:
 
         Returns an empty list on API error.
         """
+        # Boost quality for aerial/drone queries
+        query_lower = query.lower()
+        is_aerial = any(w in query_lower for w in ("aerial", "drone", "skyline"))
+
         params = {
             "key":         self.api_key,
             "q":           query,
@@ -672,6 +676,9 @@ class PixabayFetcher:
             "min_width":   MIN_VIDEO_WIDTH,
             "order":       "popular",
         }
+        if is_aerial:
+            params["category"] = "travel"
+            params["editors_choice"] = "true"
         try:
             resp = httpx.get(_PIXABAY_API_URL, params=params, timeout=REQUEST_TIMEOUT)
             resp.raise_for_status()
