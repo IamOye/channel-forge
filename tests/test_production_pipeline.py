@@ -830,16 +830,18 @@ class TestContrastFramework:
                     inst.fetch_photos.return_value = [
                         {"id": 99, "local_path": "cat.jpg", "tags": "cat animal pet fluffy"}
                     ]
+                    # Illustrations return empty so we isolate the photo rejection
+                    inst.fetch_illustrations.return_value = []
                     with patch("src.media.video_builder.VideoBuilder") as MockBuilder:
                         result = pipeline._run_pixabay("t1", "test topic", {}, "money")
 
-        # Ken Burns should NOT have been called since the photo was rejected
+        # Ken Burns should NOT have been called — rejected photo + no illustrations
         MockBuilder.return_value.write_ken_burns_mp4.assert_not_called()
         # Video clips survive, above minimum
         assert result.is_valid is True
 
     def test_run_pixabay_accepts_photo_without_rejected_tag(self) -> None:
-        """Photos with clean tags must pass the filter."""
+        """Photos with clean tags must pass the filter and trigger Ken Burns."""
         pipeline = ProductionPipeline(anthropic_api_key="fake", pixabay_api_key="fake")
 
         with patch.object(pipeline, "_generate_broll_queries", return_value=["v1"]):
@@ -850,10 +852,12 @@ class TestContrastFramework:
                     inst.fetch_photos.return_value = [
                         {"id": 10, "local_path": "biz.jpg", "tags": "businessman suit success"}
                     ]
+                    inst.fetch_illustrations.return_value = []
                     with patch("src.media.video_builder.VideoBuilder") as MockBuilder:
                         MockBuilder.return_value.write_ken_burns_mp4.return_value = True
                         result = pipeline._run_pixabay("t1", "test topic", {}, "money")
 
+        # Photo accepted — Ken Burns called at least once for it
         MockBuilder.return_value.write_ken_burns_mp4.assert_called_once()
 
     def test_contrast_visual_map_has_default_key(self) -> None:

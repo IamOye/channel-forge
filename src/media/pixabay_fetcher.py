@@ -541,6 +541,81 @@ class PixabayFetcher:
             output_path.unlink(missing_ok=True)
             return False
 
+    def fetch_illustrations(
+        self,
+        topic_id: str,
+        phrase: str,
+        count: int = 2,
+    ) -> list[dict]:
+        """Fetch illustrations/vectors from Pixabay image API.
+
+        Searches with image_type=illustration for financial infographics,
+        charts, money symbols, and business concept art. Downloads to
+        output_dir/{topic_id}_illust_{n}.jpg.
+
+        Returns:
+            List of dicts with keys: id, local_path, width, height, tags.
+            Returns [] on API error (never raises).
+        """
+        if not self.api_key:
+            raise ValueError("PIXABAY_API_KEY not set")
+
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+        params = {
+            "key":         self.api_key,
+            "q":           phrase,
+            "image_type":  "illustration",
+            "orientation": "vertical",
+            "min_width":   720,
+            "per_page":    20,
+            "safesearch":  "true",
+            "order":       "popular",
+        }
+        try:
+            resp = httpx.get(_PIXABAY_PHOTO_API_URL, params=params, timeout=REQUEST_TIMEOUT)
+            resp.raise_for_status()
+            hits = resp.json().get("hits", [])
+        except Exception as exc:
+            logger.error("[pixabay] Illustration API failed for query=%r: %s", phrase, exc)
+            return []
+
+        results: list[dict] = []
+        for hit in hits:
+            if len(results) >= count:
+                break
+            width = int(hit.get("imageWidth", 0))
+            height = int(hit.get("imageHeight", 0))
+            if width < 720 or height == 0:
+                continue
+
+            url = (
+                hit.get("fullHDURL")
+                or hit.get("largeImageURL")
+                or hit.get("webformatURL", "")
+            )
+            if not url:
+                continue
+
+            idx = len(results)
+            output_path = self.output_dir / f"{topic_id}_illust_{idx}.jpg"
+            if not self._download_photo(url, output_path):
+                continue
+
+            results.append({
+                "id":         hit.get("id", 0),
+                "local_path": str(output_path),
+                "width":      width,
+                "height":     height,
+                "tags":       hit.get("tags", ""),
+            })
+            logger.info(
+                "[pixabay] Downloaded illustration %d: %dx%d -> %s",
+                hit.get("id", 0), width, height, output_path,
+            )
+
+        return results
+
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------

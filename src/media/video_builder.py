@@ -398,22 +398,42 @@ class VideoBuilder:
         import imageio_ffmpeg
         ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
 
-        # ── Pre-check: reject any single clip assigned > 15 seconds ────────
-        MAX_SINGLE_CLIP_SECONDS = 15
-        for i, dur in enumerate(raw_durations):
-            if dur > MAX_SINGLE_CLIP_SECONDS:
-                raise RuntimeError(
-                    f"Clip {i} assigned {dur:.1f}s which exceeds "
-                    f"{MAX_SINGLE_CLIP_SECONDS}s maximum. Add more b-roll clips."
-                )
+        # ── Enforce clip duration limits ──────────────────────────────────
+        MAX_CLIP_OUTPUT = 12.0   # hard cap — no single clip > 12s in output
+        TARGET_CLIP_CAP = 8.0    # soft target — prefer clips ≤ 8s
+        for i in range(len(raw_durations)):
+            raw_durations[i] = min(raw_durations[i], MAX_CLIP_OUTPUT)
 
         t_prep = time.perf_counter()
         norm_paths: list[Path] = []
         try:
             for i, (dur, path) in enumerate(zip(raw_durations, stock_paths)):
+                # Trim from middle of source clip (skip first/last 10%)
+                # Use ffprobe-like approach: -ss skips into clip before looping
+                skip_start = 0.0
+                try:
+                    probe_cmd = [ffmpeg_exe, "-i", str(path), "-f", "null", "-"]
+                    probe_r = subprocess.run(
+                        probe_cmd, capture_output=True, timeout=10,
+                    )
+                    # Parse duration from stderr
+                    import re as _re
+                    m = _re.search(r"Duration:\s*(\d+):(\d+):(\d+)\.(\d+)", probe_r.stderr.decode(errors="replace"))
+                    if m:
+                        src_dur = int(m.group(1))*3600 + int(m.group(2))*60 + int(m.group(3)) + int(m.group(4))/100
+                        if src_dur > dur + 1.0:
+                            # Source is longer than needed — take from middle
+                            skip_start = src_dur * 0.10
+                            max_end = src_dur * 0.90
+                            if skip_start + dur > max_end:
+                                skip_start = max(0, max_end - dur)
+                except Exception:
+                    pass  # fall back to start of clip
+
                 norm = self.output_dir / f"_norm_{topic_id}_{i}.mp4"
                 norm_cmd = [
                     ffmpeg_exe, "-y",
+                    "-ss", f"{skip_start:.3f}",
                     "-stream_loop", "-1", "-t", f"{dur:.4f}", "-i", str(path),
                     "-vf", f"scale={W}:{H},fps={fps},setpts=PTS-STARTPTS",
                     "-r", str(fps),   # force exact CFR metadata in container
@@ -845,21 +865,28 @@ class VideoBuilder:
             per_clip_dur = (actual_duration + (n - 1) * CROSSFADE_DURATION) / n
             raw_durations = [per_clip_dur] * n
 
-        # ── Pre-check: reject any single clip assigned > 15 seconds ────────
-        _MAX_SINGLE_CLIP = 15
-        for i, dur in enumerate(raw_durations):
-            if dur > _MAX_SINGLE_CLIP:
-                raise RuntimeError(
-                    f"Clip {i} assigned {dur:.1f}s which exceeds "
-                    f"{_MAX_SINGLE_CLIP}s maximum. Add more b-roll clips."
-                )
+        # ── Enforce clip duration limits (legacy path) ────────────────────
+        _MAX_CLIP_OUTPUT = 12.0
+        for i in range(len(raw_durations)):
+            raw_durations[i] = min(raw_durations[i], _MAX_CLIP_OUTPUT)
 
         _t1 = time.perf_counter()
         bg_clips = []
         for i, path in enumerate(stock_paths):
             raw_clip = VideoFileClip(str(path))
             needed = raw_durations[i]
-            if needed > raw_clip.duration:
+
+            # Trim from middle of source (skip first/last 10%) if source is long enough
+            if raw_clip.duration > needed + 1.0:
+                skip = raw_clip.duration * 0.10
+                max_end = raw_clip.duration * 0.90
+                start = skip
+                end = start + needed
+                if end > max_end:
+                    start = max(0, max_end - needed)
+                    end = start + needed
+                raw = raw_clip.subclipped(start, min(end, raw_clip.duration))
+            elif needed > raw_clip.duration:
                 loops = int(needed / raw_clip.duration) + 2
                 raw = concatenate_videoclips([raw_clip] * loops).subclipped(0, needed)
             else:

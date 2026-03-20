@@ -629,6 +629,32 @@ class ProductionPipeline:
                 if ok:
                     ken_burns_paths.append(str(kb_path))
 
+        # ── Illustration clips with Ken Burns (charts, infographics) ────────────
+        n_illust = max(1, n_photo // 2)  # ~30% of non-video slots
+        illust_phrases = [
+            f"financial chart graph {keyword}",
+            "money currency investment infographic",
+            "business concept success illustration",
+        ]
+        for i, phrase in enumerate(illust_phrases[:n_illust]):
+            try:
+                illusts = fetcher.fetch_illustrations(
+                    topic_id=f"{topic_id}_ill{i}",
+                    phrase=phrase,
+                    count=1,
+                )
+                if illusts:
+                    ill_path = Path("data/raw") / f"{topic_id}_illust_kb_{i}.mp4"
+                    ok = builder.write_ken_burns_mp4(
+                        image_path=illusts[0]["local_path"],
+                        output_path=ill_path,
+                        duration=VIDEO_DURATION,
+                    )
+                    if ok:
+                        ken_burns_paths.append(str(ill_path))
+            except Exception as ill_exc:
+                logger.debug("[pipeline] Illustration fetch %d failed: %s", i, ill_exc)
+
         # ── Interleave: video0, photo0, video1, photo1 ─────────────────────────
         all_paths: list[str] = []
         v_list = list(video_paths)
