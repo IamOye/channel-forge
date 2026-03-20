@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch, call
 import pytest
 
 from src.media.pixabay_fetcher import (
-    FALLBACK_CLIP_IDS,
+    FALLBACK_QUERIES,
     KEYWORD_MAP,
     FetchResult,
     PixabayFetcher,
@@ -405,23 +405,22 @@ class TestScoreClipRelevance:
 # ---------------------------------------------------------------------------
 
 
-class TestFallbackClipIds:
-    def test_fallback_clip_ids_is_list(self) -> None:
-        assert isinstance(FALLBACK_CLIP_IDS, list)
+class TestFallbackQueries:
+    def test_fallback_queries_is_list(self) -> None:
+        assert isinstance(FALLBACK_QUERIES, list)
 
-    def test_fallback_clip_ids_has_enough_entries(self) -> None:
-        assert len(FALLBACK_CLIP_IDS) >= 5
+    def test_fallback_queries_has_enough_entries(self) -> None:
+        assert len(FALLBACK_QUERIES) >= 5
 
-    def test_fallback_clip_ids_are_positive_integers(self) -> None:
-        assert all(isinstance(fid, int) and fid > 0 for fid in FALLBACK_CLIP_IDS)
+    def test_fallback_queries_are_strings(self) -> None:
+        assert all(isinstance(q, str) and len(q) > 0 for q in FALLBACK_QUERIES)
 
 
 class TestFillFromFallback:
     @patch("src.media.pixabay_fetcher.httpx.get")
     @patch("src.media.pixabay_fetcher.PixabayFetcher._download_verified", return_value=True)
-    def test_fills_slot_from_fallback_api(self, mock_dl, mock_get, tmp_path) -> None:
-        fid = FALLBACK_CLIP_IDS[0]
-        hit = _make_hit_dims(fid, 1080, 1920)
+    def test_fills_slot_from_fallback_query(self, mock_dl, mock_get, tmp_path) -> None:
+        hit = _make_hit_dims(999, 1080, 1920)
         mock_get.return_value = _mock_api_response([hit])
 
         fetcher = PixabayFetcher(api_key="fake", output_dir=tmp_path)
@@ -429,30 +428,31 @@ class TestFillFromFallback:
         assert len(result) >= 1
 
     @patch("src.media.pixabay_fetcher.httpx.get")
-    def test_handles_api_error_per_clip_gracefully(self, mock_get, tmp_path) -> None:
+    def test_handles_api_error_gracefully(self, mock_get, tmp_path) -> None:
         import httpx as _httpx
         mock_get.side_effect = _httpx.RequestError("network error")
 
         fetcher = PixabayFetcher(api_key="fake", output_dir=tmp_path)
         result = fetcher._fill_from_fallback("t1", [], set(), 2)
-        assert result == []  # fails gracefully, returns what we had
+        assert result == []
 
     @patch("src.media.pixabay_fetcher.httpx.get")
     @patch("src.media.pixabay_fetcher.PixabayFetcher._download_verified", return_value=True)
     def test_skips_already_seen_ids(self, mock_dl, mock_get, tmp_path) -> None:
-        """Fallback IDs already in seen_ids must be skipped."""
-        all_seen = set(FALLBACK_CLIP_IDS)  # mark every fallback as already used
+        """Clips with IDs already in seen_ids must be skipped."""
+        hit = _make_hit_dims(999, 1080, 1920)
+        mock_get.return_value = _mock_api_response([hit])
+
         fetcher = PixabayFetcher(api_key="fake", output_dir=tmp_path)
-        result = fetcher._fill_from_fallback("t1", [], all_seen, 2)
-        mock_get.assert_not_called()
-        assert result == []
+        result = fetcher._fill_from_fallback("t1", [], {999}, 2)
+        # The single candidate is already seen, so no downloads
+        assert len(result) == 0 or mock_dl.call_count == 0
 
     @patch("src.media.pixabay_fetcher.httpx.get")
     @patch("src.media.pixabay_fetcher.PixabayFetcher._download_verified", return_value=True)
     def test_returns_existing_paths_plus_new(self, mock_dl, mock_get, tmp_path) -> None:
         """Pre-existing path must be preserved in output."""
-        fid = FALLBACK_CLIP_IDS[0]
-        hit = _make_hit_dims(fid, 1080, 1920)
+        hit = _make_hit_dims(888, 1080, 1920)
         mock_get.return_value = _mock_api_response([hit])
 
         fetcher = PixabayFetcher(api_key="fake", output_dir=tmp_path)

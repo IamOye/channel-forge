@@ -16,8 +16,6 @@ from src.media.caption_renderer import (
     HIGHLIGHT_TEXT_COLOR,
     MIN_CAPTION_FONT_SIZE,
     WORD_CAPTION_Y_RATIO,
-    WORD_FONT_SIZE_BASE,
-    WORD_STROKE_WIDTH,
     WORD_TEXT_COLOR,
     CaptionClipSpec,
     CaptionRenderer,
@@ -25,6 +23,7 @@ from src.media.caption_renderer import (
     _render_word_frame,
     _visible_at,
     _word_font_size,
+    _word_stroke_width,
 )
 
 
@@ -358,19 +357,22 @@ class TestCaptionStyle:
         assert size <= 60, f"Font size {size} > 60 at 360px canvas"
 
     def test_font_size_scales_proportionally(self) -> None:
-        """At 1080px canvas (3x), font size should be 3x the 360px size."""
+        """At 1080px canvas, font size should be ~3x the 360px size."""
         size_360 = _word_font_size(360)
         size_1080 = _word_font_size(1080)
-        assert size_1080 == size_360 * 3
+        # round(1080 * 0.155) = 167, round(360 * 0.155) = 56
+        assert size_1080 >= size_360 * 2.5  # roughly proportional
 
     def test_font_size_never_below_minimum(self) -> None:
         """Even at very small canvas, font size stays >= MIN_CAPTION_FONT_SIZE."""
         size = _word_font_size(100)
         assert size >= MIN_CAPTION_FONT_SIZE
 
-    def test_stroke_width_is_present(self) -> None:
-        """WORD_STROKE_WIDTH must be 2-3px."""
-        assert 2 <= WORD_STROKE_WIDTH <= 3
+    def test_stroke_width_scales_with_canvas(self) -> None:
+        """Stroke width must be >= 2 at 360px canvas."""
+        assert _word_stroke_width(360) >= 2
+        # At 1080px should be larger
+        assert _word_stroke_width(1080) >= _word_stroke_width(360)
 
     def test_highlight_color_is_gold(self) -> None:
         """Highlight text colour must be #FFD700 (gold), not a background."""

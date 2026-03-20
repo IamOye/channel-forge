@@ -67,22 +67,26 @@ OUTPUT_DIR = Path("data/raw")
 MIN_PORTRAIT_RATIO = 0.50   # below this: too narrow (very tall, unusual)
 MAX_PORTRAIT_RATIO = 0.62   # above this: too wide → stretched when cropped to 1080×1920
 
-# Guaranteed high-quality fallback Pixabay video IDs (portrait, human, financial)
-FALLBACK_CLIP_IDS: list[int] = [
-    233390,  # person on phone worried
-    253998,  # man with tablet concerned
-    2124,    # businessman interview
-    8252,    # businessman luxury office
-    27453,   # stock charts analysis
-    10822,   # person laptop concerned
-    13111,   # investment portfolio review
+# Finance-specific fallback search queries (tried in order when primary search fails)
+FALLBACK_QUERIES: list[str] = [
+    "business meeting office professional",
+    "money cash currency finance",
+    "smartphone app technology person",
+    "city skyline urban success",
+    "laptop computer working desk",
+    "investment chart graph growth",
+    "handshake deal agreement business",
+    "confident professional walking",
 ]
+
+# Max seconds a single clip should contribute to the output video
+MAX_CLIP_OUTPUT_SECONDS = 12
 
 _PIXABAY_PHOTO_API_URL = "https://pixabay.com/api/"
 MAX_PHOTO_PORTRAIT_RATIO = 0.65  # width/height must be below this for portrait photos
 
 # Minimum relevance score to accept a clip (Claude scores 1–10)
-_MIN_RELEVANCE_SCORE = 6
+_MIN_RELEVANCE_SCORE = 7
 # Trigger additional human-focused search if fewer than this many clips pass scoring
 _MIN_CLIPS_AFTER_SCORING = 4
 
@@ -240,7 +244,7 @@ class PixabayFetcher:
              is run.
           3. Download up to ``count`` clips.
           4. If fewer than 2 clips were downloaded, fill remaining slots from the
-             curated ``FALLBACK_CLIP_IDS`` library (FIX 3).
+             finance-specific ``FALLBACK_QUERIES`` (FIX 3).
 
         Args:
             topic_id: Unique identifier used in output filenames.
@@ -343,10 +347,14 @@ class PixabayFetcher:
                 for v in clips
             ]
             prompt = (
-                "Rate each stock video clip's relevance to this YouTube Short topic "
-                "and script.\n"
-                "Score 1-10. Be strict — animals, nature, abstract scenes, empty "
-                "rooms score 1-3. Human financial situations score 7-10.\n\n"
+                "Rate each stock video clip's relevance to this YouTube Short "
+                "about finance/money.\n"
+                "Score 1-10. Be STRICT:\n"
+                "- Animals, nature, food, children, pets → 1-2\n"
+                "- Abstract scenes, empty rooms, generic landscapes → 2-3\n"
+                "- Generic office/city without financial context → 4-5\n"
+                "- Business meetings, professional settings → 6-7\n"
+                "- Human financial situations, money, investing → 8-10\n\n"
                 f"Topic: {topic}\n"
                 f"Script (first 40 words): {script_preview[:200]}\n\n"
                 f"Clips to rate:\n{json.dumps(clip_descriptions, indent=2)}\n\n"
@@ -389,10 +397,10 @@ class PixabayFetcher:
         seen_ids: set[int],
         target_count: int,
     ) -> list[str]:
-        """Fill remaining clip slots from FALLBACK_CLIP_IDS when fewer than 2 found.
+        """Fill remaining clip slots using finance-specific fallback queries.
 
-        Queries each fallback ID from the Pixabay API (by ID) and downloads the
-        first available clip.  Skips IDs already downloaded.  Failures per clip
+        Searches FALLBACK_QUERIES in order until target_count is reached.
+        Skips clips already downloaded (by pixabay_id).  Failures per query
         are caught and logged; the method never raises.
 
         Args:
@@ -402,43 +410,34 @@ class PixabayFetcher:
             target_count: Desired total number of clips.
 
         Returns:
-            Updated paths list (may still be short if all fallback fetches fail).
+            Updated paths list (may still be short if all fallback queries fail).
         """
         paths = list(existing_paths)
         need = max(2, target_count) - len(paths)
         if need <= 0:
             return paths
 
-        candidates = [fid for fid in FALLBACK_CLIP_IDS if fid not in seen_ids]
-        random.shuffle(candidates)
-
-        for fid in candidates:
+        for query in FALLBACK_QUERIES:
             if need <= 0:
                 break
             try:
-                resp = httpx.get(
-                    _PIXABAY_API_URL,
-                    params={"key": self.api_key, "id": fid},
-                    timeout=REQUEST_TIMEOUT,
-                )
-                resp.raise_for_status()
-                hits = resp.json().get("hits", [])
-                if not hits:
-                    continue
-                url, _, _ = self._best_url(hits[0].get("videos", {}))
-                if not url:
-                    continue
-                output_path = self.output_dir / f"{topic_id}_stock_{len(paths)}.mp4"
-                if self._download_verified(url, output_path):
-                    seen_ids.add(fid)
-                    paths.append(str(output_path))
-                    need -= 1
-                    logger.info(
-                        "[pixabay] Filled fallback slot %d with clip_id=%d",
-                        len(paths) - 1, fid,
-                    )
+                candidates = self._query_api(query)
+                for video in candidates:
+                    if need <= 0:
+                        break
+                    if video.pixabay_id in seen_ids:
+                        continue
+                    output_path = self.output_dir / f"{topic_id}_stock_{len(paths)}.mp4"
+                    if self._download_verified(video.download_url, output_path):
+                        seen_ids.add(video.pixabay_id)
+                        paths.append(str(output_path))
+                        need -= 1
+                        logger.info(
+                            "[pixabay] Filled fallback slot %d from query=%r (clip_id=%d)",
+                            len(paths) - 1, query, video.pixabay_id,
+                        )
             except Exception as exc:
-                logger.warning("[pixabay] Fallback clip %d failed: %s", fid, exc)
+                logger.warning("[pixabay] Fallback query %r failed: %s", query, exc)
 
         return paths
 

@@ -79,10 +79,6 @@ CAPTION_Y_RATIO = 0.77
 # Word-by-word caption rendering constants
 # ---------------------------------------------------------------------------
 
-# Base font size at 360px canvas width — scales proportionally at higher res
-# At 1080px canvas: 56 * (1080/360) = 168px
-WORD_FONT_SIZE_BASE = 56
-
 # Minimum acceptable font size (quality gate threshold)
 MIN_CAPTION_FONT_SIZE = 40
 
@@ -103,7 +99,6 @@ WORD_FONT_SEARCH_PATHS: list[str | None] = [
 HIGHLIGHT_TEXT_COLOR = (255, 215, 0)    # Gold #FFD700 — highlighted word text colour only
 WORD_TEXT_COLOR      = (255, 255, 255)  # White — non-highlighted word text colour
 WORD_STROKE_COLOR    = (0, 0, 0)        # Black outline on ALL text
-WORD_STROKE_WIDTH    = 3                # px stroke/outline width
 WORD_GAP             = 14               # px gap between words
 WORD_MAX_PER_LINE    = 3
 WORD_CAPTION_Y_RATIO = 0.77            # 77% from top of frame, centred
@@ -116,14 +111,25 @@ WORD_ENTRANCE_DUR    = 0.08            # seconds for entrance animation
 # ---------------------------------------------------------------------------
 
 def _word_font_size(canvas_w: int) -> int:
-    """Compute word caption font size scaled to canvas width (56px base at 360px)."""
-    return max(MIN_CAPTION_FONT_SIZE, int(WORD_FONT_SIZE_BASE * canvas_w / 360))
+    """Compute word caption font size scaled to canvas width.
+
+    Formula: round(canvas_w * 0.155)
+    Gives ~56px at 360px canvas, ~167px at 1080px canvas.
+    Never below MIN_CAPTION_FONT_SIZE (40px).
+    """
+    return max(MIN_CAPTION_FONT_SIZE, round(canvas_w * 0.155))
+
+
+def _word_stroke_width(canvas_w: int) -> int:
+    """Compute stroke width scaled to canvas. 2-3px at 360px, scales up."""
+    return max(2, canvas_w // 160)
 
 
 def _load_word_font(size: int | None = None, canvas_w: int = 1080):
     """Load a heavy font for word captions, falling back through WORD_FONT_SEARCH_PATHS.
 
-    If size is None, computes it from canvas_w using the 56px-at-360px base.
+    If size is None, computes it from canvas_w.
+    Logs which font was loaded at startup for diagnostics.
     """
     if size is None:
         size = _word_font_size(canvas_w)
@@ -133,9 +139,13 @@ def _load_word_font(size: int | None = None, canvas_w: int = 1080):
         return None
     for path in WORD_FONT_SEARCH_PATHS:
         if path is None:
-            return ImageFont.load_default()
+            font = ImageFont.load_default()
+            logger.info("[caption] Font loaded: Pillow default at %dpx", size)
+            return font
         try:
-            return ImageFont.truetype(path, size)
+            font = ImageFont.truetype(path, size)
+            logger.info("[caption] Font loaded: %s at %dpx", path, size)
+            return font
         except (IOError, OSError):
             continue
     return None
@@ -187,6 +197,7 @@ def _render_word_frame(
 
     draw = ImageDraw.Draw(img)
     font_size = _word_font_size(canvas_w)
+    stroke_w = _word_stroke_width(canvas_w)
 
     # Measure each visible word (ALL CAPS)
     entries: list[dict] = []
@@ -227,10 +238,10 @@ def _render_word_frame(
         else:
             fill = (*WORD_TEXT_COLOR, 255)         # White
 
-        # Text with black stroke outline
+        # Text with black stroke outline (scaled to canvas)
         draw.text(
             (x, y_top), e["text"], font=font, fill=fill,
-            stroke_width=WORD_STROKE_WIDTH,
+            stroke_width=stroke_w,
             stroke_fill=(*WORD_STROKE_COLOR, 255),
         )
 
@@ -390,7 +401,7 @@ class CaptionRenderer:
         """Return caption configuration for quality gate inspection."""
         return {
             "font_size": _word_font_size(self.canvas_width),
-            "stroke_width": WORD_STROKE_WIDTH,
+            "stroke_width": _word_stroke_width(self.canvas_width),
             "highlight_color": HIGHLIGHT_TEXT_COLOR,
             "text_color": WORD_TEXT_COLOR,
             "y_ratio": WORD_CAPTION_Y_RATIO,
