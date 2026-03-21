@@ -241,20 +241,55 @@ class TopicQueue:
     ) -> list[dict[str, Any]]:
         """Fetch QUEUED manual topics from the manual_topics table.
 
+        First tries the per-channel DB (self.db_path).  If that returns no
+        QUEUED rows, falls back to channel_forge.db in the same directory,
+        because the GSheetTopicSync job always writes to channel_forge.db.
+
         First tries category-matched topics, then any QUEUED topic regardless
         of category (manual topics are user-curated and should not be blocked
         by category mismatch).
 
         Returns up to ``max_count`` topics ordered by SEQ ascending.
-        Each consumed topic is immediately marked USED in the DB.
+        Each consumed topic is immediately marked USED in whichever DB it came from.
         """
-        if not self.db_path.exists():
-            logger.info("[topic_queue] manual_topics: DB does not exist at %s", self.db_path)
+        results = self._query_and_mark_manual(self.db_path, category, max_count)
+
+        # Fallback: per-channel DB had no QUEUED rows — try channel_forge.db
+        if not results and self.db_path.name != "channel_forge.db":
+            fallback_path = self.db_path.parent / "channel_forge.db"
+            if fallback_path.exists() and fallback_path != self.db_path:
+                results = self._query_and_mark_manual(
+                    fallback_path, category, max_count, is_fallback=True
+                )
+
+        return results
+
+    def _query_and_mark_manual(
+        self,
+        db_path: Path,
+        category: str,
+        max_count: int,
+        is_fallback: bool = False,
+    ) -> list[dict[str, Any]]:
+        """
+        Open ``db_path``, fetch up to ``max_count`` QUEUED manual topics, mark
+        them USED immediately, and return them as topic dicts.
+
+        Args:
+            db_path: SQLite file to query.
+            category: Channel category for priority matching.
+            max_count: Maximum rows to return.
+            is_fallback: When True, log messages indicate this is the fallback DB.
+        """
+        if not db_path.exists():
+            logger.info("[topic_queue] manual_topics: DB does not exist at %s", db_path)
             return []
 
         results: list[dict[str, Any]] = []
+        label = f"fallback {db_path.name}" if is_fallback else db_path.name
+
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(db_path)
             try:
                 # First: try category match (case-insensitive)
                 rows = conn.execute(
@@ -269,8 +304,8 @@ class TopicQueue:
                 ).fetchall()
 
                 logger.info(
-                    "[topic_queue] manual_topics query (category=%s): %d rows found",
-                    category, len(rows),
+                    "[topic_queue] manual_topics query (%s, category=%s): %d rows found",
+                    label, category, len(rows),
                 )
 
                 # If no category match, try ANY queued topic
@@ -287,9 +322,9 @@ class TopicQueue:
                     ).fetchall()
                     if rows:
                         logger.info(
-                            "[topic_queue] manual_topics: no '%s' match, "
+                            "[topic_queue] manual_topics (%s): no '%s' match, "
                             "using %d cross-category QUEUED topic(s)",
-                            category, len(rows),
+                            label, category, len(rows),
                         )
 
                 # Log total queued count for visibility
@@ -297,7 +332,7 @@ class TopicQueue:
                     "SELECT COUNT(*) FROM manual_topics WHERE status = 'QUEUED'"
                 ).fetchone()[0]
                 logger.info(
-                    "[topic_queue] manual_topics total QUEUED: %d", total_queued,
+                    "[topic_queue] manual_topics total QUEUED (%s): %d", label, total_queued,
                 )
 
                 for seq, title, cat, hook in rows:
@@ -320,15 +355,22 @@ class TopicQueue:
 
                 if results:
                     conn.commit()
+                    if is_fallback:
+                        logger.info(
+                            "[topic_queue] manual_topics: using fallback channel_forge.db "
+                            "(%d rows found)",
+                            len(results),
+                        )
             except sqlite3.OperationalError as op_exc:
                 logger.info(
-                    "[topic_queue] manual_topics table not found (will use AI queue): %s",
-                    op_exc,
+                    "[topic_queue] manual_topics table not found in %s "
+                    "(will use AI queue): %s",
+                    label, op_exc,
                 )
             finally:
                 conn.close()
         except Exception as exc:
-            logger.warning("[topic_queue] Manual topic query failed: %s", exc)
+            logger.warning("[topic_queue] Manual topic query failed (%s): %s", label, exc)
 
         return results
 
