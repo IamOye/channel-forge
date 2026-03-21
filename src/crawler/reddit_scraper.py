@@ -314,7 +314,7 @@ class RedditScraper:
             selftext = post.get("selftext", "")
             if selftext in ("[removed]", "[deleted]"):
                 continue
-            title = post.get("title", "")
+            title = (post.get("title") or "")
             if any(title.startswith(prefix) for prefix in _MOD_PREFIXES):
                 continue
             if not (_MIN_TITLE_LEN <= len(title) <= _MAX_TITLE_LEN):
@@ -443,7 +443,7 @@ class RedditScraper:
         """Return raw post title (trimmed to 12 words) as topic fallback."""
         results: list[dict[str, Any]] = []
         for i, post in enumerate(posts):
-            title = post.get("title", "").strip()
+            title = (post.get("title") or "").strip()
             words = title.split()[:12]
             topic = " ".join(words)
             if topic:
