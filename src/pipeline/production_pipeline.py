@@ -350,10 +350,14 @@ class ProductionPipeline:
         score        = float(topic_item.get("score", 0.0))
         video_number = int(topic_item.get("video_number", 0))
 
-        from config.constants import PRODUCTS
+        from config.constants import PRODUCTS, get_cta_script
         _product    = PRODUCTS.get(category, {})
-        cta_script  = _product.get("cta_script", "")
         cta_overlay = _product.get("cta_overlay", "")
+
+        # Rotating CTA: subscribe (80%) vs lead_magnet (every 5th video)
+        total_videos = self._get_total_videos_produced()
+        cta_script   = get_cta_script(category, total_videos)
+        logger.info("CTA rotation: video #%d → %s", total_videos, cta_script)
 
         self._current_topic_id = topic_id
         logger.info("Pipeline start: topic_id=%s keyword='%s'", topic_id, keyword)
@@ -1184,6 +1188,20 @@ class ProductionPipeline:
                     logger.warning("[production] Could not delete %s: %s", path, exc)
         if deleted:
             logger.info("[production] Cleaned up %d raw file(s) for topic_id=%s", deleted, topic_id)
+
+    def _get_total_videos_produced(self) -> int:
+        """Count rows in production_results to determine CTA rotation."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            try:
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM production_results"
+                ).fetchone()
+                return row[0] if row else 0
+            finally:
+                conn.close()
+        except Exception:
+            return 0
 
     def _save_to_db(self, result: PipelineResult) -> None:
         """Persist the pipeline result to the production_results table."""

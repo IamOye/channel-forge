@@ -131,6 +131,36 @@ CTA_TRIGGER_KEYWORDS: dict[str, str] = {
     "success": "BLUEPRINT",
 }
 
+# ---------------------------------------------------------------------------
+# Rotating CTA system — single ask per video
+# ---------------------------------------------------------------------------
+
+# Subscribe CTA (used 80% of videos — every video except every 5th)
+CTA_SUBSCRIBE = "Subscribe. We expose this stuff daily."
+
+# Lead-magnet CTAs per category (used every 5th video)
+CTA_LEAD_MAGNET: dict[str, str] = {
+    "money":   "Comment SYSTEM below. I will send you the 5-day money reset free.",
+    "career":  "Comment AUTOMATE below. I will send you the salary playbook free.",
+    "success": "Comment BLUEPRINT below. I will send you the AI advantage guide free.",
+}
+
+
+def get_cta_mode(total_videos_produced: int) -> str:
+    """Return 'lead_magnet' every 5th video, 'subscribe' otherwise."""
+    if total_videos_produced > 0 and total_videos_produced % 5 == 0:
+        return "lead_magnet"
+    return "subscribe"
+
+
+def get_cta_script(category: str, total_videos_produced: int) -> str:
+    """Return the CTA script for this video based on rotation."""
+    mode = get_cta_mode(total_videos_produced)
+    if mode == "lead_magnet":
+        return CTA_LEAD_MAGNET.get(category, CTA_LEAD_MAGNET["money"])
+    return CTA_SUBSCRIBE
+
+
 PRODUCTS: dict[str, dict[str, str]] = {
     "money": {
         "name":       "The 5 Money Systems Millionaires Use While They Sleep",
@@ -138,7 +168,7 @@ PRODUCTS: dict[str, dict[str, str]] = {
         "gumroad_url": _os.getenv(
             "GUMROAD_URL_MONEY", "https://gumroad.com/l/placeholder1"
         ),
-        "cta_script":  "If this hit different, subscribe. We expose this stuff daily. Comment SYSTEM below and I will send you the 5-day money reset free.",
+        "cta_script":  CTA_SUBSCRIBE,
         "cta_overlay": "FREE WEALTH SYSTEMS BLUEPRINT",
     },
     "career": {
@@ -147,7 +177,7 @@ PRODUCTS: dict[str, dict[str, str]] = {
         "gumroad_url": _os.getenv(
             "GUMROAD_URL_CAREER", "https://gumroad.com/l/placeholder2"
         ),
-        "cta_script":  "Subscribe if nobody told you this before. We post daily. Comment AUTOMATE below and I will send you the salary playbook free.",
+        "cta_script":  CTA_SUBSCRIBE,
         "cta_overlay": "FREE SALARY ESCAPE GUIDE",
     },
     "success": {
@@ -156,7 +186,7 @@ PRODUCTS: dict[str, dict[str, str]] = {
         "gumroad_url": _os.getenv(
             "GUMROAD_URL_SUCCESS", "https://gumroad.com/l/placeholder3"
         ),
-        "cta_script":  "Subscribe. We drop uncomfortable truths every day. Comment BLUEPRINT below and I will send you the AI advantage guide free.",
+        "cta_script":  CTA_SUBSCRIBE,
         "cta_overlay": "FREE SUCCESS MYTHS BREAKDOWN",
     },
 }

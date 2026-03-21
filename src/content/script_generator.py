@@ -87,6 +87,8 @@ PART 4 — question (18–24 words)
 Pack in beats 6 and 7:
   Beat 6: One personal, direct question that pulls the viewer in. (1 sentence, ends with ?)
   Beat 7: The exact CTA text provided, word for word. Do NOT rephrase or improvise.
+          The CTA is a single sentence — do NOT add anything after it. It must be the
+          final sentence of the entire script.
 
 WRITING RULES — follow these strictly:
 - Total word count across all 4 parts: 80–95 words. HARD MAXIMUM: 100 words total.
@@ -322,31 +324,32 @@ class ScriptGenerator:
 
     @staticmethod
     def _cta_matches(question: str, cta_script: str) -> bool:
-        """Return True if question contains both 'subscribe' and the CTA trigger keyword.
+        """Return True if the question field contains the expected CTA.
 
-        The combined subscribe + lead magnet CTA must contain:
-          1. The word 'subscribe' (case insensitive)
-          2. The trigger keyword from the CTA script (SYSTEM, AUTOMATE, or BLUEPRINT)
+        Two CTA formats are valid:
+          1. Subscribe CTA — question must contain 'subscribe' and 'daily'
+          2. Lead-magnet CTA — question must contain the trigger keyword
+             (SYSTEM, AUTOMATE, or BLUEPRINT)
 
-        Falls back to verbatim check if no trigger keyword is detected in cta_script.
+        Falls back to verbatim check for unrecognised CTA formats.
         """
         q_lower = question.strip().lower()
         cta_lower = cta_script.strip().lower()
 
-        # Extract trigger keyword from CTA script
+        if not q_lower:
+            return False
+
+        # Subscribe-only CTA: just needs 'subscribe' and 'daily'
+        if "subscribe" in cta_lower and "comment" not in cta_lower:
+            return "subscribe" in q_lower and "daily" in q_lower
+
+        # Lead-magnet CTA: must contain the trigger keyword
         trigger_keywords = ["system", "automate", "blueprint"]
-        trigger = None
         for kw in trigger_keywords:
             if kw in cta_lower:
-                trigger = kw
-                break
+                return kw in q_lower
 
-        if trigger:
-            has_subscribe = "subscribe" in q_lower
-            has_trigger = trigger in q_lower
-            return has_subscribe and has_trigger
-
-        # Fallback: verbatim check for legacy CTAs without trigger keywords
+        # Fallback: verbatim check for unrecognised CTA formats
         return cta_lower in q_lower
 
     def _enforce_cta(

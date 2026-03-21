@@ -436,40 +436,67 @@ class TestWordCountRetry:
 # ---------------------------------------------------------------------------
 
 class TestCtaMatches:
-    def test_subscribe_and_trigger_keyword_match(self) -> None:
-        """CTA with 'subscribe' and trigger keyword 'SYSTEM' passes."""
+    def test_subscribe_cta_matches(self) -> None:
+        """Subscribe CTA matches when 'subscribe' and 'daily' are present."""
         gen = _make_generator()
         assert gen._cta_matches(
-            "Subscribe now. We expose this daily. Comment SYSTEM below for the free guide.",
-            "If this hit different, subscribe. Comment SYSTEM below and I will send you the 5-day money reset free.",
+            "Subscribe. We expose this stuff daily.",
+            "Subscribe. We expose this stuff daily.",
         )
 
-    def test_case_insensitive_match(self) -> None:
+    def test_subscribe_cta_case_insensitive(self) -> None:
         gen = _make_generator()
         assert gen._cta_matches(
-            "subscribe if nobody told you this. comment automate below.",
-            "Subscribe if nobody told you this. Comment AUTOMATE below.",
+            "subscribe. we expose this stuff daily.",
+            "Subscribe. We expose this stuff daily.",
         )
 
-    def test_subscribe_missing_returns_false(self) -> None:
-        """Missing 'subscribe' should fail even with trigger keyword."""
+    def test_subscribe_cta_missing_daily_fails(self) -> None:
         gen = _make_generator()
         assert not gen._cta_matches(
-            "Comment SYSTEM below and I will send you the guide.",
-            "Subscribe. Comment SYSTEM below.",
+            "Subscribe now for more content.",
+            "Subscribe. We expose this stuff daily.",
         )
 
-    def test_trigger_keyword_missing_returns_false(self) -> None:
-        """Missing trigger keyword should fail even with 'subscribe'."""
+    def test_subscribe_cta_missing_subscribe_fails(self) -> None:
         gen = _make_generator()
         assert not gen._cta_matches(
-            "Subscribe now. Drop a comment below.",
-            "Subscribe. Comment SYSTEM below.",
+            "Follow us. We expose this stuff daily.",
+            "Subscribe. We expose this stuff daily.",
+        )
+
+    def test_lead_magnet_cta_system_matches(self) -> None:
+        """Lead-magnet CTA with SYSTEM trigger keyword passes."""
+        gen = _make_generator()
+        assert gen._cta_matches(
+            "Comment SYSTEM below. I will send you the 5-day money reset free.",
+            "Comment SYSTEM below. I will send you the 5-day money reset free.",
+        )
+
+    def test_lead_magnet_cta_automate_matches(self) -> None:
+        gen = _make_generator()
+        assert gen._cta_matches(
+            "Comment AUTOMATE below. I will send you the salary playbook free.",
+            "Comment AUTOMATE below. I will send you the salary playbook free.",
+        )
+
+    def test_lead_magnet_cta_blueprint_matches(self) -> None:
+        gen = _make_generator()
+        assert gen._cta_matches(
+            "Comment BLUEPRINT below for the AI guide.",
+            "Comment BLUEPRINT below. I will send you the AI advantage guide free.",
+        )
+
+    def test_lead_magnet_missing_trigger_fails(self) -> None:
+        gen = _make_generator()
+        assert not gen._cta_matches(
+            "Drop a comment below for the guide.",
+            "Comment SYSTEM below. I will send you the 5-day money reset free.",
         )
 
     def test_empty_question_returns_false(self) -> None:
         gen = _make_generator()
-        assert not gen._cta_matches("", "Subscribe. Comment BLUEPRINT below.")
+        assert not gen._cta_matches("", "Subscribe. We expose this stuff daily.")
 
     def test_legacy_cta_without_trigger_uses_verbatim(self) -> None:
         """CTAs without SYSTEM/AUTOMATE/BLUEPRINT fall back to verbatim check."""
@@ -479,25 +506,18 @@ class TestCtaMatches:
             "Comment FREE below and I'll send you the guide.",
         )
 
-    def test_blueprint_trigger_detected(self) -> None:
-        gen = _make_generator()
-        assert gen._cta_matches(
-            "Subscribe. We drop truths daily. Comment BLUEPRINT below for the AI guide.",
-            "Subscribe. Comment BLUEPRINT below.",
-        )
-
 
 # ---------------------------------------------------------------------------
 # ScriptGenerator._enforce_cta
 # ---------------------------------------------------------------------------
 
-CTA = "Subscribe if nobody told you this before. We post daily. Comment AUTOMATE below and I will send you the salary playbook free."
+CTA = "Subscribe. We expose this stuff daily."
 
 PARTS_WITH_CTA = {
     "hook":      "The system is rigged so your nine to five never builds wealth",
     "statement": "Picture this. You work forty hours a week and have nothing left.",
     "twist":     "Your salary is capped. Prices keep climbing. The game is rigged.",
-    "question":  "So ask yourself... are you working to live? Subscribe if nobody told you this. Comment AUTOMATE below for the salary playbook free.",
+    "question":  "So ask yourself... are you working to live? Subscribe. We expose this stuff daily.",
 }
 
 PARTS_WITHOUT_CTA = {
@@ -522,7 +542,7 @@ class TestEnforceCta:
         # Only one API call — no retry
         assert mock_client.messages.create.call_count == 1
         assert "subscribe" in result.question.lower()
-        assert "automate" in result.question.lower()
+        assert "daily" in result.question.lower()
 
     @patch("src.content.script_generator.anthropic.Anthropic")
     def test_cta_drift_triggers_regeneration(self, mock_cls) -> None:
@@ -540,7 +560,7 @@ class TestEnforceCta:
 
         assert mock_client.messages.create.call_count == 2
         assert "subscribe" in result.question.lower()
-        assert "automate" in result.question.lower()
+        assert "daily" in result.question.lower()
 
     @patch("src.content.script_generator.anthropic.Anthropic")
     def test_cta_force_replaced_when_retry_also_drifts(self, mock_cls) -> None:
