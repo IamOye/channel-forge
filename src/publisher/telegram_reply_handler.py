@@ -674,16 +674,27 @@ class TelegramReplyHandler:
         try:
             conn = self._get_conn()
             try:
+                # Discover actual column names from the live table
+                col_rows = conn.execute(
+                    "PRAGMA table_info(pending_uploads)"
+                ).fetchall()
+                col_names = [r[1] for r in col_rows]
                 rows = conn.execute(
-                    "SELECT topic_id, created_at FROM pending_uploads ORDER BY created_at ASC"
+                    "SELECT topic_id, channel_key, status, queued_at "
+                    "FROM pending_uploads ORDER BY queued_at ASC"
                 ).fetchall()
             finally:
                 conn.close()
+            schema_line = f"<i>Schema: {', '.join(col_names)}</i>"
             if not rows:
-                return "📭 No videos queued for upload. Next scheduled upload at 08:00 WAT."
+                return (
+                    "📭 No videos queued for upload. Next scheduled upload at 08:00 WAT.\n"
+                    + schema_line
+                )
             lines = [f"📬 <b>{len(rows)} video(s) queued for upload at 08:00 WAT:</b>\n"]
-            for i, (tid, created) in enumerate(rows, 1):
-                lines.append(f"{i}. <code>{tid}</code> (queued: {created})")
+            for i, (tid, channel, status, queued) in enumerate(rows, 1):
+                lines.append(f"{i}. <code>{tid}</code> [{channel}] {status} (queued: {queued})")
+            lines.append(f"\n{schema_line}")
             return "\n".join(lines)
         except Exception as exc:
             return f"❌ Queue check failed: {exc}"
