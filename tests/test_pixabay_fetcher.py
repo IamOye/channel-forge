@@ -609,6 +609,7 @@ class TestFetchPhotos:
         results = fetcher.fetch_photos(topic_id="t1", phrase="square test")
         assert results == []
 
+    @patch.dict("os.environ", {"UNSPLASH_ACCESS_KEY": ""})
     def test_fetch_photos_raises_without_api_key(self, tmp_path) -> None:
         fetcher = PixabayFetcher(api_key="", output_dir=tmp_path)
         with pytest.raises(ValueError, match="PIXABAY_API_KEY not set"):

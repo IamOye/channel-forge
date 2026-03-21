@@ -328,6 +328,7 @@ class PexelsFetcher:
                 raw = raw.split("```")[1]
                 if raw.startswith("json"):
                     raw = raw[4:]
+            raw = raw.strip()
             scores_data = json.loads(raw)
             score_map = {str(item["clip_id"]): item["score"] for item in scores_data}
             filtered = [
@@ -339,6 +340,9 @@ class PexelsFetcher:
                 len(candidates), len(filtered),
             )
             return filtered
+        except json.JSONDecodeError as e:
+            logger.warning("[pexels] Relevance scoring JSON parse failed: %s | raw: %.200s", e, raw)
+            return candidates
         except Exception as exc:
             logger.warning("[pexels] Relevance scoring failed (returning all): %s", exc)
             return candidates
