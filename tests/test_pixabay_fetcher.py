@@ -28,15 +28,15 @@ def _make_hit(
     url: str = "https://cdn.pixabay.com/video/sample.mp4",
     tags: str = "nature landscape",
 ) -> dict:
-    """Build a minimal Pixabay API hit dict with portrait (1080x1920) dimensions."""
+    """Build a minimal Pixabay API hit dict with HD portrait (1920x3413) dimensions."""
     return {
         "id":       vid_id,
         "duration": duration,
         "pageURL":  f"https://pixabay.com/videos/{vid_id}/",
         "tags":     tags,
         "videos": {
-            "large":  {"url": url, "width": 1080, "height": 1920},
-            "medium": {"url": url, "width": 720,  "height": 1280},
+            "large":  {"url": url, "width": 1920, "height": 3413},
+            "medium": {"url": url, "width": 1080, "height": 1920},
             "small":  {"url": url, "width": 360,  "height": 640},
             "tiny":   {"url": url, "width": 180,  "height": 320},
         },
@@ -240,7 +240,7 @@ def _make_hit_dims(vid_id: int, width: int, height: int, duration: int = 15) -> 
 class TestRatioFilter:
     @patch("src.media.pixabay_fetcher.httpx.get")
     def test_accepts_ideal_portrait_ratio(self, mock_get) -> None:
-        """1080×1920 = ratio 0.5625, inside [0.50, 0.62] → accepted."""
+        """1920×3413 = ratio 0.5626, inside [0.50, 0.62] → accepted."""
         mock_get.return_value = _mock_api_response([_make_hit(vid_id=1)])
         fetcher = PixabayFetcher(api_key="fake")
         candidates = fetcher._query_api("test")
@@ -268,8 +268,8 @@ class TestRatioFilter:
     @patch("src.media.pixabay_fetcher.httpx.get")
     def test_accepts_clip_at_boundary_0_62(self, mock_get) -> None:
         """width/height = 0.62 exactly → accepted (boundary is inclusive)."""
-        # 1116×1800 → ratio = 0.62
-        hit = _make_hit_dims(vid_id=4, width=1116, height=1800)
+        # 1920×3097 → ratio ≈ 0.62
+        hit = _make_hit_dims(vid_id=4, width=1920, height=3097)
         mock_get.return_value = _mock_api_response([hit])
         fetcher = PixabayFetcher(api_key="fake")
         candidates = fetcher._query_api("test")
@@ -278,8 +278,8 @@ class TestRatioFilter:
     @patch("src.media.pixabay_fetcher.httpx.get")
     def test_accepts_clip_at_boundary_0_50(self, mock_get) -> None:
         """width/height = 0.50 exactly → accepted (boundary is inclusive)."""
-        # 1080×2160 → ratio = 0.50
-        hit = _make_hit_dims(vid_id=5, width=1080, height=2160)
+        # 1920×3840 → ratio = 0.50
+        hit = _make_hit_dims(vid_id=5, width=1920, height=3840)
         mock_get.return_value = _mock_api_response([hit])
         fetcher = PixabayFetcher(api_key="fake")
         candidates = fetcher._query_api("test")
@@ -288,7 +288,7 @@ class TestRatioFilter:
     @patch("src.media.pixabay_fetcher.httpx.get")
     def test_mixed_clips_only_valid_ratio_returned(self, mock_get) -> None:
         """Two clips: one valid (0.5625), one too wide (0.72) → only valid returned."""
-        valid_hit = _make_hit(vid_id=10)          # 1080×1920 = 0.5625 ✓
+        valid_hit = _make_hit(vid_id=10)          # 1920×3413 = 0.5626 ✓
         wide_hit  = _make_hit_dims(20, 1080, 1500)  # ratio = 0.72 ✗
         mock_get.return_value = _mock_api_response([valid_hit, wide_hit])
         fetcher = PixabayFetcher(api_key="fake")
@@ -420,7 +420,7 @@ class TestFillFromFallback:
     @patch("src.media.pixabay_fetcher.httpx.get")
     @patch("src.media.pixabay_fetcher.PixabayFetcher._download_verified", return_value=True)
     def test_fills_slot_from_fallback_query(self, mock_dl, mock_get, tmp_path) -> None:
-        hit = _make_hit_dims(999, 1080, 1920)
+        hit = _make_hit_dims(999, 1920, 3413)
         mock_get.return_value = _mock_api_response([hit])
 
         fetcher = PixabayFetcher(api_key="fake", output_dir=tmp_path)
@@ -440,7 +440,7 @@ class TestFillFromFallback:
     @patch("src.media.pixabay_fetcher.PixabayFetcher._download_verified", return_value=True)
     def test_skips_already_seen_ids(self, mock_dl, mock_get, tmp_path) -> None:
         """Clips with IDs already in seen_ids must be skipped."""
-        hit = _make_hit_dims(999, 1080, 1920)
+        hit = _make_hit_dims(999, 1920, 3413)
         mock_get.return_value = _mock_api_response([hit])
 
         fetcher = PixabayFetcher(api_key="fake", output_dir=tmp_path)
@@ -452,7 +452,7 @@ class TestFillFromFallback:
     @patch("src.media.pixabay_fetcher.PixabayFetcher._download_verified", return_value=True)
     def test_returns_existing_paths_plus_new(self, mock_dl, mock_get, tmp_path) -> None:
         """Pre-existing path must be preserved in output."""
-        hit = _make_hit_dims(888, 1080, 1920)
+        hit = _make_hit_dims(888, 1920, 3413)
         mock_get.return_value = _mock_api_response([hit])
 
         fetcher = PixabayFetcher(api_key="fake", output_dir=tmp_path)

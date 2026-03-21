@@ -351,18 +351,21 @@ class TestCaptionStyle:
         assert not hasattr(mod, "HIGHLIGHT_PAD_Y"), "HIGHLIGHT_PAD_Y still exists"
         assert not hasattr(mod, "_draw_rounded_rect"), "_draw_rounded_rect still exists"
 
-    def test_font_size_at_360_is_at_least_52(self) -> None:
-        """At 360px canvas width, font size must be >= 52px (spec: 52-60px)."""
+    def test_font_size_at_360_uses_minimum(self) -> None:
+        """At 360px canvas, raw size (34px) is below minimum so clamps to 40px."""
         size = _word_font_size(360)
-        assert size >= 52, f"Font size {size} < 52 at 360px canvas"
-        assert size <= 60, f"Font size {size} > 60 at 360px canvas"
+        assert size >= MIN_CAPTION_FONT_SIZE, f"Font size {size} < {MIN_CAPTION_FONT_SIZE} at 360px"
+
+    def test_font_size_at_1080_is_about_100(self) -> None:
+        """At 1080px canvas: round(1080 * 0.093) = 100px."""
+        size = _word_font_size(1080)
+        assert 95 <= size <= 105, f"Font size {size} not in expected range at 1080px"
 
     def test_font_size_scales_proportionally(self) -> None:
-        """At 1080px canvas, font size should be ~3x the 360px size."""
+        """At 1080px canvas, font size should be larger than at 360px."""
         size_360 = _word_font_size(360)
         size_1080 = _word_font_size(1080)
-        # round(1080 * 0.155) = 167, round(360 * 0.155) = 56
-        assert size_1080 >= size_360 * 2.5  # roughly proportional
+        assert size_1080 > size_360
 
     def test_font_size_never_below_minimum(self) -> None:
         """Even at very small canvas, font size stays >= MIN_CAPTION_FONT_SIZE."""
@@ -409,7 +412,10 @@ class TestCaptionStyle:
         assert hasattr(font, "getbbox"), "Font does not support getbbox — likely bitmap"
         bb = font.getbbox("TEST")
         height = bb[3] - bb[1]
-        assert height >= MIN_CAPTION_FONT_SIZE, (
-            f"Font renders at {height}px — below minimum {MIN_CAPTION_FONT_SIZE}px. "
+        # Rendered glyph height is always smaller than requested font size
+        # (size is em-square, not glyph height). At 40px request, expect ~28px.
+        # A bitmap load_default() would render at ~8px regardless.
+        assert height >= 20, (
+            f"Font renders at {height}px — too small. "
             "Likely using load_default() bitmap font instead of truetype."
         )

@@ -136,11 +136,11 @@ WORD_ENTRANCE_DUR    = 0.08            # seconds for entrance animation
 def _word_font_size(canvas_w: int) -> int:
     """Compute word caption font size scaled to canvas width.
 
-    Formula: round(canvas_w * 0.155)
-    Gives ~56px at 360px canvas, ~167px at 1080px canvas.
+    Formula: round(canvas_w * 0.093)
+    Gives ~34px at 360px canvas, ~100px at 1080px canvas.
     Never below MIN_CAPTION_FONT_SIZE (40px).
     """
-    return max(MIN_CAPTION_FONT_SIZE, round(canvas_w * 0.155))
+    return max(MIN_CAPTION_FONT_SIZE, round(canvas_w * 0.093))
 
 
 def _word_stroke_width(canvas_w: int) -> int:
@@ -290,10 +290,12 @@ def validate_font_rendering(canvas_w: int = 360) -> None:
             "[caption] Font size validation: %dpx rendered at %dpx requested ✅",
             height, size,
         )
-        if height < MIN_CAPTION_FONT_SIZE:
+        # Rendered glyph height is smaller than requested size (normal for truetype).
+        # A bitmap load_default() renders at ~8px. Expect at least 20px for a real font.
+        if height < 20:
             raise RuntimeError(
-                f"[caption] Font renders at {height}px but minimum is "
-                f"{MIN_CAPTION_FONT_SIZE}px. The font is not scalable."
+                f"[caption] Font renders at {height}px — too small. "
+                f"Likely a bitmap font, not scalable truetype."
             )
     except RuntimeError:
         raise

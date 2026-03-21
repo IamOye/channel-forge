@@ -47,7 +47,7 @@ KEYWORD_MAP: dict[str, list[str]] = {
 # Quality filters applied to every candidate before selection
 MIN_VIDEO_DURATION_SECONDS = 5          # reject very short clips
 MAX_VIDEO_DURATION_SECONDS = 30         # reject unnecessarily large files
-MIN_VIDEO_WIDTH = 1080                  # Full HD minimum width
+MIN_VIDEO_WIDTH = 1920                  # Full HD portrait minimum width
 MIN_VIDEO_HEIGHT = 1080                 # Accept portrait AND landscape; scoring prefers portrait
 MAX_FILE_SIZE_BYTES = 40 * 1024 * 1024  # 40 MB — skip large downloads
 MIN_FILE_SIZE_BYTES = 100 * 1024        # 100 KB — anything smaller is corrupt
@@ -504,7 +504,7 @@ class PixabayFetcher:
             "q":           phrase,
             "image_type":  "photo",
             "orientation": "vertical",
-            "min_width":   1080,
+            "min_width":   1920,
             "per_page":    20,
             "safesearch":  "true",
             "order":       "popular",
@@ -615,10 +615,10 @@ class PixabayFetcher:
         params = {
             "key":         self.api_key,
             "q":           phrase,
-            "image_type":  "illustration",
+            "image_type":  "vector",
             "orientation": "vertical",
-            "min_width":   720,
-            "per_page":    20,
+            "min_width":   1280,
+            "per_page":    50,
             "safesearch":  "true",
             "order":       "popular",
         }
