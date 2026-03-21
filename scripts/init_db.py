@@ -375,6 +375,19 @@ CREATE TABLE IF NOT EXISTS research_sessions (
 );
 """
 
+CLIP_HISTORY_DDL = """
+CREATE TABLE IF NOT EXISTS clip_history (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    clip_id  TEXT NOT NULL,
+    source   TEXT NOT NULL,
+    query    TEXT,
+    topic_id TEXT,
+    used_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_clip_history_source_clip
+    ON clip_history(source, clip_id);
+"""
+
 # Unified main DB gets all tables
 MAIN_DDL_PARTS = [
     TRENDS_DDL, SAFETY_DDL, SCORES_DDL, TITLES_DDL, VIDEO_IDEAS_DDL,
@@ -383,7 +396,7 @@ MAIN_DDL_PARTS = [
     ELEVENLABS_USAGE_DDL, YOUTUBE_QUOTA_DDL, PRODUCTION_LOCK_DDL,
     COMMENT_STATES_DDL, SETTINGS_DDL, PENDING_UPLOADS_DDL,
     QUALITY_HOLDS_DDL, MANUAL_TOPICS_DDL,
-    RESEARCH_REVIEWED_DDL, RESEARCH_SESSIONS_DDL,
+    RESEARCH_REVIEWED_DDL, RESEARCH_SESSIONS_DDL, CLIP_HISTORY_DDL,
 ]
 
 
@@ -514,6 +527,14 @@ def migrate_db(db_path: Path) -> None:
             conn.executescript(RESEARCH_SESSIONS_DDL)
             conn.commit()
             logger.info("Migration applied: research_sessions table ensured (%s)", db_path)
+        except sqlite3.OperationalError:
+            pass
+
+        # Clip history migration
+        try:
+            conn.executescript(CLIP_HISTORY_DDL)
+            conn.commit()
+            logger.info("Migration applied: clip_history table ensured (%s)", db_path)
         except sqlite3.OperationalError:
             pass
     finally:

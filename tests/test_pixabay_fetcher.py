@@ -5,6 +5,8 @@ All httpx calls are mocked — no real network requests during tests.
 """
 
 import json
+import sqlite3 as _sqlite3
+from pathlib import Path
 from unittest.mock import MagicMock, patch, call
 
 import pytest
@@ -654,3 +656,90 @@ class TestFetchPhotos:
         assert len(results) == 1
         for key in ("id", "local_path", "width", "height", "tags"):
             assert key in results[0]
+
+
+# ---------------------------------------------------------------------------
+# clip_history deduplication in fetch_multiple
+# ---------------------------------------------------------------------------
+
+from src.media.pixabay_fetcher import _clip_already_used, _clip_history_record
+
+
+def _make_clip_history_db(tmp_path: Path) -> Path:
+    db = tmp_path / "cf.db"
+    conn = _sqlite3.connect(db)
+    conn.execute("""
+        CREATE TABLE clip_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            clip_id TEXT NOT NULL,
+            source TEXT NOT NULL,
+            query TEXT,
+            topic_id TEXT,
+            used_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.commit()
+    conn.close()
+    return db
+
+
+class TestClipHistoryHelpers:
+    def test_returns_false_when_no_db(self, tmp_path) -> None:
+        assert _clip_already_used(tmp_path / "missing.db", "pixabay", "1") is False
+
+    def test_returns_false_when_none(self) -> None:
+        assert _clip_already_used(None, "pixabay", "1") is False
+
+    def test_record_and_lookup(self, tmp_path) -> None:
+        db = _make_clip_history_db(tmp_path)
+        _clip_history_record(db, "pixabay", "999", "aerial drone", "t1")
+        assert _clip_already_used(db, "pixabay", "999") is True
+
+    def test_source_scoped(self, tmp_path) -> None:
+        db = _make_clip_history_db(tmp_path)
+        _clip_history_record(db, "pexels", "999", "query", "t1")
+        assert _clip_already_used(db, "pixabay", "999") is False
+
+    def test_record_swallows_error_on_missing_table(self, tmp_path) -> None:
+        db = tmp_path / "notables.db"
+        conn = _sqlite3.connect(db)
+        conn.close()
+        _clip_history_record(db, "pixabay", "1", "q", "t")  # should not raise
+
+
+class TestFetchMultipleClipHistoryDedup:
+    @patch("src.media.pixabay_fetcher.httpx.get")
+    @patch("src.media.pixabay_fetcher.PixabayFetcher._download_verified", return_value=True)
+    def test_already_used_clip_skipped(self, mock_dl, mock_get, tmp_path) -> None:
+        """Clip in clip_history must not be downloaded in fetch_multiple."""
+        db = _make_clip_history_db(tmp_path)
+        # Mark clip_id=1 as already used
+        _clip_history_record(db, "pixabay", "1", "q", "prev_topic")
+
+        hit_used = _make_hit(vid_id=1)
+        hit_fresh = _make_hit(vid_id=2)
+        mock_get.return_value = _mock_api_response([hit_used, hit_fresh])
+
+        # Ensure no PEXELS_API_KEY so we go straight to Pixabay
+        import os
+        with patch.dict(os.environ, {"PEXELS_API_KEY": ""}, clear=False):
+            fetcher = PixabayFetcher(api_key="fake", output_dir=tmp_path)
+            paths = fetcher.fetch_multiple("t1", ["phrase"], count=2, db_path=db)
+
+        # Only clip 2 should have been downloaded (clip 1 was in history)
+        assert mock_dl.call_count == 1
+
+    @patch("src.media.pixabay_fetcher.httpx.get")
+    @patch("src.media.pixabay_fetcher.PixabayFetcher._download_verified", return_value=True)
+    def test_clip_recorded_after_download(self, mock_dl, mock_get, tmp_path) -> None:
+        """Successfully downloaded clip must appear in clip_history."""
+        db = _make_clip_history_db(tmp_path)
+        hit = _make_hit(vid_id=55)
+        mock_get.return_value = _mock_api_response([hit])
+
+        import os
+        with patch.dict(os.environ, {"PEXELS_API_KEY": ""}, clear=False):
+            fetcher = PixabayFetcher(api_key="fake", output_dir=tmp_path)
+            fetcher.fetch_multiple("t1", ["phrase"], count=1, db_path=db)
+
+        assert _clip_already_used(db, "pixabay", "55") is True

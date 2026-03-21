@@ -69,14 +69,28 @@ MAX_PORTRAIT_RATIO = 0.62   # above this: too wide → stretched when cropped to
 
 # Aerial-first fallback search queries (tried in order when primary search fails)
 FALLBACK_QUERIES: list[str] = [
+    # Aerial/drone
     "aerial city skyline drone",
     "drone highway traffic moving",
     "aerial green landscape nature",
     "luxury neighbourhood aerial view",
     "city buildings skyscrapers aerial",
+    "aerial coastline beach drone",
+    "drone forest trees aerial",
+    "aerial mountains landscape",
+    "drone river city aerial",
+    "aerial desert landscape drone",
+    # Finance/business
     "money cash currency finance",
     "business meeting office professional",
-    "aerial coastline beach drone",
+    "stock market trading finance",
+    "person walking city street",
+    "coffee shop work laptop",
+    "city traffic rush hour",
+    "shopping mall retail people",
+    "construction building crane",
+    "sunset cityscape golden hour",
+    "people walking downtown city",
 ]
 
 # Max seconds a single clip should contribute to the output video
@@ -118,6 +132,56 @@ MAX_PHOTO_PORTRAIT_RATIO = 0.65  # width/height must be below this for portrait 
 _MIN_RELEVANCE_SCORE = 6
 # Trigger additional human-focused search if fewer than this many clips pass scoring
 _MIN_CLIPS_AFTER_SCORING = 4
+
+
+# ---------------------------------------------------------------------------
+# Clip history helpers (used by pixabay, pexels, unsplash fetchers)
+# ---------------------------------------------------------------------------
+
+def _clip_already_used(db_path: "Path | str | None", source: str, clip_id: str) -> bool:
+    """Return True if clip_id/source already exists in clip_history."""
+    if db_path is None:
+        return False
+    db = Path(db_path)
+    if not db.exists():
+        return False
+    try:
+        import sqlite3 as _sq
+        conn = _sq.connect(db)
+        row = conn.execute(
+            "SELECT 1 FROM clip_history WHERE source = ? AND clip_id = ? LIMIT 1",
+            (source, clip_id),
+        ).fetchone()
+        conn.close()
+        return row is not None
+    except Exception:
+        return False
+
+
+def _clip_history_record(
+    db_path: "Path | str | None",
+    source: str,
+    clip_id: str,
+    query: str,
+    topic_id: str,
+) -> None:
+    """Insert a row into clip_history. Swallows all errors."""
+    if db_path is None:
+        return
+    db = Path(db_path)
+    if not db.exists():
+        return
+    try:
+        import sqlite3 as _sq
+        conn = _sq.connect(db)
+        conn.execute(
+            "INSERT INTO clip_history (clip_id, source, query, topic_id) VALUES (?, ?, ?, ?)",
+            (clip_id, source, query, topic_id),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as exc:
+        logger.warning("[pixabay] clip_history record failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -261,19 +325,19 @@ class PixabayFetcher:
         count: int = 4,
         topic: str = "",
         script_preview: str = "",
+        db_path: "Path | str | None" = None,
     ) -> list[str]:
         """
         Fetch multiple stock video clips and return local paths.
 
         Flow:
-          1. Collect all qualifying candidates from every keyword phrase (deduped).
+          0. Try Pexels first if PEXELS_API_KEY is set; use those clips if >= count.
+          1. Collect all qualifying Pixabay candidates (deduped + clip_history filtered).
           2. If ``topic`` and ``anthropic_api_key`` are set, score candidates for
-             relevance via Claude (FIX 2); reject below score 6.  When fewer than
-             ``_MIN_CLIPS_AFTER_SCORING`` pass, one additional human-focused search
-             is run.
-          3. Download up to ``count`` clips.
+             relevance via Claude; reject below score 6.
+          3. Download up to ``count`` clips; record each in clip_history.
           4. If fewer than 2 clips were downloaded, fill remaining slots from the
-             finance-specific ``FALLBACK_QUERIES`` (FIX 3).
+             finance-specific ``FALLBACK_QUERIES``.
 
         Args:
             topic_id: Unique identifier used in output filenames.
@@ -281,6 +345,7 @@ class PixabayFetcher:
             count: Maximum number of clips to return.
             topic: Video topic string used for relevance scoring (optional).
             script_preview: First ~40 words of script, used for scoring (optional).
+            db_path: SQLite DB path for clip_history deduplication (optional).
 
         Returns:
             List of local file paths (may be shorter than ``count`` if fallback
@@ -295,15 +360,53 @@ class PixabayFetcher:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         seen_ids: set[int] = set()
 
-        # 1. Collect all candidates from every keyword phrase (deduped)
+        # 0. Try Pexels first if PEXELS_API_KEY is configured
+        pexels_paths: list[str] = []
+        pexels_key = os.getenv("PEXELS_API_KEY", "")
+        if pexels_key:
+            try:
+                from src.media.pexels_fetcher import PexelsFetcher  # lazy
+                pf = PexelsFetcher(
+                    api_key=pexels_key,
+                    output_dir=self.output_dir,
+                    anthropic_api_key=self.anthropic_api_key,
+                )
+                for phrase in keywords_list[:count]:
+                    if len(pexels_paths) >= count:
+                        break
+                    clips = pf.fetch_clips(
+                        query=phrase,
+                        min_width=MIN_VIDEO_WIDTH,
+                        max_clips=count - len(pexels_paths),
+                        topic_id=topic_id,
+                        db_path=db_path,
+                    )
+                    pexels_paths.extend(clips)
+            except Exception as exc:
+                logger.warning(
+                    "[pixabay] Pexels fetch failed — falling through to Pixabay: %s", exc
+                )
+
+        if len(pexels_paths) >= count:
+            logger.info("[pixabay] Returning %d Pexels clips (Pixabay not needed)", count)
+            return pexels_paths[:count]
+
+        # 1. Collect all Pixabay candidates (deduped + clip_history filtered)
         all_candidates: list[PixabayVideo] = []
+        phrase_map: dict[int, str] = {}  # pixabay_id -> phrase for history recording
         for phrase in keywords_list[:count]:
             for video in self._query_api(phrase):
                 if video.pixabay_id not in seen_ids:
+                    if _clip_already_used(db_path, "pixabay", str(video.pixabay_id)):
+                        logger.debug(
+                            "[pixabay] Skipping already-used clip_id=%d", video.pixabay_id
+                        )
+                        continue
                     all_candidates.append(video)
                     seen_ids.add(video.pixabay_id)
+                    phrase_map[video.pixabay_id] = phrase
 
-        # 2. Relevance scoring (FIX 2) — only if topic + Anthropic key are available
+        # 2. Relevance scoring — only if topic + Anthropic key are available
         if topic and all_candidates and self.anthropic_api_key:
             all_candidates = self.score_clip_relevance(all_candidates, topic, script_preview)
             if len(all_candidates) < _MIN_CLIPS_AFTER_SCORING:
@@ -314,18 +417,26 @@ class PixabayFetcher:
                 )
                 for video in self._query_api(extra_query):
                     if video.pixabay_id not in seen_ids:
-                        all_candidates.append(video)
-                        seen_ids.add(video.pixabay_id)
+                        if not _clip_already_used(db_path, "pixabay", str(video.pixabay_id)):
+                            all_candidates.append(video)
+                            seen_ids.add(video.pixabay_id)
+                            phrase_map[video.pixabay_id] = extra_query
 
-        # 3. Download up to `count` clips
-        paths: list[str] = []
+        # 3. Download up to `count` clips (supplement any Pexels clips already gathered)
+        paths: list[str] = list(pexels_paths)
+        pixabay_count = 0
         for video in all_candidates:
             if len(paths) >= count:
                 break
-            output_path = self.output_dir / f"{topic_id}_stock_{len(paths)}.mp4"
+            output_path = self.output_dir / f"{topic_id}_stock_{pixabay_count}.mp4"
             ok = self._download_verified(video.download_url, output_path)
             if ok:
                 paths.append(str(output_path))
+                pixabay_count += 1
+                _clip_history_record(
+                    db_path, "pixabay", str(video.pixabay_id),
+                    phrase_map.get(video.pixabay_id, ""), topic_id,
+                )
                 logger.info(
                     "Fetched clip %d: pixabay_id=%d -> %s",
                     len(paths), video.pixabay_id, output_path,
@@ -337,7 +448,7 @@ class PixabayFetcher:
                 "[pixabay] Only %d clip(s) after main search — filling from fallback library",
                 len(paths),
             )
-            paths = self._fill_from_fallback(topic_id, paths, seen_ids, count)
+            paths = self._fill_from_fallback(topic_id, paths, seen_ids, count, db_path=db_path)
 
         return paths
 
@@ -431,18 +542,20 @@ class PixabayFetcher:
         existing_paths: list[str],
         seen_ids: set[int],
         target_count: int,
+        db_path: "Path | str | None" = None,
     ) -> list[str]:
         """Fill remaining clip slots using finance-specific fallback queries.
 
         Searches FALLBACK_QUERIES in order until target_count is reached.
-        Skips clips already downloaded (by pixabay_id).  Failures per query
-        are caught and logged; the method never raises.
+        Skips clips already downloaded (by pixabay_id) or in clip_history.
+        Failures per query are caught and logged; the method never raises.
 
         Args:
             topic_id: Used to name output files.
             existing_paths: Already-downloaded clip paths.
             seen_ids: Pixabay IDs already downloaded (mutated in-place).
             target_count: Desired total number of clips.
+            db_path: SQLite DB path for clip_history deduplication (optional).
 
         Returns:
             Updated paths list (may still be short if all fallback queries fail).
@@ -462,11 +575,16 @@ class PixabayFetcher:
                         break
                     if video.pixabay_id in seen_ids:
                         continue
+                    if _clip_already_used(db_path, "pixabay", str(video.pixabay_id)):
+                        continue
                     output_path = self.output_dir / f"{topic_id}_stock_{len(paths)}.mp4"
                     if self._download_verified(video.download_url, output_path):
                         seen_ids.add(video.pixabay_id)
                         paths.append(str(output_path))
                         need -= 1
+                        _clip_history_record(
+                            db_path, "pixabay", str(video.pixabay_id), query, topic_id
+                        )
                         logger.info(
                             "[pixabay] Filled fallback slot %d from query=%r (clip_id=%d)",
                             len(paths) - 1, query, video.pixabay_id,
@@ -481,11 +599,13 @@ class PixabayFetcher:
         topic_id: str,
         phrase: str,
         count: int = 2,
+        db_path: "Path | str | None" = None,
     ) -> list[dict]:
-        """Fetch portrait stock photos from Pixabay image API.
+        """Fetch portrait stock photos — tries Unsplash first, then Pixabay.
 
         Filters: portrait only (width/height < MAX_PHOTO_PORTRAIT_RATIO = 0.65).
-        Downloads to output_dir/{topic_id}_photo_{n}.jpg.
+        Downloads to output_dir/{topic_id}_photo_{n}.jpg (Pixabay) or
+        output_dir/{topic_id}_unsplash_{n}.jpg (Unsplash).
 
         Returns:
             List of dicts with keys: id, local_path, width, height, tags.
@@ -494,6 +614,26 @@ class PixabayFetcher:
         Raises:
             ValueError: If PIXABAY_API_KEY is not configured.
         """
+        # Try Unsplash first if UNSPLASH_ACCESS_KEY is configured
+        unsplash_key = os.getenv("UNSPLASH_ACCESS_KEY", "")
+        if unsplash_key:
+            try:
+                from src.media.unsplash_fetcher import UnsplashFetcher  # lazy
+                uf = UnsplashFetcher(access_key=unsplash_key, output_dir=self.output_dir)
+                photos = uf.fetch_photos(
+                    query=phrase, min_width=1080, topic_id=topic_id,
+                    db_path=db_path, count=count,
+                )
+                if photos:
+                    logger.info(
+                        "[pixabay] Using %d Unsplash photo(s) for topic=%s", len(photos), topic_id
+                    )
+                    return photos
+            except Exception as exc:
+                logger.warning(
+                    "[pixabay] Unsplash fetch failed — falling through to Pixabay: %s", exc
+                )
+
         if not self.api_key:
             raise ValueError("PIXABAY_API_KEY not set")
 
