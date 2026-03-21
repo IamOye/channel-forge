@@ -1029,21 +1029,20 @@ class TestBrollMinimum:
         assert inst.fetch_multiple.call_count > 1
         assert result.is_valid is True
 
-    def test_generate_broll_queries_returns_12(self) -> None:
-        """_generate_broll_queries should return up to 12 scene queries."""
+    def test_generate_broll_queries_returns_6(self) -> None:
+        """_generate_broll_queries should return exactly 6 scene queries (one per category)."""
         pipeline = ProductionPipeline(anthropic_api_key="fake")
         mock_msg = MagicMock()
         mock_msg.content = [MagicMock(
-            text='["person counting cash", "bank vault safe", "stock market chart", '
-                 '"coffee shop laptop", "luxury apartment", "stressed bills desk", '
-                 '"investment app phone", "city skyline night", "graduation ceremony", '
-                 '"handshake business deal", "piggy bank coins", "beach sunset laptop"]'
+            text='["aerial city skyline drone", "person counting money hands", '
+                 '"financial chart graph", "green forest aerial", '
+                 '"city street traffic night", "light bokeh blur abstract"]'
         )]
         with patch("anthropic.Anthropic") as MockAnthropic:
             MockAnthropic.return_value.messages.create.return_value = mock_msg
             queries = pipeline._generate_broll_queries("money habits", {"hook": "Test"})
 
-        assert len(queries) == 12
+        assert len(queries) == 6
         assert all(isinstance(q, str) for q in queries)
 
     def test_generate_broll_queries_fallback_on_api_error(self) -> None:

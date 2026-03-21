@@ -11,6 +11,7 @@ API docs: https://www.pexels.com/api/documentation/
 import json
 import logging
 import os
+import random
 import sqlite3
 from pathlib import Path
 
@@ -141,6 +142,7 @@ class PexelsFetcher:
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
+        page = random.randint(1, 4)
         try:
             resp = httpx.get(
                 _PEXELS_VIDEO_API_URL,
@@ -150,6 +152,7 @@ class PexelsFetcher:
                     "orientation": "portrait",
                     "size":        "large",
                     "per_page":    40,
+                    "page":        page,
                 },
                 timeout=REQUEST_TIMEOUT,
             )
@@ -185,6 +188,8 @@ class PexelsFetcher:
         # Relevance scoring via Claude (optional)
         if self.anthropic_api_key:
             candidates = self._score_relevance(candidates, query)
+
+        random.shuffle(candidates)  # randomize among equally-qualified clips
 
         # Download
         paths: list[str] = []
@@ -325,9 +330,8 @@ class PexelsFetcher:
             )
             raw = response.content[0].text.strip()
             if raw.startswith("```"):
-                raw = raw.split("```")[1]
-                if raw.startswith("json"):
-                    raw = raw[4:]
+                lines = raw.split("\n")
+                raw = "\n".join(lines[1:-1]) if lines[-1].strip() == "```" else "\n".join(lines[1:])
             raw = raw.strip()
             scores_data = json.loads(raw)
             score_map = {str(item["clip_id"]): item["score"] for item in scores_data}

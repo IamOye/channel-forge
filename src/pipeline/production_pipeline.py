@@ -910,9 +910,9 @@ class ProductionPipeline:
         keyword: str,
         script_dict: dict,
     ) -> list[str]:
-        """Generate 12 specific Pixabay search queries for b-roll scenes via Claude Haiku.
+        """Generate 6 specific Pixabay search queries for b-roll scenes via Claude Haiku.
 
-        Each query is 2-4 words describing a specific visual scene to search for.
+        One query per visual category to enforce visual diversity across the video.
         Falls back to contrast-map phrases if the API call fails.
 
         Args:
@@ -920,7 +920,7 @@ class ProductionPipeline:
             script_dict: Script parts dict for context.
 
         Returns:
-            List of 12 search query strings.
+            List of 6 search query strings, one per visual category.
         """
         import json as _json
 
@@ -932,27 +932,25 @@ class ProductionPipeline:
         ]))
 
         prompt = (
-            f"Generate 12 Pixabay search queries for b-roll clips "
+            f"Generate exactly 6 Pixabay search queries for b-roll clips "
             f"for a YouTube Shorts video about: {keyword}\n\n"
-            "Query mix rules:\n"
-            "- 7 queries: cinematic aerial/drone footage\n"
-            "  Examples: 'aerial city skyline drone', 'drone highway cars moving', "
-            "'aerial green forest landscape', 'luxury neighbourhood aerial view', "
-            "'city buildings aerial night', 'highway traffic aerial', "
-            "'aerial coastline beach drone', 'skyscrapers aerial drone view'\n\n"
-            "- 3 queries: topic-relevant human/office footage\n"
-            "  Only include people when the script topic directly references "
-            "workers, bosses, jobs, offices, salaries. If the topic is purely "
-            "about money/investing/savings, use more aerial queries.\n"
-            "  Examples: 'office worker stress desk', "
-            "'business meeting professional', 'person counting money hands'\n\n"
-            "- 2 queries: financial/money imagery\n"
-            "  Examples: 'money cash close up', 'financial chart graph', "
-            "'bank building exterior', 'investment growth chart'\n\n"
-            "Return as JSON array of 12 strings.\n"
+            "Generate exactly one query per visual category — do NOT generate "
+            "two queries from the same category:\n\n"
+            "1. Aerial/drone shot — city skyline, highway, coastline, or landscape\n"
+            "   Example: 'aerial city skyline drone'\n\n"
+            "2. Human subject — person in context related to the topic\n"
+            "   Example: 'person counting money hands' or 'office worker desk'\n\n"
+            "3. Financial/economic visual — money, charts, bank, or business setting\n"
+            "   Example: 'money cash close up' or 'financial chart graph'\n\n"
+            "4. Environmental/nature — contrasting or metaphorical backdrop\n"
+            "   Example: 'green forest aerial' or 'ocean waves coastline'\n\n"
+            "5. Urban detail — street level, architecture, or texture\n"
+            "   Example: 'city street traffic night' or 'glass building facade'\n\n"
+            "6. Abstract/conceptual — pattern, motion, light, or shadow\n"
+            "   Example: 'light bokeh blur abstract' or 'motion blur traffic'\n\n"
+            "Return as JSON array of exactly 6 strings.\n"
             "Each query: 2-4 words, specific, visual.\n"
-            "No abstract concepts. No metaphors.\n"
-            "Think: what would a drone cinematographer film?\n\n"
+            "No duplicate categories.\n\n"
             f"Script context: {script_text[:300]}\n\n"
             "Return ONLY valid JSON array, no other text."
         )
@@ -972,7 +970,7 @@ class ProductionPipeline:
                     raw = raw[4:]
             queries = _json.loads(raw.strip())
             if isinstance(queries, list) and len(queries) >= 6:
-                result = [str(q).strip() for q in queries[:12] if str(q).strip()]
+                result = [str(q).strip() for q in queries[:6] if str(q).strip()]
                 logger.info("[broll] Claude scene queries (%d): %s", len(result), result)
                 return result
         except Exception as exc:
@@ -981,7 +979,7 @@ class ProductionPipeline:
         # Fallback: use contrast map phrases + generic queries
         fallback = self._extract_broll_phrases(keyword, script_dict, count=4)
         fallback.extend(BROLL_FALLBACK_QUERIES)
-        return fallback[:12]
+        return fallback[:6]
 
     def _run_metadata(self, keyword: str, script: str, category: str = "", video_number: int = 0):
         from src.content.metadata_generator import MetadataGenerator

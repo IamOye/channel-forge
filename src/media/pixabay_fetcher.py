@@ -409,6 +409,7 @@ class PixabayFetcher:
         # 2. Relevance scoring — only if topic + Anthropic key are available
         if topic and all_candidates and self.anthropic_api_key:
             all_candidates = self.score_clip_relevance(all_candidates, topic, script_preview)
+            random.shuffle(all_candidates)  # randomize among equally-scored clips
             if len(all_candidates) < _MIN_CLIPS_AFTER_SCORING:
                 extra_query = f"human financial person {topic}"
                 logger.info(
@@ -648,6 +649,7 @@ class PixabayFetcher:
             "per_page":    20,
             "safesearch":  "true",
             "order":       "popular",
+            "page":        random.randint(1, 4),
         }
         try:
             resp = httpx.get(_PIXABAY_PHOTO_API_URL, params=params, timeout=REQUEST_TIMEOUT)
@@ -657,6 +659,7 @@ class PixabayFetcher:
             logger.error("[pixabay] Photo API call failed for query=%r: %s", phrase, exc)
             return []
 
+        random.shuffle(hits)  # randomize selection among qualifying photos
         results: list[dict] = []
         for hit in hits:
             if len(results) >= count:
@@ -761,6 +764,7 @@ class PixabayFetcher:
             "per_page":    50,
             "safesearch":  "true",
             "order":       "popular",
+            "page":        random.randint(1, 4),
         }
         try:
             resp = httpx.get(_PIXABAY_PHOTO_API_URL, params=params, timeout=REQUEST_TIMEOUT)
@@ -848,6 +852,7 @@ class PixabayFetcher:
             "per_page":    50,
             "min_width":   MIN_VIDEO_WIDTH,
             "order":       "popular",
+            "page":        random.randint(1, 4),
         }
         if is_aerial:
             params["category"] = "travel"
