@@ -83,19 +83,25 @@ CAPTION_Y_RATIO = 0.77
 # Minimum acceptable font size (quality gate threshold)
 MIN_CAPTION_FONT_SIZE = 40
 
-# Scalable font candidates — ALL must be truetype (never bitmap/default).
-# Ordered by preference: Railway Linux first, then Windows dev, then bundled.
+# Bundled font — committed to repo, guaranteed available on all environments
+_BUNDLED_FONT_PATHS: list[str] = [
+    os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                 '..', '..', 'assets', 'fonts', 'Roboto-Bold.ttf'),
+    os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                 '..', '..', 'assets', 'fonts', 'DejaVuSans-Bold.ttf'),
+    os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                 '..', '..', 'assets', 'fonts', 'LiberationSans-Bold.ttf'),
+]
+
+# System font candidates — fallback if bundled font is missing
 WORD_FONT_SEARCH_PATHS: list[str] = [
     # Railway Linux (fonts-dejavu-core / fonts-liberation)
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
     "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
     "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
     "/usr/share/fonts/truetype/ubuntu/Ubuntu-B.ttf",
-    # Linux msttcorefonts (if installed)
-    "/usr/share/fonts/truetype/msttcorefonts/Impact.ttf",
-    "/usr/share/fonts/truetype/msttcorefonts/impact.ttf",
-    # Downloaded/bundled path
-    "/app/fonts/Impact.ttf",
+    # Downloaded/cached path
+    "/app/fonts/DejaVuSans-Bold.ttf",
     # Windows dev paths
     "C:/Windows/Fonts/impact.ttf",
     "C:/Windows/Fonts/ariblk.ttf",
@@ -213,7 +219,18 @@ def _load_word_font(size: int | None = None, canvas_w: int = 1080):
     except ImportError:
         return None
 
-    # 1. Try each system font path (all are truetype — no None sentinel)
+    # 0. Try bundled font first (committed to repo — guaranteed available)
+    for path in _BUNDLED_FONT_PATHS:
+        abspath = os.path.abspath(path)
+        if os.path.exists(abspath) and os.path.getsize(abspath) > 10000:
+            try:
+                font = ImageFont.truetype(abspath, size)
+                logger.info("[caption] Using bundled font: %s at %dpx", abspath, size)
+                return font
+            except (IOError, OSError):
+                continue
+
+    # 1. Try each system font path (all are truetype)
     for path in WORD_FONT_SEARCH_PATHS:
         if os.path.exists(path):
             try:
