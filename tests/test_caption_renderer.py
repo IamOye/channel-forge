@@ -222,13 +222,13 @@ class TestRender:
 # ---------------------------------------------------------------------------
 
 class TestGroupWords:
-    def test_groups_into_lines_of_3(self) -> None:
-        words = [{"text": str(i), "start_time": float(i), "end_time": float(i)+0.5} for i in range(7)]
+    def test_groups_into_lines_of_4(self) -> None:
+        words = [{"text": str(i), "start_time": float(i), "end_time": float(i)+0.5} for i in range(9)]
         grouped = _group_words(words)
         assert grouped[0]["line_idx"] == 0
-        assert grouped[2]["line_idx"] == 0
-        assert grouped[3]["line_idx"] == 1
-        assert grouped[6]["line_idx"] == 2
+        assert grouped[3]["line_idx"] == 0   # 4th word still on line 0
+        assert grouped[4]["line_idx"] == 1   # 5th word starts line 1
+        assert grouped[8]["line_idx"] == 2   # 9th word is on line 2
 
     def test_word_idx_matches_input_order(self) -> None:
         words = [{"text": "a", "start_time": 0.0, "end_time": 0.5},
@@ -245,6 +245,7 @@ class TestVisibleAt:
             {"text": "world", "start_time": 0.5, "end_time": 1.0},
             {"text": "foo",   "start_time": 1.0, "end_time": 1.5},
             {"text": "bar",   "start_time": 1.5, "end_time": 2.0},
+            {"text": "baz",   "start_time": 2.0, "end_time": 2.5},  # word_idx=4 → line 1
         ]
         return _group_words(words)
 
@@ -269,11 +270,11 @@ class TestVisibleAt:
 
     def test_new_group_clears_previous(self) -> None:
         grouped = self._make_grouped()
-        # "bar" (word_idx=3, line_idx=1) starts at t=1.5 — only "bar" visible in line 1
-        idx, visible = _visible_at(1.5, grouped)
-        assert idx == 3
+        # "baz" (word_idx=4, line_idx=1) starts at t=2.0 — only "baz" visible in line 1
+        idx, visible = _visible_at(2.0, grouped)
+        assert idx == 4
         assert len(visible) == 1
-        assert visible[0]["text"] == "bar"
+        assert visible[0]["text"] == "baz"
 
 
 class TestRenderWordByWord:
@@ -378,9 +379,9 @@ class TestCaptionStyle:
         # At 1080px should be larger
         assert _word_stroke_width(1080) >= _word_stroke_width(360)
 
-    def test_highlight_color_is_gold(self) -> None:
-        """Highlight text colour must be #FFD700 (gold), not a background."""
-        assert HIGHLIGHT_TEXT_COLOR == (255, 215, 0)
+    def test_highlight_color_is_bright_yellow(self) -> None:
+        """Highlight text colour must be brighter yellow (255, 230, 0), not a background."""
+        assert HIGHLIGHT_TEXT_COLOR == (255, 230, 0)
 
     def test_text_color_is_white(self) -> None:
         """Non-highlighted word text colour must be white."""

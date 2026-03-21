@@ -119,11 +119,11 @@ _FONT_DOWNLOAD_URLS = [
 ]
 _FONT_CACHE_PATH = "/app/fonts/DejaVuSans-Bold.ttf"
 
-HIGHLIGHT_TEXT_COLOR = (255, 215, 0)    # Gold #FFD700 — highlighted word text colour only
+HIGHLIGHT_TEXT_COLOR = (255, 230, 0)    # Brighter yellow — highlighted word text colour only
 WORD_TEXT_COLOR      = (255, 255, 255)  # White — non-highlighted word text colour
 WORD_STROKE_COLOR    = (0, 0, 0)        # Black outline on ALL text
 WORD_GAP             = 14               # px gap between words
-WORD_MAX_PER_LINE    = 3
+WORD_MAX_PER_LINE    = 4
 WORD_CAPTION_Y_RATIO = 0.77            # 77% from top of frame, centred
 WORD_ENTRANCE_DRIFT  = 4               # px upward drift on word entrance
 WORD_ENTRANCE_DUR    = 0.08            # seconds for entrance animation
@@ -333,12 +333,13 @@ def _render_word_frame(
     canvas_w: int,
     canvas_h: int,
     font,
+    font_large=None,
 ) -> "Image.Image":
     """Render a single word-caption frame as an RGBA PIL Image.
 
     ALL CAPS text with black stroke outline — no background pill or badge.
-    Current word: gold #FFD700 text colour.
-    Previous words: white text colour.
+    Current word: brighter yellow at font_large size (kinetic pop via size jump).
+    Previous words: white text at base font size.
     """
     from PIL import Image, ImageDraw
 
@@ -347,31 +348,31 @@ def _render_word_frame(
     if not visible:
         return img
 
+    # Fall back to base font when font_large not supplied
+    _font_large = font_large if font_large is not None else font
+
     draw = ImageDraw.Draw(img)
     font_size = _word_font_size(canvas_w)
     stroke_w = _word_stroke_width(canvas_w)
 
-    # Measure each visible word (ALL CAPS)
+    # Measure each visible word (ALL CAPS) using the font that will draw it
     entries: list[dict] = []
     for w in visible:
         text = w["text"].upper()
+        is_cur = (w["word_idx"] == current_idx)
+        fnt = _font_large if is_cur else font
         try:
-            bb = font.getbbox(text)
+            bb = fnt.getbbox(text)
             tw, th = bb[2] - bb[0], bb[3] - bb[1]
         except Exception:
             tw, th = 60, font_size
 
-        is_cur = (w["word_idx"] == current_idx)
-        elapsed = t - w["start_time"]
-        progress = min(1.0, elapsed / WORD_ENTRANCE_DUR) if is_cur else 1.0
-        y_drift = -int(WORD_ENTRANCE_DRIFT * (1.0 - progress))
-
         entries.append({
-            "text":    text,
-            "tw":      tw,
-            "th":      th,
-            "y_drift": y_drift,
-            "is_cur":  is_cur,
+            "text":   text,
+            "tw":     tw,
+            "th":     th,
+            "is_cur": is_cur,
+            "font":   fnt,
         })
 
     total_w = sum(e["tw"] for e in entries) + WORD_GAP * (len(entries) - 1)
@@ -383,16 +384,16 @@ def _render_word_frame(
 
     # Draw text with stroke — NO background pill/badge of any kind
     for e in entries:
-        y_top = y_mid - max_th // 2 + e["y_drift"]
+        y_top = y_mid - max_th // 2
 
         if e["is_cur"]:
-            fill = (*HIGHLIGHT_TEXT_COLOR, 255)   # Gold #FFD700
+            fill = (*HIGHLIGHT_TEXT_COLOR, 255)   # Brighter yellow
         else:
             fill = (*WORD_TEXT_COLOR, 255)         # White
 
         # Text with black stroke outline (scaled to canvas)
         draw.text(
-            (x, y_top), e["text"], font=font, fill=fill,
+            (x, y_top), e["text"], font=e["font"], fill=fill,
             stroke_width=stroke_w,
             stroke_fill=(*WORD_STROKE_COLOR, 255),
         )
@@ -587,6 +588,8 @@ class CaptionRenderer:
         grouped = _group_words(word_timestamps)
         font_size = _word_font_size(self.canvas_width)
         font = _load_word_font(size=font_size, canvas_w=self.canvas_width)
+        font_large = _load_word_font(size=int(font_size * 1.28), canvas_w=self.canvas_width)
+        logger.info("[caption] Two-tier sizing: base=%dpx large=%dpx", font_size, int(font_size * 1.28))
         W, H = self.canvas_width, self.canvas_height
 
         # Pre-render one stable frame per word state
@@ -594,8 +597,8 @@ class CaptionRenderer:
         start_times: list[float] = []
 
         for word in grouped:
-            t_stable = word["start_time"] + WORD_ENTRANCE_DUR + 0.001
-            img = _render_word_frame(t_stable, grouped, W, H, font)
+            t_stable = word["start_time"] + 0.001  # No entrance animation — size jump IS the pop
+            img = _render_word_frame(t_stable, grouped, W, H, font, font_large)
             arr = np.array(img)
             rgb   = arr[:, :, :3].astype(np.uint8)
             alpha = (arr[:, :, 3] / 255.0).astype(np.float64)

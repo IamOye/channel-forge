@@ -486,7 +486,8 @@ class VideoBuilder:
             # Caption overlay from Python stdin pipe (input index n)
             caption_idx = n
             audio_idx = n + 1
-            filter_parts.append(f"[bg_dark][{caption_idx}:v]overlay[final]")
+            filter_parts.append(f"[bg_dark][{caption_idx}:v]overlay[captioned]")
+            filter_parts.append("[captioned]vignette=PI/5.5[final]")
 
             filter_complex = ";".join(filter_parts)
             logger.debug("ffmpeg filter_complex:\n%s", filter_complex)
