@@ -19,3 +19,12 @@ CLAUDE.local.md
 
 # Stray shell output files
 channel-forge
+
+key.json
+key_b64.txt
+
+key.json
+key_b64.txt
+
+.env
+data/analytics/
