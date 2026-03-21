@@ -241,26 +241,64 @@ class TopicQueue:
     ) -> list[dict[str, Any]]:
         """Fetch QUEUED manual topics from the manual_topics table.
 
+        First tries category-matched topics, then any QUEUED topic regardless
+        of category (manual topics are user-curated and should not be blocked
+        by category mismatch).
+
         Returns up to ``max_count`` topics ordered by SEQ ascending.
         Each consumed topic is immediately marked USED in the DB.
         """
         if not self.db_path.exists():
+            logger.info("[topic_queue] manual_topics: DB does not exist at %s", self.db_path)
             return []
 
         results: list[dict[str, Any]] = []
         try:
             conn = sqlite3.connect(self.db_path)
             try:
+                # First: try category match (case-insensitive)
                 rows = conn.execute(
                     """
                     SELECT seq, title, category, hook_angle
                     FROM manual_topics
-                    WHERE status = 'QUEUED' AND category = ?
+                    WHERE status = 'QUEUED' AND LOWER(category) = LOWER(?)
                     ORDER BY seq ASC
                     LIMIT ?
                     """,
                     (category, max_count),
                 ).fetchall()
+
+                logger.info(
+                    "[topic_queue] manual_topics query (category=%s): %d rows found",
+                    category, len(rows),
+                )
+
+                # If no category match, try ANY queued topic
+                if not rows:
+                    rows = conn.execute(
+                        """
+                        SELECT seq, title, category, hook_angle
+                        FROM manual_topics
+                        WHERE status = 'QUEUED'
+                        ORDER BY seq ASC
+                        LIMIT ?
+                        """,
+                        (max_count,),
+                    ).fetchall()
+                    if rows:
+                        logger.info(
+                            "[topic_queue] manual_topics: no '%s' match, "
+                            "using %d cross-category QUEUED topic(s)",
+                            category, len(rows),
+                        )
+
+                # Log total queued count for visibility
+                total_queued = conn.execute(
+                    "SELECT COUNT(*) FROM manual_topics WHERE status = 'QUEUED'"
+                ).fetchone()[0]
+                logger.info(
+                    "[topic_queue] manual_topics total QUEUED: %d", total_queued,
+                )
 
                 for seq, title, cat, hook in rows:
                     conn.execute(
@@ -278,12 +316,15 @@ class TopicQueue:
                         "manual_seq":     seq,
                         "hook_angle":     hook or "",
                     })
-                    logger.info("[topic_queue] MANUAL SEQ %d: %s", seq, title)
+                    logger.info("[topic_queue] MANUAL SEQ %d: %s (cat=%s)", seq, title, cat)
 
                 if results:
                     conn.commit()
-            except sqlite3.OperationalError:
-                pass  # table doesn't exist yet
+            except sqlite3.OperationalError as op_exc:
+                logger.info(
+                    "[topic_queue] manual_topics table not found (will use AI queue): %s",
+                    op_exc,
+                )
             finally:
                 conn.close()
         except Exception as exc:
