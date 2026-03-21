@@ -233,7 +233,7 @@ class TestRunAll:
         ]
 
         call_count = {"n": 0}
-        def run_channel_side_effect(cfg):
+        def run_channel_side_effect(cfg, force=False):
             call_count["n"] += 1
             if cfg.channel_key == "ch2":
                 return ChannelRunResult(

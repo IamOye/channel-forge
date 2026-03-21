@@ -185,13 +185,17 @@ class MultiChannelOrchestrator:
     # Public API
     # ------------------------------------------------------------------
 
-    def run_all(self) -> list[ChannelRunResult]:
+    def run_all(self, force: bool = False) -> list[ChannelRunResult]:
         """
         Run the pipeline for every channel in config.channels.CHANNELS.
 
         A SQLite mutex (production_lock table in channel_forge.db) prevents
         two scheduler triggers from running simultaneously.  If the lock is
         already held the call returns immediately with an empty list.
+
+        Args:
+            force: If True, bypass the 30-minute production window check
+                   on each channel. Used by /produce Telegram command.
 
         Returns:
             List of ChannelRunResult, one per channel. Never raises —
@@ -216,7 +220,7 @@ class MultiChannelOrchestrator:
             logger.info("Running pipeline for %d channel(s)", len(channels))
             results: list[ChannelRunResult] = []
             for channel_cfg in channels:
-                result = self.run_channel(channel_cfg)
+                result = self.run_channel(channel_cfg, force=force)
                 results.append(result)
                 logger.info(
                     "Channel '%s' done: succeeded=%d failed=%d",
@@ -228,12 +232,13 @@ class MultiChannelOrchestrator:
         finally:
             _release_lock(lock_db)
 
-    def run_channel(self, channel_cfg) -> ChannelRunResult:
+    def run_channel(self, channel_cfg, force: bool = False) -> ChannelRunResult:
         """
         Run the production pipeline for a single channel configuration.
 
         Args:
             channel_cfg: A ChannelConfig from config.channels.
+            force: If True, bypass the 30-minute production window check.
 
         Returns:
             ChannelRunResult. Never raises — exceptions are caught and stored
@@ -253,17 +258,20 @@ class MultiChannelOrchestrator:
         result = ChannelRunResult(channel_key=channel_key, channel_name=channel_name)
 
         # Production lock: skip if a run completed in the last 30 minutes
-        should_skip, minutes_since, next_window = self._check_production_lock(
-            channel_key, db_path
-        )
-        if should_skip:
-            logger.info(
-                "[orchestrator] Skipping %s — production ran %d minutes ago. "
-                "Next window: %s",
-                channel_key, minutes_since, next_window,
+        if force:
+            logger.info("[orchestrator] Force mode — bypassing 30-minute window check")
+        else:
+            should_skip, minutes_since, next_window = self._check_production_lock(
+                channel_key, db_path
             )
-            result.error = f"Skipped: production ran {minutes_since} minutes ago"
-            return result
+            if should_skip:
+                logger.info(
+                    "[orchestrator] Skipping %s — production ran %d minutes ago. "
+                    "Next window: %s",
+                    channel_key, minutes_since, next_window,
+                )
+                result.error = f"Skipped: production ran {minutes_since} minutes ago"
+                return result
 
         try:
             self._setup_channel_output(output_dir)

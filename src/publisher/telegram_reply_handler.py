@@ -629,13 +629,14 @@ class TelegramReplyHandler:
             return f"❌ Sync failed: {exc}"
 
     def handle_produce(self) -> str:
-        """Handle /produce — manually trigger production run in background."""
+        """Handle /produce — manually trigger production run in background (force mode)."""
         import threading
 
         def _run() -> None:
             try:
-                from src.scheduler import run_all_channel_production
-                run_all_channel_production()
+                from src.pipeline.multi_channel_orchestrator import MultiChannelOrchestrator
+                orchestrator = MultiChannelOrchestrator()
+                orchestrator.run_all(force=True)
             except Exception as exc:
                 logger.error("[telegram] /produce failed: %s", exc)
                 try:
