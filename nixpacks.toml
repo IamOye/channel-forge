@@ -1,5 +1,5 @@
 [phases.setup]
-nixPkgs = ["ffmpeg", "python311", "dejavu_fonts_ttf"]
+nixPkgs = ["ffmpeg", "python311"]
 
 [phases.install]
 cmds = [
