@@ -173,36 +173,36 @@ class TelegramReplyHandler:
     # ------------------------------------------------------------------
 
     def _send(self, text: str) -> bool:
-    """Send an HTML message to the configured Telegram chat (sync)."""
-    if not self.token or not self.chat_id:
-        return False
-    try:
-        import httpx
-        import time
+        """Send an HTML message to the configured Telegram chat (sync)."""
+        if not self.token or not self.chat_id:
+            return False
+        try:
+            import httpx
+            import time
 
-        url = f"{_API_BASE.format(token=self.token)}/sendMessage"
-        for attempt in range(2):
-            resp = httpx.post(
-                url,
-                json={
-                    "chat_id": self.chat_id,
-                    "text": text,
-                    "parse_mode": "HTML",
-                },
-                timeout=10.0,
-            )
-            if resp.status_code == 429:
-                retry_after = resp.json().get("parameters", {}).get("retry_after", 5)
-                logger.warning("Telegram 429 — sleeping %ss before retry", retry_after)
-                time.sleep(retry_after)
-                continue
-            resp.raise_for_status()
-            return True
-        logger.warning("Telegram send failed after 429 retry")
-        return False
-    except Exception as exc:
-        logger.warning("Telegram send failed: %s", exc)
-        return False
+            url = f"{_API_BASE.format(token=self.token)}/sendMessage"
+            for attempt in range(2):
+                resp = httpx.post(
+                    url,
+                    json={
+                        "chat_id": self.chat_id,
+                        "text": text,
+                        "parse_mode": "HTML",
+                    },
+                    timeout=10.0,
+                )
+                if resp.status_code == 429:
+                    retry_after = resp.json().get("parameters", {}).get("retry_after", 5)
+                    logger.warning("Telegram 429 — sleeping %ss before retry", retry_after)
+                    time.sleep(retry_after)
+                    continue
+                resp.raise_for_status()
+                return True
+            logger.warning("Telegram send failed after 429 retry")
+            return False
+        except Exception as exc:
+            logger.warning("Telegram send failed: %s", exc)
+            return False
 
     # ------------------------------------------------------------------
     # YouTube reply posting

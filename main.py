@@ -130,23 +130,38 @@ def _check_ffmpeg() -> None:
 
 
 def _start_telegram_listener() -> None:
-    """Launch the Telegram reply handler in a background daemon thread."""
+    """Launch the Telegram reply handler in a background daemon thread.
+
+    Automatically restarts the poll loop if it crashes or exits for any
+    reason (network blip, unhandled exception, etc.). Backs off 10 s
+    between restarts to avoid a tight crash loop.
+    """
     import asyncio
     import threading
+    import time
 
     def _run_listener() -> None:
-        try:
-            from src.publisher.telegram_reply_handler import TelegramReplyHandler
-            handler = TelegramReplyHandler()
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(handler.poll())
-        except Exception as exc:
-            logger.error("Telegram listener crashed: %s", exc)
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                from src.publisher.telegram_reply_handler import TelegramReplyHandler
+                handler = TelegramReplyHandler()
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                logger.info("Telegram reply listener starting (attempt %d)…", attempt)
+                loop.run_until_complete(handler.poll())
+                logger.warning("Telegram poll() exited cleanly — restarting in 10 s")
+            except Exception as exc:
+                logger.error(
+                    "Telegram listener crashed (attempt %d): %s — restarting in 10 s",
+                    attempt, exc,
+                )
+            time.sleep(10)
 
     thread = threading.Thread(target=_run_listener, daemon=True)
     thread.start()
-    logger.info("Telegram reply listener started (daemon thread)")
+    logger.info("Telegram reply listener started (daemon thread, auto-restart enabled)")
 
 
 def cmd_run() -> int:
