@@ -669,6 +669,25 @@ class TelegramReplyHandler:
         finally:
             conn.close()
 
+    def handle_queue(self) -> str:
+        """Handle /queue — show how many videos are pending upload."""
+        try:
+            conn = self._get_conn()
+            try:
+                rows = conn.execute(
+                    "SELECT topic_id, created_at FROM pending_uploads ORDER BY created_at ASC"
+                ).fetchall()
+            finally:
+                conn.close()
+            if not rows:
+                return "📭 No videos queued for upload. Next scheduled upload at 08:00 WAT."
+            lines = [f"📬 <b>{len(rows)} video(s) queued for upload at 08:00 WAT:</b>\n"]
+            for i, (tid, created) in enumerate(rows, 1):
+                lines.append(f"{i}. <code>{tid}</code> (queued: {created})")
+            return "\n".join(lines)
+        except Exception as exc:
+            return f"❌ Queue check failed: {exc}"
+
     # ------------------------------------------------------------------
     # Research commands
     # ------------------------------------------------------------------
@@ -987,6 +1006,10 @@ class TelegramReplyHandler:
         if text == "/weeklystatus":
             return self.handle_weeklystatus()
 
+        # /status (alias for /weeklystatus)
+        if text == "/status":
+            return self.handle_weeklystatus()
+
         # /skiptopic [seq]
         m = re.match(r"^/skiptopic\s+(\S+)$", text)
         if m:
@@ -1008,6 +1031,10 @@ class TelegramReplyHandler:
         # /clearpending
         if text == "/clearpending":
             return self.handle_clearpending()
+
+        # /queue
+        if text == "/queue":
+            return self.handle_queue()
 
         # Research commands
         m = re.match(r"^/research(?:\s+(.*))?$", text)
