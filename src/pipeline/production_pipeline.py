@@ -630,12 +630,12 @@ class ProductionPipeline:
                     ken_burns_paths.append(str(kb_path))
 
         # ── Illustration clips with Ken Burns (charts, infographics) ────────────
+        import random as _random
+        from src.media.pixabay_fetcher import ILLUSTRATION_QUERIES
+
         n_illust = max(1, n_photo // 2)  # ~30% of non-video slots
-        illust_phrases = [
-            f"financial chart graph {keyword}",
-            "money currency investment infographic",
-            "business concept success illustration",
-        ]
+        cat_queries = ILLUSTRATION_QUERIES.get(category, ILLUSTRATION_QUERIES["money"])
+        illust_phrases = _random.sample(cat_queries, min(n_illust, len(cat_queries)))
         for i, phrase in enumerate(illust_phrases[:n_illust]):
             try:
                 illusts = fetcher.fetch_illustrations(

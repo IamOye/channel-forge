@@ -82,6 +82,34 @@ FALLBACK_QUERIES: list[str] = [
 # Max seconds a single clip should contribute to the output video
 MAX_CLIP_OUTPUT_SECONDS = 12
 
+# Illustration queries by category — rotated for variety across videos
+ILLUSTRATION_QUERIES: dict[str, list[str]] = {
+    "money": [
+        "money growth chart infographic",
+        "financial freedom wealth illustration",
+        "investment returns graph colorful",
+        "savings piggy bank infographic",
+        "debt vs wealth comparison chart",
+        "rich poor wealth gap infographic",
+    ],
+    "career": [
+        "career growth ladder illustration",
+        "salary negotiation infographic",
+        "job market skills chart",
+        "workplace productivity infographic",
+        "career path roadmap illustration",
+        "remote work future infographic",
+    ],
+    "success": [
+        "success mindset infographic",
+        "habits of successful people chart",
+        "goal setting roadmap illustration",
+        "morning routine infographic",
+        "discipline vs motivation chart",
+        "wealth mindset vs poverty mindset",
+    ],
+}
+
 _PIXABAY_PHOTO_API_URL = "https://pixabay.com/api/"
 MAX_PHOTO_PORTRAIT_RATIO = 0.65  # width/height must be below this for portrait photos
 
@@ -350,6 +378,11 @@ class PixabayFetcher:
             prompt = (
                 "Score each Pixabay clip for use in a YouTube Shorts finance video.\n"
                 f"Topic: {topic}\n\n"
+                "IMPORTANT: Aerial drone footage of cities, highways, coastlines, forests, "
+                "neighbourhoods and skylines always scores 8-10 regardless of the specific "
+                "financial topic — these are pre-approved visual metaphors for wealth, "
+                "ambition and scale. Only score below 6 for: food, animals, cartoons, "
+                "abstract art, or clearly unrelated content.\n\n"
                 "Scoring guide:\n"
                 "8-10: Cinematic aerial/drone footage of cities, highways, luxury areas, "
                 "coastlines, landscapes. Any high quality aerial shot.\n"

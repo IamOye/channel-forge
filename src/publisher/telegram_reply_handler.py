@@ -628,6 +628,24 @@ class TelegramReplyHandler:
         except Exception as exc:
             return f"❌ Sync failed: {exc}"
 
+    def handle_produce(self) -> str:
+        """Handle /produce — manually trigger production run in background."""
+        import threading
+
+        def _run() -> None:
+            try:
+                from src.scheduler import run_all_channel_production
+                run_all_channel_production()
+            except Exception as exc:
+                logger.error("[telegram] /produce failed: %s", exc)
+                try:
+                    self._send(f"❌ Production failed: {exc}")
+                except Exception:
+                    pass
+
+        threading.Thread(target=_run, daemon=True).start()
+        return "🎬 Manual production starting... I'll notify you when complete."
+
     # ------------------------------------------------------------------
     # Research commands
     # ------------------------------------------------------------------
@@ -959,6 +977,10 @@ class TelegramReplyHandler:
         # /synctopics
         if text == "/synctopics":
             return self.handle_synctopics()
+
+        # /produce
+        if text == "/produce":
+            return self.handle_produce()
 
         # Research commands
         m = re.match(r"^/research(?:\s+(.*))?$", text)
