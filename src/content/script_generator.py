@@ -8,7 +8,7 @@ following the Palki Sharma 7-part narrative formula packed into:
   Twist      — Escalation + reframe (Parts 4–5)
   Question   — Direct question to viewer + CTA (Parts 6–7)
 
-Target: 95–105 words for natural 45–50 second delivery.
+Target: 80–100 words for natural 45–50 second delivery.
 Script must contain at least one question mark.
 
 Usage:
@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 _MODEL = "claude-sonnet-4-5"
 
 _SYSTEM_PROMPT = """You are a YouTube Shorts scriptwriter in the style of Palki Sharma.
-You write punchy, conversational 50-55 second scripts for faceless finance channels.
+You write punchy, conversational 45-50 second scripts for faceless finance channels.
 No fluff, no filler. Every sentence earns its place.
 
 TARGET AUDIENCE: United States (primary), United Kingdom, Canada, Australia (secondary).
@@ -68,28 +68,29 @@ GOOD: "In America, 78 percent of full-time workers live paycheck to paycheck.
 Given a topic, an opening hook, and an exact CTA line, write a 4-part script that
 follows this 7-beat narrative arc:
 
-PART 1 — hook (12–17 words)
+PART 1 — hook (10–15 words)
 Drop the viewer into tension immediately. State the uncomfortable truth bluntly.
 Use the provided hook verbatim.
 
-PART 2 — statement (28–38 words)
+PART 2 — statement (25–33 words)
 Pack in beats 2 and 3:
   Beat 2: A specific, relatable micro-scenario the viewer can picture themselves in.
            Not a statistic — a situation. (2 sentences)
   Beat 3: One sharp, credible number or fact that validates the tension. No fluff. (1 sentence)
 
-PART 3 — twist (23–33 words)
+PART 3 — twist (20–28 words)
 Pack in beats 4 and 5:
   Beat 4: Deepen the problem. Show it is worse than the viewer realised. (1–2 sentences)
   Beat 5: The reframe — the insight moment that makes them feel they just learned something. (1 sentence)
 
-PART 4 — question (20–27 words)
+PART 4 — question (18–24 words)
 Pack in beats 6 and 7:
   Beat 6: One personal, direct question that pulls the viewer in. (1 sentence, ends with ?)
   Beat 7: The exact CTA text provided, word for word. Do NOT rephrase or improvise.
 
 WRITING RULES — follow these strictly:
-- Total word count across all 4 parts: 85–105 words. HARD MAXIMUM: 105 words total. Count carefully before responding.
+- Total word count across all 4 parts: 80–95 words. HARD MAXIMUM: 100 words total.
+- BEFORE responding, count every word in your script. If it exceeds 100, cut until it does not.
 - Never use em dashes (—) in the script body
 - Never use "it is worth noting", "in conclusion", "furthermore", "moreover"
 - Write as if talking to one specific person
@@ -114,15 +115,15 @@ Respond ONLY with a JSON object, no markdown:
 # Validation constants
 # ---------------------------------------------------------------------------
 
-MAX_WORDS = 106   # hard ceiling; scripts of ≥106 words fail (target 85–105)
-RETRY_WORD_LIMIT = 105  # trigger one brevity retry if word_count > this
+MAX_WORDS = 106   # hard ceiling; scripts of ≥106 words fail validation
+RETRY_WORD_LIMIT = 100  # trigger one brevity retry if word_count > this
 REQUIRED_PARTS = ("hook", "statement", "twist", "question")
 
 PART_WORD_LIMITS = {
-    "hook":      (12, 20),
-    "statement": (28, 38),
-    "twist":     (23, 33),
-    "question":  (20, 27),
+    "hook":      (10, 15),
+    "statement": (25, 33),
+    "twist":     (20, 28),
+    "question":  (18, 24),
 }
 
 
@@ -437,9 +438,9 @@ class ScriptGenerator:
         retry_prompt = (
             f"Topic: {topic}\n"
             f"Hook (use verbatim): {hook}\n"
-            f"Your script was too long at {word_count} words. "
-            f"Rewrite it in 95 words maximum. "
-            f"Keep the same 7-part structure but make every sentence shorter and punchier.\n"
+            f"Your previous script was {word_count} words — way over the 100-word hard max. "
+            f"Rewrite it in EXACTLY 85 words or fewer. Cut filler, shorten sentences, "
+            f"remove adjectives. Every word must earn its place.\n"
             f"\nWrite the 4-part script now."
         )
         try:
@@ -451,14 +452,21 @@ class ScriptGenerator:
             )
             raw2 = message.content[0].text.strip()
             parts2 = self._parse_parts(raw2)
-            if all(parts2.get(p, "").strip() for p in REQUIRED_PARTS):
+            has_content = all(parts2.get(p, "").strip() for p in REQUIRED_PARTS)
+            if has_content:
                 new_count = len(
                     " ".join(parts2.get(p, "") for p in REQUIRED_PARTS).split()
                 )
                 logger.info(
                     "Word count retry: %d → %d words", word_count, new_count
                 )
-                return parts2, raw2
+                # Only accept retry if it actually reduced below MAX_WORDS
+                if new_count < MAX_WORDS:
+                    return parts2, raw2
+                logger.warning(
+                    "Retry still over limit (%d words) — keeping original",
+                    new_count,
+                )
         except Exception as exc:
             logger.error("Word count retry API call failed: %s", exc)
         return parts, raw
