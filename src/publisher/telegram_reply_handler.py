@@ -646,6 +646,19 @@ class TelegramReplyHandler:
         threading.Thread(target=_run, daemon=True).start()
         return "🎬 Manual production starting... I'll notify you when complete."
 
+    def handle_clearpending(self) -> str:
+        """Handle /clearpending — clear all stale pending_uploads entries."""
+        conn = self._get_conn()
+        try:
+            count = conn.execute("SELECT COUNT(*) FROM pending_uploads").fetchone()[0]
+            conn.execute("DELETE FROM pending_uploads")
+            conn.commit()
+            return f"🗑 Cleared {count} pending uploads."
+        except Exception as exc:
+            return f"❌ Failed: {exc}"
+        finally:
+            conn.close()
+
     # ------------------------------------------------------------------
     # Research commands
     # ------------------------------------------------------------------
@@ -981,6 +994,10 @@ class TelegramReplyHandler:
         # /produce
         if text == "/produce":
             return self.handle_produce()
+
+        # /clearpending
+        if text == "/clearpending":
+            return self.handle_clearpending()
 
         # Research commands
         m = re.match(r"^/research(?:\s+(.*))?$", text)
