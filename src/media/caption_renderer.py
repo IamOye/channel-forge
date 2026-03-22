@@ -30,8 +30,9 @@ logger = logging.getLogger(__name__)
 CAPTION_TIMINGS: list[tuple[str, float, float]] = [
     ("hook",      0.0,   2.0),
     ("statement", 2.0,   6.0),
-    ("twist",     6.0,  10.0),
-    ("question",  10.0, 13.5),
+    ("twist",     6.0,   9.0),
+    ("landing",   9.0,  10.5),
+    ("question",  10.5,  13.5),
 ]
 
 CAPTION_FONT_CANDIDATES = ["Impact", "Arial-Black", "Arial-Bold", "Arial", None]

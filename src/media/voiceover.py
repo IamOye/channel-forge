@@ -457,6 +457,7 @@ class VoiceoverGenerator:
             script_dict.get("hook", ""),
             script_dict.get("statement", ""),
             script_dict.get("twist", ""),
+            script_dict.get("landing", ""),
             script_dict.get("question", ""),
         ]
         return " ".join(p.strip() for p in parts if p.strip())

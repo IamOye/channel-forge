@@ -387,6 +387,7 @@ class ProductionPipeline:
             "hook":      script_result.hook,
             "statement": script_result.statement,
             "twist":     script_result.twist,
+            "landing":   script_result.landing,
             "question":  script_result.question,
         }
 

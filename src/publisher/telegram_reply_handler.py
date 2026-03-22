@@ -726,7 +726,7 @@ class TelegramReplyHandler:
                 except sqlite3.OperationalError:
                     sections.append("📋 <b>Manual Queue:</b> table not found")
 
-                # 2. Manual topics counts by status
+                # 2. Manual topics counts by status + SEQ gap detection
                 try:
                     rows = conn.execute(
                         "SELECT status, COUNT(*) FROM manual_topics GROUP BY status "
@@ -736,6 +736,17 @@ class TelegramReplyHandler:
                     lines = [f"📊 <b>Manual Topics by Status ({total} total):</b>"]
                     for status, count in rows:
                         lines.append(f"  {status}: {count}")
+
+                    # SEQ gap detection
+                    max_row = conn.execute(
+                        "SELECT MAX(seq) FROM manual_topics"
+                    ).fetchone()
+                    max_seq = max_row[0] if max_row and max_row[0] else 0
+                    if max_seq > total:
+                        lines.append(
+                            f"  ⚠️ SEQ gaps: {total} rows in DB, MAX(seq)={max_seq}"
+                        )
+
                     sections.append("\n".join(lines))
                 except sqlite3.OperationalError:
                     pass
@@ -770,7 +781,7 @@ class TelegramReplyHandler:
                 # 5. ElevenLabs usage this month
                 try:
                     rows = conn.execute(
-                        "SELECT SUM(characters_used) FROM elevenlabs_usage "
+                        "SELECT SUM(chars_used) FROM elevenlabs_usage "
                         "WHERE strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now')"
                     ).fetchone()
                     chars = rows[0] or 0

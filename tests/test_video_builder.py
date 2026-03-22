@@ -29,6 +29,7 @@ SCRIPT = {
     "hook":      "Most people ignore this ancient secret.",
     "statement": "Stoics controlled their reactions daily.",
     "twist":     "Modern life rewired your brain away from that.",
+    "landing":   "That is not growth. That is avoidance.",
     "question":  "What if you chose discomfort on purpose today?",
 }
 

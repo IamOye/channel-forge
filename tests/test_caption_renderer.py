@@ -36,6 +36,7 @@ VALID_SCRIPT = {
     "hook":      "Most people ignore this ancient secret.",
     "statement": "Stoics knew you control your reactions.",
     "twist":     "But modern life trains you to react.",
+    "landing":   "That is not strength. That is habit.",
     "question":  "What would change if you chose differently today?",
 }
 
@@ -68,10 +69,10 @@ class TestCaptionClipSpec:
 # ---------------------------------------------------------------------------
 
 class TestBuildSpecs:
-    def test_returns_4_specs_for_full_script(self) -> None:
+    def test_returns_5_specs_for_full_script(self) -> None:
         renderer = CaptionRenderer()
         specs = renderer.build_specs(VALID_SCRIPT)
-        assert len(specs) == 4
+        assert len(specs) == 5
 
     def test_sections_in_correct_order(self) -> None:
         renderer = CaptionRenderer()
@@ -79,7 +80,8 @@ class TestBuildSpecs:
         assert specs[0].section == "hook"
         assert specs[1].section == "statement"
         assert specs[2].section == "twist"
-        assert specs[3].section == "question"
+        assert specs[3].section == "landing"
+        assert specs[4].section == "question"
 
     def test_timings_match_constants(self) -> None:
         renderer = CaptionRenderer()
@@ -92,7 +94,7 @@ class TestBuildSpecs:
         renderer = CaptionRenderer()
         specs = renderer.build_specs(VALID_SCRIPT)
         assert specs[0].text == VALID_SCRIPT["hook"]
-        assert specs[3].text == VALID_SCRIPT["question"]
+        assert specs[4].text == VALID_SCRIPT["question"]
 
     def test_y_position_uses_caption_y_ratio(self) -> None:
         renderer = CaptionRenderer(canvas_height=1920)
@@ -112,7 +114,7 @@ class TestBuildSpecs:
         script["statement"] = ""
         renderer = CaptionRenderer()
         specs = renderer.build_specs(script)
-        assert len(specs) == 3
+        assert len(specs) == 4
         assert all(s.section != "statement" for s in specs)
 
     def test_empty_script_returns_no_specs(self) -> None:
@@ -180,8 +182,8 @@ class TestRender:
             renderer = CaptionRenderer()
             clips = renderer.render(VALID_SCRIPT)
 
-        # 4 sections → 4 clips
-        assert len(clips) == 4
+        # 5 sections → 5 clips
+        assert len(clips) == 5
 
     def test_render_calls_build_specs(self) -> None:
         mock_clip = self._make_mock_clip()
@@ -204,7 +206,7 @@ class TestRender:
             renderer = CaptionRenderer()
             clips = renderer.render(script)
 
-        assert len(clips) == 3   # only 3 sections with text
+        assert len(clips) == 4   # 5 sections minus 1 empty = 4
 
     def test_render_returns_empty_list_for_empty_script(self) -> None:
         mock_clip = self._make_mock_clip()
@@ -329,7 +331,7 @@ class TestRenderWordByWord:
             renderer = CaptionRenderer()
             clips = renderer.render(VALID_SCRIPT)
 
-        assert len(clips) == 4
+        assert len(clips) == 5
 
 
 # ---------------------------------------------------------------------------

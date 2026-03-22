@@ -26,6 +26,7 @@ VALID_PARTS = {
     "hook":      "Most people ignore this ancient secret every single day.",
     "statement": "Stoics believed that controlling your reaction is the only real power you have.",
     "twist":     "But modern life has completely rewired your brain to avoid that discomfort entirely.",
+    "landing":   "That is not weakness. That is programming.",
     "question":  "So what would change if you chose discomfort on purpose today?",
 }
 
@@ -65,6 +66,7 @@ class TestScriptResult:
             hook=VALID_PARTS["hook"],
             statement=VALID_PARTS["statement"],
             twist=VALID_PARTS["twist"],
+            landing=VALID_PARTS["landing"],
             question=VALID_PARTS["question"],
             full_script=" ".join(VALID_PARTS.values()),
             word_count=50,
@@ -81,23 +83,25 @@ class TestScriptResult:
     def test_to_dict_has_all_keys(self) -> None:
         r = self._make_result()
         d = r.to_dict()
-        for key in ("topic", "hook", "statement", "twist", "question",
-                    "full_script", "word_count", "is_valid", "validation_errors"):
+        for key in ("topic", "hook", "statement", "twist", "landing",
+                    "question", "full_script", "word_count", "is_valid",
+                    "validation_errors"):
             assert key in d
 
-    def test_parts_property_returns_4_parts(self) -> None:
+    def test_parts_property_returns_5_parts(self) -> None:
         r = self._make_result()
         parts = r.parts
-        assert len(parts) == 4
+        assert len(parts) == 5
         assert parts[0].name == "hook"
         assert parts[1].name == "statement"
         assert parts[2].name == "twist"
-        assert parts[3].name == "question"
+        assert parts[3].name == "landing"
+        assert parts[4].name == "question"
 
     def test_parts_durations(self) -> None:
         r = self._make_result()
         durations = [p.duration_seconds for p in r.parts]
-        assert durations == [2, 4, 4, 3]
+        assert durations == [2, 4, 3, 2, 2]
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +114,7 @@ class TestValidate:
             hook=VALID_PARTS["hook"],
             statement=VALID_PARTS["statement"],
             twist=VALID_PARTS["twist"],
+            landing=VALID_PARTS["landing"],
             question=VALID_PARTS["question"],
             word_count=50,
         )
@@ -120,6 +125,7 @@ class TestValidate:
             hook="",
             statement=VALID_PARTS["statement"],
             twist=VALID_PARTS["twist"],
+            landing=VALID_PARTS["landing"],
             question=VALID_PARTS["question"],
             word_count=40,
         )
@@ -130,6 +136,7 @@ class TestValidate:
             hook=VALID_PARTS["hook"],
             statement=VALID_PARTS["statement"],
             twist=VALID_PARTS["twist"],
+            landing=VALID_PARTS["landing"],
             question="",
             word_count=40,
         )
@@ -140,6 +147,7 @@ class TestValidate:
             hook=VALID_PARTS["hook"],
             statement=VALID_PARTS["statement"],
             twist=VALID_PARTS["twist"],
+            landing=VALID_PARTS["landing"],
             question=VALID_PARTS["question"],
             word_count=MAX_WORDS,
         )
@@ -150,6 +158,7 @@ class TestValidate:
             hook=VALID_PARTS["hook"],
             statement=VALID_PARTS["statement"],
             twist=VALID_PARTS["twist"],
+            landing=VALID_PARTS["landing"],
             question=VALID_PARTS["question"],
             word_count=MAX_WORDS,
         )
@@ -160,6 +169,7 @@ class TestValidate:
             hook=VALID_PARTS["hook"],
             statement=VALID_PARTS["statement"],
             twist=VALID_PARTS["twist"],
+            landing=VALID_PARTS["landing"],
             question=VALID_PARTS["question"],
             word_count=74,
         )
@@ -170,6 +180,7 @@ class TestValidate:
             hook=VALID_PARTS["hook"],
             statement=VALID_PARTS["statement"],
             twist=VALID_PARTS["twist"],
+            landing=VALID_PARTS["landing"],
             question="Think about it.",   # no question mark
             word_count=40,
         )
@@ -180,6 +191,7 @@ class TestValidate:
             hook=VALID_PARTS["hook"],
             statement=VALID_PARTS["statement"],
             twist=VALID_PARTS["twist"],
+            landing=VALID_PARTS["landing"],
             question="No question mark here",
             word_count=40,
         )
@@ -214,6 +226,7 @@ class TestParseParts:
         parts = self.gen._parse_parts(json.dumps({"hook": "a hook"}))
         assert parts["statement"] == ""
         assert parts["twist"] == ""
+        assert parts["landing"] == ""
         assert parts["question"] == ""
 
 
@@ -273,6 +286,7 @@ class TestScriptGeneratorGenerate:
             "hook":      " ".join(["word"] * 50),
             "statement": " ".join(["word"] * 50),
             "twist":     " ".join(["word"] * 50),
+            "landing":   "That is the trap.",
             "question":  "Is this too long and over the limit?",
         }
         mock_client = MagicMock()
@@ -312,6 +326,7 @@ class TestScriptGeneratorGenerate:
             "hook":      "This ancient secret changes everything you know now.",     # 9
             "statement": "Stoics said that your mind alone determines your happiness not circumstances.",  # 12
             "twist":     "Yet you spend every day letting outside events dictate your entire emotional state.",  # 15
+            "landing":   "That is not freedom. That is reaction.",  # 7
             "question":  "What would your life look like if you finally took back full control today?",  # 15
         }
         mock_client = MagicMock()
@@ -338,7 +353,8 @@ class TestWordCountRetry:
             "hook":      " ".join(["word"] * 35),
             "statement": " ".join(["word"] * 35),
             "twist":     " ".join(["word"] * 35),
-            "question":  "Is this still over the limit?",  # ~7 words → total ~112+7=119... use more
+            "landing":   "That is the trap.",
+            "question":  "Is this still over the limit?",
         }
         # Make first response exceed 120 words
         long_parts["question"] = " ".join(["word"] * 20) + " Is this over limit?"
@@ -347,6 +363,7 @@ class TestWordCountRetry:
             "hook":      "This changes everything you know.",
             "statement": "Most people spend years chasing the wrong thing.",
             "twist":     "The data proves it does not work.",
+            "landing":   "That is the real cost.",
             "question":  "So what are you actually working for?",
         }
 
@@ -370,6 +387,7 @@ class TestWordCountRetry:
             "hook":      "This ancient secret changes everything you know now.",
             "statement": "Stoics said your mind determines your happiness not circumstances.",
             "twist":     "Yet you let outside events dictate your emotional state every day.",
+            "landing":   "That is not discipline. That is surrender.",
             "question":  "What would your life look like if you took back control today?",
         }
         mock_client = MagicMock()
@@ -388,6 +406,7 @@ class TestWordCountRetry:
             "hook":      " ".join(["word"] * 35),
             "statement": " ".join(["word"] * 35),
             "twist":     " ".join(["word"] * 35),
+            "landing":   "That is the trap.",
             "question":  " ".join(["word"] * 20) + " Is this over limit?",
         }
         mock_client = MagicMock()
@@ -407,7 +426,7 @@ class TestWordCountRetry:
     def test_parts_too_long_true_when_over_limit(self) -> None:
         from src.content.script_generator import RETRY_WORD_LIMIT
         gen = _make_generator()
-        long_parts = {p: " ".join(["word"] * 35) for p in ("hook", "statement", "twist", "question")}
+        long_parts = {p: " ".join(["word"] * 25) for p in REQUIRED_PARTS}
         assert gen._parts_too_long(long_parts) is True
 
     def test_parts_too_long_false_when_under_limit(self) -> None:
@@ -416,6 +435,7 @@ class TestWordCountRetry:
             "hook": "Short hook here.",
             "statement": "Brief statement.",
             "twist": "Quick twist.",
+            "landing": "That is the cost.",
             "question": "What now?",
         }
         assert gen._parts_too_long(short_parts) is False
@@ -426,6 +446,7 @@ class TestWordCountRetry:
             "hook": " ".join(["word"] * 40),
             "statement": " ".join(["word"] * 40),
             "twist": " ".join(["word"] * 40),
+            "landing": "That is the trap.",
             "question": "",  # empty → no retry
         }
         assert gen._parts_too_long(parts) is False
@@ -517,6 +538,7 @@ PARTS_WITH_CTA = {
     "hook":      "The system is rigged so your nine to five never builds wealth",
     "statement": "Picture this. You work forty hours a week and have nothing left.",
     "twist":     "Your salary is capped. Prices keep climbing. The game is rigged.",
+    "landing":   "That is not bad luck. That is the system working as designed.",
     "question":  "So ask yourself... are you working to live? Subscribe. We expose this stuff daily.",
 }
 
@@ -524,6 +546,7 @@ PARTS_WITHOUT_CTA = {
     "hook":      PARTS_WITH_CTA["hook"],
     "statement": PARTS_WITH_CTA["statement"],
     "twist":     PARTS_WITH_CTA["twist"],
+    "landing":   PARTS_WITH_CTA["landing"],
     "question":  "Drop a comment and I will share some resources with you.",
 }
 

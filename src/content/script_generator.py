@@ -1,12 +1,13 @@
 """
 script_generator.py — ScriptGenerator
 
-Generates a 45-50 second YouTube Shorts script with 4 timed parts,
-following the Palki Sharma 7-part narrative formula packed into:
-  Hook       — Provocative opening (Part 1)
-  Statement  — Analogy/micro-story + fact/data point (Parts 2–3)
-  Twist      — Escalation + reframe (Parts 4–5)
-  Question   — Direct question to viewer + CTA (Parts 6–7)
+Generates a 45-50 second YouTube Shorts script with 5 timed parts,
+following the Palki Sharma narrative formula:
+  Hook       — Provocative opening
+  Statement  — Analogy/micro-story + fact/data point
+  Twist      — Escalation + reframe
+  Landing    — Pause beat / emotional punchline
+  Question   — Direct question to viewer + CTA
 
 Target: 80–100 words for natural 45–50 second delivery.
 Script must contain at least one question mark.
@@ -65,33 +66,37 @@ BAD:  "In India, 78% of salaried professionals live paycheck to paycheck.
 GOOD: "In America, 78 percent of full-time workers live paycheck to paycheck.
        Every US dollar you earn gets taxed first..."
 
-Given a topic, an opening hook, and an exact CTA line, write a 4-part script that
-follows this 7-beat narrative arc:
+Given a topic, an opening hook, and an exact CTA line, write a 5-part script that
+follows this narrative arc:
 
 PART 1 — hook (10–15 words)
 Drop the viewer into tension immediately. State the uncomfortable truth bluntly.
 Use the provided hook verbatim.
 
-PART 2 — statement (25–33 words)
+PART 2 — statement (22–30 words)
 Pack in beats 2 and 3:
   Beat 2: A specific, relatable micro-scenario the viewer can picture themselves in.
            Not a statistic — a situation. (2 sentences)
   Beat 3: One sharp, credible number or fact that validates the tension. No fluff. (1 sentence)
 
-PART 3 — twist (20–28 words)
+PART 3 — twist (18–25 words)
 Pack in beats 4 and 5:
   Beat 4: Deepen the problem. Show it is worse than the viewer realised. (1–2 sentences)
   Beat 5: The reframe — the insight moment that makes them feel they just learned something. (1 sentence)
 
-PART 4 — question (18–24 words)
-Pack in beats 6 and 7:
-  Beat 6: One personal, direct question that pulls the viewer in. (1 sentence, ends with ?)
-  Beat 7: The exact CTA text provided, word for word. Do NOT rephrase or improvise.
-          The CTA is a single sentence — do NOT add anything after it. It must be the
-          final sentence of the entire script.
+PART 4 — landing (8–12 words)
+A short pause beat that lands the emotional point. This is the punchline moment —
+a sharp, declarative sentence that lets the insight sink in before the CTA.
+Not a question. Not filler. A gut-punch that makes the viewer nod.
+Example: "That's not an accident. It's by design."
+
+PART 5 — question (15–20 words)
+  One personal, direct question that pulls the viewer in. (1 sentence, ends with ?)
+  Then the exact CTA text provided, word for word. Do NOT rephrase or improvise.
+  The CTA is the final sentence of the entire script. Nothing after it.
 
 WRITING RULES — follow these strictly:
-- Total word count across all 4 parts: 80–95 words. HARD MAXIMUM: 100 words total.
+- Total word count across all 5 parts: 80–95 words. HARD MAXIMUM: 100 words total.
 - BEFORE responding, count every word in your script. If it exceeds 100, cut until it does not.
 - Never use em dashes (—) in the script body
 - Never use "it is worth noting", "in conclusion", "furthermore", "moreover"
@@ -109,6 +114,7 @@ Respond ONLY with a JSON object, no markdown:
   "hook": "...",
   "statement": "...",
   "twist": "...",
+  "landing": "...",
   "question": "..."
 }"""
 
@@ -119,13 +125,14 @@ Respond ONLY with a JSON object, no markdown:
 
 MAX_WORDS = 106   # hard ceiling; scripts of ≥106 words fail validation
 RETRY_WORD_LIMIT = 100  # trigger one brevity retry if word_count > this
-REQUIRED_PARTS = ("hook", "statement", "twist", "question")
+REQUIRED_PARTS = ("hook", "statement", "twist", "landing", "question")
 
 PART_WORD_LIMITS = {
     "hook":      (10, 15),
-    "statement": (25, 33),
-    "twist":     (20, 28),
-    "question":  (18, 24),
+    "statement": (22, 30),
+    "twist":     (18, 25),
+    "landing":   (8, 12),
+    "question":  (15, 20),
 }
 
 
@@ -149,15 +156,16 @@ class ScriptPart:
 @dataclass
 class ScriptResult:
     """
-    The validated 4-part script returned by ScriptGenerator.generate().
+    The validated 5-part script returned by ScriptGenerator.generate().
     """
 
     topic: str
     hook: str
     statement: str
     twist: str
+    landing: str
     question: str
-    full_script: str             # newline-joined concatenation of all 4 parts
+    full_script: str             # newline-joined concatenation of all 5 parts
     word_count: int
     is_valid: bool               # True only if all validation rules pass
     validation_errors: list[str] = field(default_factory=list)
@@ -174,6 +182,7 @@ class ScriptResult:
             "hook": self.hook,
             "statement": self.statement,
             "twist": self.twist,
+            "landing": self.landing,
             "question": self.question,
             "full_script": self.full_script,
             "word_count": self.word_count,
@@ -184,12 +193,13 @@ class ScriptResult:
 
     @property
     def parts(self) -> list[ScriptPart]:
-        """Return all 4 parts as ordered ScriptPart objects."""
+        """Return all 5 parts as ordered ScriptPart objects."""
         return [
             ScriptPart("hook",      self.hook,      2),
             ScriptPart("statement", self.statement, 4),
-            ScriptPart("twist",     self.twist,     4),
-            ScriptPart("question",  self.question,  3),
+            ScriptPart("twist",     self.twist,     3),
+            ScriptPart("landing",   self.landing,   2),
+            ScriptPart("question",  self.question,  2),
         ]
 
 
@@ -296,7 +306,7 @@ class ScriptGenerator:
             lines.append(
                 f"Exact CTA for question (copy word-for-word into the question field): {cta_script}"
             )
-        lines.append("\nWrite the 4-part script now.")
+        lines.append("\nWrite the 5-part script now.")
         return "\n".join(lines)
 
     def _parse_parts(self, raw: str) -> dict[str, str]:
@@ -385,7 +395,7 @@ class ScriptGenerator:
             f"Hook (use verbatim): {hook}\n"
             f"Your previous response did not use the exact CTA provided. "
             f"You MUST copy this text word for word into the question field: {cta_script}\n"
-            f"\nWrite the 4-part script now."
+            f"\nWrite the 5-part script now."
         )
         try:
             message = client.messages.create(
@@ -444,7 +454,7 @@ class ScriptGenerator:
             f"Your previous script was {word_count} words — way over the 100-word hard max. "
             f"Rewrite it in EXACTLY 85 words or fewer. Cut filler, shorten sentences, "
             f"remove adjectives. Every word must earn its place.\n"
-            f"\nWrite the 4-part script now."
+            f"\nWrite the 5-part script now."
         )
         try:
             message = client.messages.create(
@@ -481,18 +491,20 @@ class ScriptGenerator:
         hook      = parts.get("hook", "")
         statement = parts.get("statement", "")
         twist     = parts.get("twist", "")
+        landing   = parts.get("landing", "")
         question  = parts.get("question", "")
 
-        full_script = "\n".join(filter(None, [hook, statement, twist, question]))
+        full_script = "\n".join(filter(None, [hook, statement, twist, landing, question]))
         word_count  = len(full_script.split()) if full_script.strip() else 0
 
-        errors = self._validate(hook, statement, twist, question, word_count)
+        errors = self._validate(hook, statement, twist, landing, question, word_count)
 
         return ScriptResult(
             topic=topic,
             hook=hook,
             statement=statement,
             twist=twist,
+            landing=landing,
             question=question,
             full_script=full_script,
             word_count=word_count,
@@ -506,6 +518,7 @@ class ScriptGenerator:
         hook: str,
         statement: str,
         twist: str,
+        landing: str,
         question: str,
         word_count: int,
     ) -> list[str]:
@@ -520,6 +533,7 @@ class ScriptGenerator:
             ("hook", hook),
             ("statement", statement),
             ("twist", twist),
+            ("landing", landing),
             ("question", question),
         ]:
             if not text.strip():
@@ -532,7 +546,7 @@ class ScriptGenerator:
             )
 
         # Script must contain at least one question mark
-        full = "\n".join(filter(None, [hook, statement, twist, question]))
+        full = "\n".join(filter(None, [hook, statement, twist, landing, question]))
         if full and "?" not in full:
             errors.append("script does not contain a question mark")
 
