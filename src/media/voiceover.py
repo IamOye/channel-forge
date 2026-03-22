@@ -462,6 +462,28 @@ class VoiceoverGenerator:
         ]
         return " ".join(p.strip() for p in parts if p.strip())
 
+    @staticmethod
+    def _get_real_usage() -> tuple[int, int]:
+        """Query ElevenLabs API directly for real usage figures.
+
+        Returns:
+            (characters_used, character_limit) from the subscription endpoint.
+        """
+        api_key = os.getenv("ELEVENLABS_API_KEY", "")
+        if not api_key:
+            logger.warning("[elevenlabs] No API key — cannot query live usage")
+            return 0, 30000
+        resp = httpx.get(
+            "https://api.elevenlabs.io/v1/user/subscription",
+            headers={"xi-api-key": api_key},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        used = data.get("character_count", 0)
+        limit = data.get("character_limit", 30000)
+        return used, limit
+
     def _call_api(self, voice_id: str, text: str) -> tuple[bytes, list[dict]]:
         """POST to ElevenLabs TTS with-timestamps endpoint; return (audio_bytes, word_timestamps)."""
         import base64

@@ -778,21 +778,8 @@ class TelegramReplyHandler:
                 except sqlite3.OperationalError:
                     sections.append("📬 <b>Pending Uploads:</b> table not found")
 
-                # 5. ElevenLabs usage this month
-                try:
-                    rows = conn.execute(
-                        "SELECT SUM(chars_used) FROM elevenlabs_usage "
-                        "WHERE strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now')"
-                    ).fetchone()
-                    chars = rows[0] or 0
-                    remaining = max(0, 30000 - chars)
-                    sections.append(
-                        f"🎙️ <b>ElevenLabs (this month):</b>\n"
-                        f"  Used: {chars:,} / 30,000 chars\n"
-                        f"  Remaining: ~{remaining:,} chars (~{remaining // 1500} videos)"
-                    )
-                except sqlite3.OperationalError:
-                    sections.append("🎙️ <b>ElevenLabs:</b> table not found")
+                # 5. ElevenLabs usage (live API)
+                sections.append(self._format_elevenlabs_usage())
 
             finally:
                 conn.close()
@@ -800,6 +787,40 @@ class TelegramReplyHandler:
             return f"❌ Diagnose failed: {exc}"
 
         return "\n\n".join(sections)
+
+    def _format_elevenlabs_usage(self) -> str:
+        """Query ElevenLabs API for live usage and format as Telegram message."""
+        try:
+            from src.media.voiceover import VoiceoverGenerator
+            used, limit = VoiceoverGenerator._get_real_usage()
+            remaining = max(0, limit - used)
+            pct = (used / limit * 100) if limit else 0
+            est_videos = remaining // 1500
+
+            msg = (
+                f"🎙️ <b>ElevenLabs (live API):</b>\n"
+                f"  Used: {used:,} / {limit:,} chars ({pct:.0f}%)\n"
+                f"  Remaining: ~{remaining:,} chars (~{est_videos} videos)"
+            )
+
+            if remaining < 3000:
+                warning = (
+                    f"\n  ⚠️ CRITICAL: only {remaining:,} chars left. "
+                    f"Upgrade at elevenlabs.io or production will stop."
+                )
+                msg += warning
+                logger.warning(
+                    "[elevenlabs] CRITICAL: only %d chars remaining", remaining
+                )
+
+            return msg
+        except Exception as exc:
+            logger.warning("[elevenlabs] Live usage query failed: %s", exc)
+            return f"🎙️ <b>ElevenLabs:</b> API query failed ({exc})"
+
+    def handle_usage(self) -> str:
+        """Handle /usage — show live ElevenLabs usage from API."""
+        return self._format_elevenlabs_usage()
 
     # ------------------------------------------------------------------
     # Research commands
@@ -1152,6 +1173,10 @@ class TelegramReplyHandler:
         # /diagnose
         if text == "/diagnose":
             return self.handle_diagnose()
+
+        # /usage
+        if text == "/usage":
+            return self.handle_usage()
 
         # Research commands
         m = re.match(r"^/research(?:\s+(.*))?$", text)
