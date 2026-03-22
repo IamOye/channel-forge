@@ -732,7 +732,8 @@ class TelegramReplyHandler:
                         "SELECT status, COUNT(*) FROM manual_topics GROUP BY status "
                         "ORDER BY status"
                     ).fetchall()
-                    lines = ["📊 <b>Manual Topics by Status:</b>"]
+                    total = sum(c for _, c in rows)
+                    lines = [f"📊 <b>Manual Topics by Status ({total} total):</b>"]
                     for status, count in rows:
                         lines.append(f"  {status}: {count}")
                     sections.append("\n".join(lines))

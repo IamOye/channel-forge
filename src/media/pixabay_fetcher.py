@@ -180,6 +180,7 @@ def _clip_history_record(
         )
         conn.commit()
         conn.close()
+        logger.info("[clip_history] Recorded %s clip %s → db: %s", source, clip_id, db)
     except Exception as exc:
         logger.warning("[pixabay] clip_history record failed: %s", exc)
 

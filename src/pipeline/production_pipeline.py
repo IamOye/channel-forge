@@ -593,6 +593,7 @@ class ProductionPipeline:
             count=n_video,
             topic=keyword,
             script_preview=script_dict.get("hook", ""),
+            db_path=self.db_path,
         )
 
         # ── Photo clips with Ken Burns (conceptual / emotional) ────────────────
@@ -605,6 +606,7 @@ class ProductionPipeline:
                 topic_id=f"{topic_id}_kb{i}",
                 phrase=phrase,
                 count=1,
+                db_path=self.db_path,
             )
             if photos:
                 # ── Tag validation: reject irrelevant clips ──────────────────
@@ -681,6 +683,7 @@ class ProductionPipeline:
                     topic_id=f"{topic_id}_fb",
                     keywords_list=[fq],
                     count=MINIMUM_CLIPS - len(all_paths),
+                    db_path=self.db_path,
                 )
                 all_paths.extend(extra)
 
