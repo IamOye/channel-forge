@@ -701,6 +701,94 @@ class TelegramReplyHandler:
         except Exception as exc:
             return f"❌ Queue check failed: {exc}"
 
+    def handle_diagnose(self) -> str:
+        """Handle /diagnose — DB inspection for Railway debugging."""
+        sections: list[str] = []
+
+        try:
+            conn = self._get_conn()
+            try:
+                # 1. Next 10 QUEUED manual topics
+                try:
+                    rows = conn.execute(
+                        "SELECT seq, title, category, status FROM manual_topics "
+                        "WHERE status = 'QUEUED' ORDER BY seq ASC LIMIT 10"
+                    ).fetchall()
+                    lines = ["📋 <b>Manual Queue — Next 10 QUEUED:</b>"]
+                    if rows:
+                        for r in rows:
+                            lines.append(
+                                f"  SEQ {r[0]}: {r[1][:40]} [{r[2]}]"
+                            )
+                    else:
+                        lines.append("  (none)")
+                    sections.append("\n".join(lines))
+                except sqlite3.OperationalError:
+                    sections.append("📋 <b>Manual Queue:</b> table not found")
+
+                # 2. Manual topics counts by status
+                try:
+                    rows = conn.execute(
+                        "SELECT status, COUNT(*) FROM manual_topics GROUP BY status "
+                        "ORDER BY status"
+                    ).fetchall()
+                    lines = ["📊 <b>Manual Topics by Status:</b>"]
+                    for status, count in rows:
+                        lines.append(f"  {status}: {count}")
+                    sections.append("\n".join(lines))
+                except sqlite3.OperationalError:
+                    pass
+
+                # 3. Clip history by source
+                try:
+                    rows = conn.execute(
+                        "SELECT source, COUNT(*) FROM clip_history GROUP BY source "
+                        "ORDER BY source"
+                    ).fetchall()
+                    total = sum(c for _, c in rows)
+                    lines = [f"🎬 <b>Clip History ({total} total):</b>"]
+                    for source, count in rows:
+                        lines.append(f"  {source}: {count}")
+                    sections.append("\n".join(lines))
+                except sqlite3.OperationalError:
+                    sections.append("🎬 <b>Clip History:</b> table not found")
+
+                # 4. Pending uploads by status
+                try:
+                    rows = conn.execute(
+                        "SELECT status, COUNT(*) FROM pending_uploads GROUP BY status "
+                        "ORDER BY status"
+                    ).fetchall()
+                    lines = ["📬 <b>Pending Uploads by Status:</b>"]
+                    for status, count in rows:
+                        lines.append(f"  {status}: {count}")
+                    sections.append("\n".join(lines))
+                except sqlite3.OperationalError:
+                    sections.append("📬 <b>Pending Uploads:</b> table not found")
+
+                # 5. ElevenLabs usage this month
+                try:
+                    rows = conn.execute(
+                        "SELECT SUM(characters_used) FROM elevenlabs_usage "
+                        "WHERE strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now')"
+                    ).fetchone()
+                    chars = rows[0] or 0
+                    remaining = max(0, 30000 - chars)
+                    sections.append(
+                        f"🎙️ <b>ElevenLabs (this month):</b>\n"
+                        f"  Used: {chars:,} / 30,000 chars\n"
+                        f"  Remaining: ~{remaining:,} chars (~{remaining // 1500} videos)"
+                    )
+                except sqlite3.OperationalError:
+                    sections.append("🎙️ <b>ElevenLabs:</b> table not found")
+
+            finally:
+                conn.close()
+        except Exception as exc:
+            return f"❌ Diagnose failed: {exc}"
+
+        return "\n\n".join(sections)
+
     # ------------------------------------------------------------------
     # Research commands
     # ------------------------------------------------------------------
@@ -1048,6 +1136,10 @@ class TelegramReplyHandler:
         # /queue
         if text == "/queue":
             return self.handle_queue()
+
+        # /diagnose
+        if text == "/diagnose":
+            return self.handle_diagnose()
 
         # Research commands
         m = re.match(r"^/research(?:\s+(.*))?$", text)
