@@ -39,6 +39,23 @@ MAX_PHOTO_PORTRAIT_RATIO = 0.65  # width/height — reject landscape/square phot
 # Clip history helpers
 # ---------------------------------------------------------------------------
 
+_CLIP_HISTORY_DDL = """
+CREATE TABLE IF NOT EXISTS clip_history (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    clip_id  TEXT NOT NULL,
+    source   TEXT NOT NULL,
+    query    TEXT NOT NULL DEFAULT '',
+    topic_id TEXT NOT NULL DEFAULT '',
+    used_at  TEXT NOT NULL DEFAULT (datetime('now'))
+)
+"""
+
+
+def _ensure_clip_history(conn: "sqlite3.Connection") -> None:
+    """Create clip_history table if it doesn't exist."""
+    conn.execute(_CLIP_HISTORY_DDL)
+
+
 def _clip_already_used(db_path: "Path | str | None", source: str, clip_id: str) -> bool:
     """Return True if clip_id/source already exists in clip_history."""
     if db_path is None:
@@ -48,6 +65,7 @@ def _clip_already_used(db_path: "Path | str | None", source: str, clip_id: str) 
         return False
     try:
         conn = sqlite3.connect(db)
+        _ensure_clip_history(conn)
         row = conn.execute(
             "SELECT 1 FROM clip_history WHERE source = ? AND clip_id = ? LIMIT 1",
             (source, clip_id),
@@ -67,12 +85,15 @@ def _clip_history_record(
 ) -> None:
     """Insert a row into clip_history. Swallows all errors."""
     if db_path is None:
+        logger.debug("[clip_history] db_path is None — skipping record")
         return
     db = Path(db_path)
     if not db.exists():
+        logger.warning("[clip_history] DB does not exist at %s — skipping", db)
         return
     try:
         conn = sqlite3.connect(db)
+        _ensure_clip_history(conn)
         conn.execute(
             "INSERT INTO clip_history (clip_id, source, query, topic_id) VALUES (?, ?, ?, ?)",
             (clip_id, source, query, topic_id),

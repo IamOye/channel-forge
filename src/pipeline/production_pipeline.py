@@ -498,9 +498,13 @@ class ProductionPipeline:
             result.youtube_video_id, result.youtube_url,
         )
 
-        # Mark Google Sheet row as USED if this was a manual topic
+        # Write video_id to Google Sheet Column J for this manual topic
         manual_seq = topic_item.get("manual_seq")
         if manual_seq:
+            logger.info(
+                "[gsheet] Writing video_id for SEQ %d: %s",
+                manual_seq, upload_result.youtube_video_id,
+            )
             try:
                 from src.crawler.gsheet_topic_sync import GSheetTopicSync
                 sync = GSheetTopicSync()
@@ -508,9 +512,10 @@ class ProductionPipeline:
                     seq=manual_seq,
                     video_id=upload_result.youtube_video_id,
                 )
+                logger.info("[gsheet] Video ID writeback complete for SEQ %d", manual_seq)
             except Exception as exc:
-                logger.warning(
-                    "[production] Could not mark Sheet SEQ %d as USED: %s",
+                logger.error(
+                    "[gsheet] Video ID writeback FAILED for SEQ %d: %s",
                     manual_seq, exc,
                 )
 
