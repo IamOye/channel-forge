@@ -245,12 +245,11 @@ class TopicQueue:
         QUEUED rows, falls back to channel_forge.db in the same directory,
         because the GSheetTopicSync job always writes to channel_forge.db.
 
-        First tries category-matched topics, then any QUEUED topic regardless
-        of category (manual topics are user-curated and should not be blocked
-        by category mismatch).
+        All QUEUED topics are returned regardless of category — manual topics
+        are user-curated and should always be produced in SEQ order.
 
         Returns up to ``max_count`` topics ordered by SEQ ascending.
-        Each consumed topic is immediately marked USED in whichever DB it came from.
+        Each consumed topic is immediately marked USED in DB and Google Sheet.
         """
         results = self._query_and_mark_manual(self.db_path, category, max_count)
 
@@ -275,9 +274,13 @@ class TopicQueue:
         Open ``db_path``, fetch up to ``max_count`` QUEUED manual topics, mark
         them USED immediately, and return them as topic dicts.
 
+        Manual topics are user-curated and produced regardless of category.
+        The category label is preserved for downstream use (b-roll, metadata)
+        but does not filter which topics get produced.
+
         Args:
             db_path: SQLite file to query.
-            category: Channel category for priority matching.
+            category: Channel category (used as fallback if topic has none).
             max_count: Maximum rows to return.
             is_fallback: When True, log messages indicate this is the fallback DB.
         """
@@ -291,41 +294,22 @@ class TopicQueue:
         try:
             conn = sqlite3.connect(db_path)
             try:
-                # First: try category match (case-insensitive)
+                # Fetch next QUEUED topic(s) regardless of category
                 rows = conn.execute(
                     """
                     SELECT seq, title, category, hook_angle
                     FROM manual_topics
-                    WHERE status = 'QUEUED' AND LOWER(category) = LOWER(?)
+                    WHERE status = 'QUEUED'
                     ORDER BY seq ASC
                     LIMIT ?
                     """,
-                    (category, max_count),
+                    (max_count,),
                 ).fetchall()
 
                 logger.info(
-                    "[topic_queue] manual_topics query (%s, category=%s): %d rows found",
-                    label, category, len(rows),
+                    "[topic_queue] manual_topics query (%s): %d QUEUED rows found",
+                    label, len(rows),
                 )
-
-                # If no category match, try ANY queued topic
-                if not rows:
-                    rows = conn.execute(
-                        """
-                        SELECT seq, title, category, hook_angle
-                        FROM manual_topics
-                        WHERE status = 'QUEUED'
-                        ORDER BY seq ASC
-                        LIMIT ?
-                        """,
-                        (max_count,),
-                    ).fetchall()
-                    if rows:
-                        logger.info(
-                            "[topic_queue] manual_topics (%s): no '%s' match, "
-                            "using %d cross-category QUEUED topic(s)",
-                            label, category, len(rows),
-                        )
 
                 # Log total queued count for visibility
                 total_queued = conn.execute(
@@ -355,6 +339,8 @@ class TopicQueue:
 
                 if results:
                     conn.commit()
+                    # Write back USED status to Google Sheet
+                    self._gsheet_mark_used(results)
                     if is_fallback:
                         logger.info(
                             "[topic_queue] manual_topics: using fallback channel_forge.db "
@@ -373,6 +359,19 @@ class TopicQueue:
             logger.warning("[topic_queue] Manual topic query failed (%s): %s", label, exc)
 
         return results
+
+    def _gsheet_mark_used(self, topics: list[dict[str, Any]]) -> None:
+        """Write USED status back to Google Sheet for consumed manual topics."""
+        try:
+            from src.crawler.gsheet_topic_sync import GSheetTopicSync
+            sync = GSheetTopicSync()
+            for t in topics:
+                seq = t.get("manual_seq")
+                if seq is not None:
+                    sync.mark_used(seq=seq)
+                    logger.info("[topic_queue] GSheet writeback: SEQ %d → USED", seq)
+        except Exception as exc:
+            logger.warning("[topic_queue] GSheet writeback failed (non-blocking): %s", exc)
 
     def _gather_all_candidates(self, category: str) -> list[dict[str, Any]]:
         """

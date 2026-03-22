@@ -357,3 +357,83 @@ class TestTopicQueueSync:
         ).fetchone()
         conn.close()
         assert row[0] == "10"
+
+
+# ---------------------------------------------------------------------------
+# Tests: GSheet USED writeback on consume
+# ---------------------------------------------------------------------------
+
+class TestGSheetWriteback:
+    @patch("src.crawler.gsheet_topic_sync.GSheetTopicSync")
+    def test_gsheet_mark_used_called_on_consume(self, mock_sync_cls, tmp_path) -> None:
+        """When a manual topic is consumed, mark_used must be called on GSheet."""
+        db = tmp_path / "test.db"
+        _init_db(db)
+        _insert_manual(db, 5, "Why your 401k is a trap")
+
+        mock_sync = MagicMock()
+        mock_sync_cls.return_value = mock_sync
+
+        queue = TopicQueue(db_path=db, anthropic_api_key="")
+        topics = queue.get_next_topics("money", max_count=1)
+
+        assert len(topics) >= 1
+        assert topics[0]["manual_seq"] == 5
+        mock_sync.mark_used.assert_called_once_with(seq=5)
+
+    @patch("src.crawler.gsheet_topic_sync.GSheetTopicSync")
+    def test_gsheet_failure_does_not_block_topic(self, mock_sync_cls, tmp_path) -> None:
+        """GSheet writeback failure must not prevent topic from being returned."""
+        db = tmp_path / "test.db"
+        _init_db(db)
+        _insert_manual(db, 3, "Credit cards are designed to trap you")
+
+        mock_sync = MagicMock()
+        mock_sync_cls.return_value = mock_sync
+        mock_sync.mark_used.side_effect = Exception("network error")
+
+        queue = TopicQueue(db_path=db, anthropic_api_key="")
+        topics = queue.get_next_topics("money", max_count=1)
+
+        # Topic still returned despite GSheet failure
+        assert len(topics) >= 1
+        assert topics[0]["manual_seq"] == 3
+
+
+# ---------------------------------------------------------------------------
+# Tests: All categories returned (no category filter)
+# ---------------------------------------------------------------------------
+
+class TestNoCategoryFilter:
+    def test_all_categories_returned_regardless_of_channel(self, tmp_path) -> None:
+        """Manual topics of any category must be returned for any channel."""
+        db = tmp_path / "test.db"
+        _init_db(db)
+        _insert_manual(db, 1, "Money topic", category="money")
+        _insert_manual(db, 2, "Career topic", category="career")
+        _insert_manual(db, 3, "Success topic", category="success")
+
+        queue = TopicQueue(db_path=db, anthropic_api_key="")
+        # Request as "money" channel — should still get all 3
+        topics = queue.get_next_topics("money", max_count=3)
+
+        manual_topics = [t for t in topics if t.get("source") == "MANUAL"]
+        assert len(manual_topics) == 3
+        categories = {t["category"] for t in manual_topics}
+        assert categories == {"money", "career", "success"}
+
+    def test_seq_order_preserved_across_categories(self, tmp_path) -> None:
+        """SEQ order must be preserved even with mixed categories."""
+        db = tmp_path / "test.db"
+        _init_db(db)
+        _insert_manual(db, 3, "Success first", category="success")
+        _insert_manual(db, 7, "Money second", category="money")
+        _insert_manual(db, 8, "Career third", category="career")
+
+        queue = TopicQueue(db_path=db, anthropic_api_key="")
+        topics = queue.get_next_topics("money", max_count=3)
+
+        manual_topics = [t for t in topics if t.get("source") == "MANUAL"]
+        assert manual_topics[0]["manual_seq"] == 3
+        assert manual_topics[1]["manual_seq"] == 7
+        assert manual_topics[2]["manual_seq"] == 8
