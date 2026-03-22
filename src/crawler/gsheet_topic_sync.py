@@ -24,9 +24,9 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Google API scopes required for Sheets + Drive access
+# Google API scopes required for Sheets read/write + Drive access
 _SCOPES = [
-    "https://spreadsheets.google.com/feeds",
+    "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
 ]
 
@@ -115,8 +115,9 @@ class GSheetTopicSync:
             headers = [h.strip() for h in headers]
 
             # Build list of dicts, skipping empty rows
+            # _sheet_row tracks the 1-based sheet row number for each entry
             results: list[dict[str, Any]] = []
-            for row in data_rows:
+            for idx, row in enumerate(data_rows):
                 # Pad row to header length if shorter
                 padded = row + [""] * (len(headers) - len(row))
                 row_dict = {
@@ -127,6 +128,8 @@ class GSheetTopicSync:
                 # Skip completely empty rows
                 if not any(str(v).strip() for v in row_dict.values()):
                     continue
+                # idx=0 is all_values[3] = sheet row 4 (1-based)
+                row_dict["_sheet_row"] = idx + 4
                 results.append(row_dict)
 
             return results
@@ -184,7 +187,7 @@ class GSheetTopicSync:
                 "hook_angle": str(row.get("Hook Angle (optional)", "") or row.get("Hook Angle", "")),
                 "priority":   str(row.get("Priority", "MEDIUM")).upper(),
                 "notes":      str(row.get("Notes", "")),
-                "row_number": i + 2,  # +1 for header, +1 for 1-based
+                "row_number": row["_sheet_row"],
             })
 
         results.sort(key=lambda x: x["seq"])
@@ -219,22 +222,23 @@ class GSheetTopicSync:
             date_used = date.today().strftime("%d-%b-%y")
 
         rows = self._read_queue_rows()
-        for i, row in enumerate(rows):
+        for row in rows:
             try:
                 row_seq = int(row.get("SEQ", -1))
             except (ValueError, TypeError):
                 continue
             if row_seq == seq:
-                sheet_row = i + 2
+                sheet_row = row["_sheet_row"]
+                logger.info("[gsheet] Writing USED for SEQ %d (sheet row %d)...", seq, sheet_row)
                 # Col F=Status, Col I=Date Used, Col J=Video ID
                 self._queue_tab.update_cell(sheet_row, 6, "USED")
                 self._queue_tab.update_cell(sheet_row, 9, date_used)
                 if video_id:
                     self._queue_tab.update_cell(sheet_row, 10, video_id)
-                logger.info("[gsheet] Marked SEQ %d as USED (video=%s)", seq, video_id)
+                logger.info("[gsheet] Writeback complete for SEQ %d", seq)
                 return True
 
-        logger.warning("[gsheet] SEQ %d not found in sheet", seq)
+        logger.warning("[gsheet] SEQ %d not found in sheet — cannot write USED", seq)
         return False
 
     def set_status(self, seq: int, status: str) -> bool:
@@ -243,14 +247,15 @@ class GSheetTopicSync:
         Returns True if found and updated.
         """
         rows = self._read_queue_rows()
-        for i, row in enumerate(rows):
+        for row in rows:
             try:
                 row_seq = int(row.get("SEQ", -1))
             except (ValueError, TypeError):
                 continue
             if row_seq == seq:
-                self._queue_tab.update_cell(i + 2, 6, status.upper())
-                logger.info("[gsheet] SEQ %d status → %s", seq, status.upper())
+                sheet_row = row["_sheet_row"]
+                self._queue_tab.update_cell(sheet_row, 6, status.upper())
+                logger.info("[gsheet] SEQ %d status → %s (sheet row %d)", seq, status.upper(), sheet_row)
                 return True
         return False
 

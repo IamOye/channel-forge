@@ -368,10 +368,14 @@ class TopicQueue:
             for t in topics:
                 seq = t.get("manual_seq")
                 if seq is not None:
-                    sync.mark_used(seq=seq)
-                    logger.info("[topic_queue] GSheet writeback: SEQ %d → USED", seq)
+                    logger.info("[gsheet] Writing USED for SEQ %d...", seq)
+                    try:
+                        sync.mark_used(seq=seq)
+                        logger.info("[gsheet] Writeback complete for SEQ %d", seq)
+                    except Exception as inner_exc:
+                        logger.error("[gsheet] Writeback FAILED for SEQ %d: %s", seq, inner_exc)
         except Exception as exc:
-            logger.warning("[topic_queue] GSheet writeback failed (non-blocking): %s", exc)
+            logger.error("[gsheet] GSheet writeback setup failed: %s", exc)
 
     def _gather_all_candidates(self, category: str) -> list[dict[str, Any]]:
         """
