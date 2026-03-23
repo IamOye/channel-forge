@@ -425,6 +425,30 @@ def run_competitor_research() -> None:
         except Exception as exc:
             logger.error("[scheduler] Trending search scrape failed: %s", exc)
 
+        # Sync scraped topics to Google Sheet
+        try:
+            import sqlite3 as _sq
+            conn = _sq.connect(_DEFAULT_DB)
+            try:
+                topic_rows = conn.execute(
+                    "SELECT source, channel_name, original_title, extracted_topic, "
+                    "view_count, category, scraped_at "
+                    "FROM competitor_topics "
+                    "ORDER BY scraped_at DESC LIMIT 500"
+                ).fetchall()
+                cols = ["source", "channel_name", "original_title", "extracted_topic",
+                        "view_count", "category", "scraped_at"]
+                row_dicts = [
+                    {**dict(zip(cols, r)), "score": ""}
+                    for r in topic_rows
+                ]
+            finally:
+                conn.close()
+            from src.crawler.gsheet_topic_sync import GSheetTopicSync
+            GSheetTopicSync().sync_scraped_topics(row_dicts)
+        except Exception as sync_exc:
+            logger.warning("[scheduler] Scraped topics GSheet sync failed: %s", sync_exc)
+
     except Exception as exc:
         logger.error("[scheduler] run_competitor_research ERROR: %s", exc)
     finally:
@@ -973,6 +997,27 @@ def build_scheduler(timezone_name: str | None = None) -> BlockingScheduler:
     Returns:
         A configured but not-yet-started BlockingScheduler.
     """
+    # One-time startup check: warn if SEQ 6 is missing from manual_topics
+    try:
+        import sqlite3 as _sq_check
+        if _DEFAULT_DB.exists():
+            _conn = _sq_check.connect(_DEFAULT_DB)
+            try:
+                row = _conn.execute(
+                    "SELECT seq FROM manual_topics WHERE seq = 6"
+                ).fetchone()
+                if row is None:
+                    logger.warning(
+                        "[WARNING] SEQ 6 missing from manual_topics — add via Telegram: "
+                        "/addtopic money The 5 money habits of people who retire early"
+                    )
+            except _sq_check.OperationalError:
+                pass
+            finally:
+                _conn.close()
+    except Exception:
+        pass
+
     tz_name = timezone_name or os.getenv("UPLOAD_TIMEZONE", "Africa/Lagos")
     tz = ZoneInfo(tz_name)
 

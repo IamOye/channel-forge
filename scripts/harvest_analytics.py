@@ -264,6 +264,14 @@ class AnalyticsHarvester:
                 logger.error("[harvest] Excel save failed: %s", exc)
                 result.errors.append(f"excel: {exc}")
 
+        # ── GSheet sync (best-effort) ──────────────────────────────────
+        if videos:
+            try:
+                self.sync_to_gsheet(videos)
+            except Exception as exc:
+                logger.warning("[harvest] GSheet sync failed: %s", exc)
+                result.errors.append(f"gsheet: {exc}")
+
         result.is_valid = len(result.errors) == 0
         logger.info("[harvest] %s", result.summary())
         return result
@@ -605,6 +613,104 @@ class AnalyticsHarvester:
         wb.save(path)
         logger.info("[harvest] Saved Excel: %s", path)
         return str(path)
+
+    def sync_to_gsheet(self, videos: list[VideoRow]) -> None:
+        """Write analytics data to the 'Performance' tab in the ChannelForge GSheet.
+
+        Tab columns (in order):
+        video_id | Published | GSheet SEQ | Topic Brief | YouTube Title |
+        Views | Likes | Watch% | Avg Duration | Subs Gained | Shares | Category
+
+        Joins on youtube_video_id against production_results in channel_forge.db
+        to get keyword (topic brief), and LEFT JOINs manual_topics for seq.
+        YouTube Title comes from the live YouTube API data (VideoRow.title).
+        Creates the tab if it does not exist.
+        Clears and rewrites the full tab on each call.
+        """
+        import sqlite3 as _sq
+        from src.crawler.gsheet_topic_sync import get_gsheet_client
+
+        _, spreadsheet = get_gsheet_client()
+
+        # Try to get or create Performance tab
+        try:
+            import gspread
+            try:
+                ws = spreadsheet.worksheet("Performance")
+            except gspread.WorksheetNotFound:
+                ws = spreadsheet.add_worksheet(title="Performance", rows=600, cols=12)
+        except Exception as exc:
+            logger.error("[harvest] Could not open/create Performance tab: %s", exc)
+            return
+
+        ws.clear()
+
+        headers = [
+            "video_id", "Published", "GSheet SEQ", "Topic Brief", "YouTube Title",
+            "Views", "Likes", "Watch%", "Avg Duration", "Subs Gained", "Shares", "Category",
+        ]
+        ws.append_row(headers, value_input_option="USER_ENTERED")
+
+        # Build video_id → (seq, keyword) lookup from production_results + manual_topics
+        db_path = Path("data/processed/channel_forge.db")
+        vid_lookup: dict[str, tuple[str, str]] = {}
+        if db_path.exists():
+            try:
+                conn = _sq.connect(db_path)
+                try:
+                    # Check if manual_topics table exists for SEQ lookup
+                    has_manual = conn.execute(
+                        "SELECT name FROM sqlite_master "
+                        "WHERE type='table' AND name='manual_topics'"
+                    ).fetchone() is not None
+
+                    if has_manual:
+                        rows = conn.execute(
+                            "SELECT pr.youtube_video_id, pr.keyword, mt.seq "
+                            "FROM production_results pr "
+                            "LEFT JOIN manual_topics mt ON mt.seq = CAST("
+                            "  REPLACE(pr.topic_id, 'manual_', '') AS INTEGER) "
+                            "WHERE pr.youtube_video_id IS NOT NULL "
+                            "AND pr.youtube_video_id != ''"
+                        ).fetchall()
+                    else:
+                        rows = conn.execute(
+                            "SELECT youtube_video_id, keyword, NULL "
+                            "FROM production_results "
+                            "WHERE youtube_video_id IS NOT NULL "
+                            "AND youtube_video_id != ''"
+                        ).fetchall()
+
+                    for vid_id, keyword, seq in rows:
+                        seq_str = str(seq) if seq is not None else ""
+                        vid_lookup[vid_id] = (seq_str, keyword or "")
+                finally:
+                    conn.close()
+            except Exception as exc:
+                logger.warning("[harvest] Could not query production_results: %s", exc)
+
+        data_rows = []
+        for v in videos:
+            seq, brief = vid_lookup.get(v.video_id, ("", ""))
+            data_rows.append([
+                v.video_id,
+                v.published_at[:10] if v.published_at else "",
+                seq,
+                brief,
+                v.title,
+                v.views,
+                v.likes,
+                round(v.average_view_percentage, 1),
+                round(v.average_view_duration, 1),
+                v.subscribers_gained,
+                v.shares,
+                v.category_id,
+            ])
+
+        if data_rows:
+            ws.append_rows(data_rows, value_input_option="USER_ENTERED")
+
+        logger.info("[harvest] Performance tab synced — %d rows", len(data_rows))
 
     def _get_channel_name(self) -> str:
         """Return a filename-safe channel name (e.g. 'MoneyHeresy')."""

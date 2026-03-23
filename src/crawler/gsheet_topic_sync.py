@@ -31,6 +31,36 @@ _SCOPES = [
 ]
 
 
+def get_gsheet_client(
+    sheet_id: str | None = None,
+    credentials_b64: str | None = None,
+):
+    """Return (gspread_client, spreadsheet) using service-account credentials.
+
+    Reusable helper — avoids duplicating auth logic across modules.
+    """
+    import gspread
+    from google.oauth2.service_account import Credentials
+
+    sid = sheet_id or os.getenv("GOOGLE_SHEET_ID", "")
+    creds_b64 = credentials_b64 or os.getenv("GOOGLE_CREDENTIALS_B64", "")
+
+    if not sid:
+        raise ValueError("GOOGLE_SHEET_ID not set")
+    if not creds_b64:
+        raise ValueError("GOOGLE_CREDENTIALS_B64 not set")
+
+    b64 = creds_b64.strip()
+    missing = len(b64) % 4
+    if missing:
+        b64 += "=" * (4 - missing)
+    creds_json = json.loads(base64.b64decode(b64))
+    creds = Credentials.from_service_account_info(creds_json, scopes=_SCOPES)
+    client = gspread.authorize(creds)
+    spreadsheet = client.open_by_key(sid)
+    return client, spreadsheet
+
+
 class GSheetTopicSync:
     """
     Two-way sync between a Google Sheet Topic Queue and the local SQLite DB.
@@ -67,22 +97,7 @@ class GSheetTopicSync:
         if self._sheet is not None:
             return
 
-        import gspread
-        from google.oauth2.service_account import Credentials
-
-        if not self.sheet_id:
-            raise ValueError("GOOGLE_SHEET_ID not set")
-        if not self.credentials_b64:
-            raise ValueError("GOOGLE_CREDENTIALS_B64 not set")
-
-        b64 = self.credentials_b64.strip()
-        missing = len(b64) % 4
-        if missing:
-            b64 += "=" * (4 - missing)
-        creds_json = json.loads(base64.b64decode(b64))
-        creds = Credentials.from_service_account_info(creds_json, scopes=_SCOPES)
-        client = gspread.authorize(creds)
-        self._sheet = client.open_by_key(self.sheet_id)
+        _, self._sheet = get_gsheet_client(self.sheet_id, self.credentials_b64)
         self._queue_tab = self._sheet.worksheet("Topic Queue")
         self._log_tab = self._sheet.worksheet("Sync Log")
         logger.info("[gsheet] Connected to sheet %s", self.sheet_id)
@@ -293,6 +308,78 @@ class GSheetTopicSync:
         self._queue_tab.append_row(new_row, value_input_option="USER_ENTERED")
         logger.info("[gsheet] Appended SEQ %d: %s", new_seq, title)
         return new_seq
+
+    def write_youtube_title(self, seq: int, youtube_title: str, col: int = 12) -> None:
+        """Write the YouTube-published title to col L (column 12) of the matching row.
+
+        Auto-creates the column header in L3 if it is currently blank.
+        """
+        self._connect()
+
+        # Ensure header exists in L3
+        header_val = self._queue_tab.cell(3, col).value
+        if not header_val or not str(header_val).strip():
+            self._queue_tab.update_cell(3, col, "YouTube Title")
+            logger.info("[gsheet] Created 'YouTube Title' header in col L (row 3)")
+
+        rows = self._read_queue_rows()
+        for row in rows:
+            try:
+                row_seq = int(row.get("SEQ", -1))
+            except (ValueError, TypeError):
+                continue
+            if row_seq == seq:
+                sheet_row = row["_sheet_row"]
+                self._queue_tab.update_cell(sheet_row, col, youtube_title)
+                logger.info(
+                    "[gsheet] YouTube title written to col L for SEQ %d: %s",
+                    seq, youtube_title,
+                )
+                return
+
+        logger.warning("[gsheet] SEQ %d not found — cannot write YouTube title", seq)
+
+    def sync_scraped_topics(self, rows: list[dict]) -> None:
+        """Write competitor topic rows to the 'Scraped Topics' tab.
+
+        Clears and rewrites on each call. Creates the tab if it does not exist.
+
+        Tab columns (in order):
+        Source | Channel | Original Title | Topic | Views | Category | Score | Date Scraped
+        """
+        self._connect()
+        import gspread
+
+        try:
+            ws = self._sheet.worksheet("Scraped Topics")
+        except gspread.WorksheetNotFound:
+            ws = self._sheet.add_worksheet(title="Scraped Topics", rows=600, cols=8)
+
+        ws.clear()
+
+        headers = [
+            "Source", "Channel", "Original Title", "Topic",
+            "Views", "Category", "Score", "Date Scraped",
+        ]
+        ws.append_row(headers, value_input_option="USER_ENTERED")
+
+        data_rows = []
+        for r in rows:
+            data_rows.append([
+                str(r.get("source", "")),
+                str(r.get("channel_name", "")),
+                str(r.get("original_title", "")),
+                str(r.get("extracted_topic", "")),
+                r.get("view_count", 0),
+                str(r.get("category", "")),
+                str(r.get("score", "")),
+                str(r.get("scraped_at", "")),
+            ])
+
+        if data_rows:
+            ws.append_rows(data_rows, value_input_option="USER_ENTERED")
+
+        logger.info("[gsheet] Scraped Topics tab synced — %d rows", len(data_rows))
 
     def update_sync_log(
         self,

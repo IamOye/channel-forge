@@ -375,9 +375,9 @@ class VoiceoverGenerator:
                 )
             elif fraction >= _WARN_67_PCT:
                 logger.warning(
-                    "[voiceover] ElevenLabs at 67%% monthly limit — %d chars remaining. "
+                    "[voiceover] ElevenLabs at %.1f%% monthly limit — %d chars remaining. "
                     "Approximately %d videos left this month.",
-                    chars_remaining, videos_remaining,
+                    pct_used, chars_remaining, videos_remaining,
                 )
                 try:
                     from src.notifications.telegram_notifier import TelegramNotifier

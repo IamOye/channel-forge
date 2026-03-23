@@ -512,7 +512,14 @@ class ProductionPipeline:
                     seq=manual_seq,
                     video_id=upload_result.youtube_video_id,
                 )
-                logger.info("[gsheet] Video ID writeback complete for SEQ %d", manual_seq)
+                logger.info(
+                    "[gsheet] Video ID written to col J for SEQ %d: %s",
+                    manual_seq, upload_result.youtube_video_id,
+                )
+                sync.write_youtube_title(
+                    seq=manual_seq,
+                    youtube_title=meta_result.title,
+                )
             except Exception as exc:
                 logger.error(
                     "[gsheet] Video ID writeback FAILED for SEQ %d: %s",
