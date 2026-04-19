@@ -350,14 +350,13 @@ class ProductionPipeline:
         score        = float(topic_item.get("score", 0.0))
         video_number = int(topic_item.get("video_number", 0))
 
-        from config.constants import PRODUCTS, get_cta_script
-        _product    = PRODUCTS.get(category, {})
-        cta_overlay = _product.get("cta_overlay", "")
-
-        # Rotating CTA: subscribe (80%) vs lead_magnet (every 5th video)
+        from config.constants import get_smart_cta
+        # Intelligent CTA: topic-product affinity scoring + rotation fallback
         total_videos = self._get_total_videos_produced()
-        cta_script   = get_cta_script(category, total_videos)
-        logger.info("CTA rotation: video #%d → %s", total_videos, cta_script)
+        cta_script, cta_overlay = get_smart_cta(category, keyword, total_videos)
+        logger.info("CTA selected: video #%d → %s", total_videos, cta_script)
+
+
 
         self._current_topic_id = topic_id
         logger.info("Pipeline start: topic_id=%s keyword='%s'", topic_id, keyword)

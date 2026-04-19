@@ -160,6 +160,98 @@ def get_cta_script(category: str, total_videos_produced: int) -> str:
     return CTA_SUBSCRIBE
 
 
+
+# ---------------------------------------------------------------------------
+# Lead magnet intelligence — keyword-to-product affinity scoring
+# ---------------------------------------------------------------------------
+
+# Keywords that signal strong affinity for each product.
+# If the topic keyword contains 3+ matches, the lead magnet CTA fires
+# regardless of rotation position.
+PRODUCT_KEYWORDS: dict[str, list[str]] = {
+    "money": [
+        "rich", "wealth", "invest", "passive", "income", "bank", "savings",
+        "inflation", "broke", "paycheck", "debt", "tax", "money", "financial",
+        "millionaire", "asset", "budget", "salary", "system", "profit",
+        "retire", "dividend", "stock", "crypto", "real estate", "fund",
+    ],
+    "career": [
+        "job", "salary", "career", "work", "boss", "employee", "hired",
+        "fired", "layoff", "promotion", "negotiate", "linkedin", "resume",
+        "automate", "side hustle", "freelance", "escape", "9 to 5", "nine to five",
+        "corporate", "office", "paycheck", "degree", "college", "skill",
+    ],
+    "success": [
+        "success", "mindset", "habit", "routine", "morning", "goal",
+        "productive", "motivation", "discipline", "blueprint", "myth",
+        "belief", "vision", "entrepreneur", "failure", "growth", "mindset",
+        "self", "improve", "learn", "hustle", "grind", "focus",
+    ],
+}
+
+# Minimum keyword matches to trigger intelligent lead magnet (overrides rotation)
+SMART_CTA_THRESHOLD: int = 2
+
+# Lead magnet overlay text per product
+CTA_OVERLAY_LEAD_MAGNET: dict[str, str] = {
+    "money":   "FREE WEALTH SYSTEMS BLUEPRINT — Comment SYSTEM",
+    "career":  "FREE SALARY ESCAPE GUIDE — Comment AUTOMATE",
+    "success": "FREE SUCCESS MYTHS BREAKDOWN — Comment BLUEPRINT",
+}
+
+CTA_OVERLAY_SUBSCRIBE = "Subscribe for more financial truths"
+
+
+def _score_topic_affinity(keyword: str, category: str) -> dict[str, int]:
+    """
+    Score how strongly a topic keyword aligns with each product.
+    Returns dict of {product_category: match_count}.
+    """
+    kw_lower = keyword.lower()
+    scores: dict[str, int] = {}
+    for product_cat, keywords in PRODUCT_KEYWORDS.items():
+        score = sum(1 for k in keywords if k in kw_lower)
+        scores[product_cat] = score
+    return scores
+
+
+def get_smart_cta(
+    category: str,
+    keyword: str,
+    total_videos_produced: int,
+) -> tuple[str, str]:
+    """
+    Intelligently select CTA script and overlay based on topic-product affinity.
+
+    Logic:
+      1. Score topic keyword against all product keyword maps
+      2. If best-matching product scores >= SMART_CTA_THRESHOLD:
+         → serve that product's lead magnet CTA (regardless of rotation)
+      3. Otherwise fall back to rotation logic (subscribe 80%, lead magnet every 5th)
+
+    Returns:
+        (cta_script, cta_overlay) tuple — both update together.
+    """
+    # Score topic against all products
+    affinity = _score_topic_affinity(keyword, category)
+    best_product = max(affinity, key=affinity.get)
+    best_score = affinity[best_product]
+
+    if best_score >= SMART_CTA_THRESHOLD:
+        # Strong topic-product match — serve lead magnet intelligently
+        cta_script = CTA_LEAD_MAGNET.get(best_product, CTA_LEAD_MAGNET["money"])
+        cta_overlay = CTA_OVERLAY_LEAD_MAGNET.get(best_product, CTA_OVERLAY_LEAD_MAGNET["money"])
+        return cta_script, cta_overlay
+
+    # Fallback: rotation logic
+    mode = get_cta_mode(total_videos_produced)
+    if mode == "lead_magnet":
+        cta_script = CTA_LEAD_MAGNET.get(category, CTA_LEAD_MAGNET["money"])
+        cta_overlay = CTA_OVERLAY_LEAD_MAGNET.get(category, CTA_OVERLAY_LEAD_MAGNET["money"])
+        return cta_script, cta_overlay
+
+    return CTA_SUBSCRIBE, CTA_OVERLAY_SUBSCRIBE
+
 PRODUCTS: dict[str, dict[str, str]] = {
     "money": {
         "name":       "The 5 Money Systems Millionaires Use While They Sleep",
