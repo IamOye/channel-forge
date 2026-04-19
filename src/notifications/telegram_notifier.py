@@ -50,7 +50,16 @@ class TelegramNotifier:
         chat_id: str | None = None,
     ) -> None:
         self.token   = token   if token   is not None else os.getenv("TELEGRAM_BOT_TOKEN",  "")
-        self.chat_id = chat_id if chat_id is not None else os.getenv("TELEGRAM_CHAT_ID", "")
+        # Support multiple recipients via TELEGRAM_CHAT_IDS (comma-separated)
+        # Falls back to single TELEGRAM_CHAT_ID for backwards compatibility
+        if chat_id is not None:
+            self.chat_ids = [chat_id]
+        else:
+            multi = os.getenv("TELEGRAM_CHAT_IDS", "")
+            single = os.getenv("TELEGRAM_CHAT_ID", "")
+            ids = multi if multi else single
+            self.chat_ids = [c.strip() for c in ids.split(",") if c.strip()]
+        self.chat_id = self.chat_ids[0] if self.chat_ids else ""
 
     # ------------------------------------------------------------------
     # Core send
