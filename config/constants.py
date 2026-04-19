@@ -136,8 +136,7 @@ CTA_TRIGGER_KEYWORDS: dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 # Subscribe CTA (used 80% of videos — every video except every 5th)
-CTA_SUBSCRIBE = "Subscribe. We expose this stuff daily."
-
+CTA_SUBSCRIBE = "Subscribe — we say the money things your bank hopes you never hear."
 # Lead-magnet CTAs per category (used every 5th video)
 CTA_LEAD_MAGNET: dict[str, str] = {
     "money":   "Comment SYSTEM below. I will send you the 5-day money reset free.",

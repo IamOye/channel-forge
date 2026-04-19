@@ -351,7 +351,7 @@ class ScriptGenerator:
 
         # Subscribe-only CTA: just needs 'subscribe' and 'daily'
         if "subscribe" in cta_lower and "comment" not in cta_lower:
-            return "subscribe" in q_lower and "daily" in q_lower
+            return "subscribe" in q_lower and ("bank" in q_lower or "hear" in q_lower)
 
         # Lead-magnet CTA: must contain the trigger keyword
         trigger_keywords = ["system", "automate", "blueprint"]
