@@ -134,6 +134,10 @@ def run_startup_tasks(db_path: Path | None = None) -> None:
         run_all_channel_scrapers()
     except Exception as exc:
         logger.error("[scheduler] Startup scrape failed (non-fatal): %s", exc)
+    try:
+        run_topic_queue_sync()
+    except Exception as exc:
+        logger.error("[scheduler] Startup queue sync failed (non-fatal): %s", exc)
 
     # Force-seed fallback topics if scored_topics is still empty after scraping
     # (handles datacenter IP blocks, e.g. Reddit 403 on Railway)
@@ -1164,10 +1168,10 @@ def build_scheduler(timezone_name: str | None = None) -> BlockingScheduler:
         misfire_grace_time=120,
     )
 
-    # --- Topic Queue Sync: every Monday at 05:00 ---
+    # --- Topic Queue Sync: every 6 h at 00:15, 06:15, 12:15, 18:15 ---
     scheduler.add_job(
         run_topic_queue_sync,
-        trigger=CronTrigger(day_of_week="mon", hour=5, minute=0, timezone=tz),
+        trigger=CronTrigger(hour=SCRAPER_HOURS, minute=15, timezone=tz),
         id="topic_queue_sync",
         name="Topic Queue Sync",
         replace_existing=True,
