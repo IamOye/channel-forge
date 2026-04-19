@@ -76,13 +76,13 @@ OPTIMIZATION_MINUTE: int = 0
 
 CAPTION_TIMING: dict[str, float] = {
     "hook_start":       0.0,
-    "hook_end":         4.0,
-    "point1_start":     4.0,
-    "point1_end":       7.5,
-    "point2_start":     7.5,
-    "point2_end":       11.0,
-    "cta_start":        11.0,
-    "cta_end":          13.5,
+    "hook_end":         10.0,
+    "point1_start":     10.0,
+    "point1_end":       22.0,
+    "point2_start":     22.0,
+    "point2_end":       35.0,
+    "cta_start":        35.0,
+    "cta_end":          50.0,
 }
 
 # ---------------------------------------------------------------------------
@@ -300,5 +300,5 @@ COMPETITOR_HIGH_SIGNAL_MIN_VIEWS: int = 100_000
 # Script limits
 # ---------------------------------------------------------------------------
 
-MAX_SCRIPT_WORDS: int = 75      # hard cap — script must be < 75 words
-VIDEO_DURATION_SECONDS: float = 13.5
+MAX_SCRIPT_WORDS: int = 150     # hard cap — script must be < 150 words
+VIDEO_DURATION_SECONDS: float = 50.0

@@ -123,8 +123,8 @@ Respond ONLY with a JSON object, no markdown:
 # Validation constants
 # ---------------------------------------------------------------------------
 
-MAX_WORDS = 106   # hard ceiling; scripts of ≥106 words fail validation
-RETRY_WORD_LIMIT = 100  # trigger one brevity retry if word_count > this
+MAX_WORDS = 160   # hard ceiling; scripts of >=160 words fail validation
+RETRY_WORD_LIMIT = 155  # trigger one brevity retry if word_count > this
 REQUIRED_PARTS = ("hook", "statement", "twist", "landing", "question")
 
 PART_WORD_LIMITS = {
