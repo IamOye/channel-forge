@@ -79,26 +79,26 @@ Pack in beats 2 and 3:
            Not a statistic — a situation. (2 sentences)
   Beat 3: One sharp, credible number or fact that validates the tension. No fluff. (1 sentence)
 
-PART 3 — twist (18–25 words)
+PART 3 — twist (25–35 words)
 Pack in beats 4 and 5:
   Beat 4: Deepen the problem. Show it is worse than the viewer realised. (1–2 sentences)
-  Beat 5: The reframe — the insight moment that makes them feel they just learned something. (1 sentence)
-
+  Beat 5: The solution formula — give one specific, actionable insight or mental model
+           that starts to solve the problem. This builds trust. Not vague advice.
+           A concrete move: "The fix is X, not Y." or "What actually works is Z." (1–2 sentences)
 PART 4 — landing (8–12 words)
 A short pause beat that lands the emotional point. This is the punchline moment —
 a sharp, declarative sentence that lets the insight sink in before the CTA.
 Not a question. Not filler. A gut-punch that makes the viewer nod.
-Example: "That's not an accident. It's by design."
-
-PART 5 — question (15–20 words)
+Example: "That is not an accident. It is by design."
+End this part with "..." to signal a natural pause before the CTA.
+PART 5 — question (15–25 words)
   One personal, direct question that pulls the viewer in. (1 sentence, ends with ?)
+  Then write "..." for a breath pause.
   Then the exact CTA text provided, word for word. Do NOT rephrase or improvise.
   The CTA is the final sentence of the entire script. Nothing after it.
-
 WRITING RULES — follow these strictly:
-- Total word count across all 5 parts: 80–95 words. HARD MAXIMUM: 100 words total.
-- BEFORE responding, count every word in your script. If it exceeds 100, cut until it does not.
-- Never use em dashes (—) in the script body
+- Total word count across all 5 parts: 100–140 words. HARD MAXIMUM: 150 words total.
+- BEFORE responding, count every word in your script. If it exceeds 150, cut until it does not.
 - Never use "it is worth noting", "in conclusion", "furthermore", "moreover"
 - Write as if talking to one specific person
 - Short sentences. Punchy. Direct.
