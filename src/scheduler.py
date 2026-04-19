@@ -263,6 +263,21 @@ def run_all_channel_scrapers() -> None:
         )
 
 
+def run_scraped_topic_processor() -> None:
+    """Promote approved scraped topics into the production queue."""
+    from src.crawler.scraped_topic_processor import ScrapedTopicProcessor
+    start = datetime.now(timezone.utc)
+    logger.info("[scheduler] run_scraped_topic_processor START %s", start.isoformat())
+    try:
+        processor = ScrapedTopicProcessor()
+        stats = processor.run()
+        logger.info("[scheduler] Scraped topic processor stats: %s", stats)
+    except Exception as exc:
+        logger.error("[scheduler] run_scraped_topic_processor ERROR: %s", exc)
+    finally:
+        elapsed = (datetime.now(timezone.utc) - start).total_seconds()
+        logger.info("[scheduler] run_scraped_topic_processor END (%.1fs)", elapsed)
+
 def run_all_channel_production() -> None:
     """Run the full production pipeline for every configured channel."""
     import sqlite3 as _sqlite3
@@ -1033,6 +1048,15 @@ def build_scheduler(timezone_name: str | None = None) -> BlockingScheduler:
         misfire_grace_time=300,
     )
 
+    # --- Scraped topic processor: 30 min after scrapers (00:30, 06:30, 12:30, 18:30) ---
+    scheduler.add_job(
+        run_scraped_topic_processor,
+        trigger=CronTrigger(hour=SCRAPER_HOURS, minute=30, timezone=tz),
+        id="scraped_topic_processor",
+        name="Scraped Topic Processor",
+        replace_existing=True,
+        misfire_grace_time=300,
+    )
     # --- Production: 01:00, 07:00, 13:00, 19:00 ---
     scheduler.add_job(
         run_all_channel_production,
