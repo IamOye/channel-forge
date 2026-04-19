@@ -925,7 +925,7 @@ def run_topic_queue_sync() -> None:
             conn.close()
 
         # Fetch next 28 READY topics from Sheet
-        topics = sync.get_next_batch(last_seq=last_seq, count=28)
+        topics = sync.get_next_batch(last_seq=0, count=28)  # status=READY filters; seq filter removed
 
         if not topics:
             logger.warning(
