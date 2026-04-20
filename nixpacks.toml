@@ -1,5 +1,5 @@
 [phases.setup]
-nixPkgs = ["ffmpeg", "python311"]
+nixPkgs = ["ffmpeg", "python311", "cairo", "gobject-introspection", "pkg-config"]
 
 [phases.install]
 cmds = [
