@@ -954,6 +954,32 @@ class TelegramReplyHandler:
     # Research commands
     # ------------------------------------------------------------------
 
+
+    def handle_cleanraw(self) -> str:
+        """Handle /cleanraw ‚Äî delete all raw media files from /app/data/raw/."""
+        import os
+        data_root = "/app/data/raw" if os.path.exists("/app/data/raw") else "data/raw"
+        if not os.path.exists(data_root):
+            return f"‚ùå Directory not found: {data_root}"
+        deleted = 0
+        freed = 0
+        errors = []
+        for root, dirs, files in os.walk(data_root):
+            for fname in files:
+                if fname.endswith((".mp4", ".webm", ".wav", ".mp3")):
+                    fpath = os.path.join(root, fname)
+                    try:
+                        size = os.path.getsize(fpath)
+                        os.remove(fpath)
+                        deleted += 1
+                        freed += size
+                    except Exception as e:
+                        errors.append(str(e))
+        freed_mb = freed / (1024 * 1024)
+        msg = f"Ì∑π Cleanup complete\nÌ∑ëÔ∏è Files deleted: {deleted}\nÌ≤æ Space freed: {freed_mb:.1f} MB"
+        if errors:
+            msg += f"\n‚ö†Ô∏è Errors: {len(errors)}"
+        return msg
     def _get_engine(self):
         """Get a ResearchEngine instance (exclude Reddit on Railway)."""
         from src.research.research_engine import ResearchEngine
@@ -1307,6 +1333,8 @@ class TelegramReplyHandler:
 
         # /diskusage
         if text == "/diskusage":
+        if text == "/cleanraw":
+            return self.handle_cleanraw()
             return self.handle_diskusage()
 
         # /usage
