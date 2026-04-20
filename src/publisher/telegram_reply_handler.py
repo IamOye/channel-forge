@@ -976,9 +976,9 @@ class TelegramReplyHandler:
                     except Exception as e:
                         errors.append(str(e))
         freed_mb = freed / (1024 * 1024)
-        msg = f"Ì∑π Cleanup complete\nÌ∑ëÔ∏è Files deleted: {deleted}\nÌ≤æ Space freed: {freed_mb:.1f} MB"
+        msg = f"Cleanup complete\nFiles deleted: {deleted}\nSpace freed: {freed_mb:.1f} MB"
         if errors:
-            msg += f"\n‚ö†Ô∏è Errors: {len(errors)}"
+            msg += f"\nErrors ({len(errors)} files failed)"
         return msg
     def _get_engine(self):
         """Get a ResearchEngine instance (exclude Reddit on Railway)."""
