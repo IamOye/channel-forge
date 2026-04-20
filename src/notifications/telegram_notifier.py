@@ -72,9 +72,25 @@ class TelegramNotifier:
         Returns True on success, False on any failure (never raises).
         Returns False silently if token or chat_id are not configured.
         """
-        if not self.token or not self.chat_id:
+        if not self.token or not self.chat_ids:
             logger.debug("Telegram not configured — skipping notification")
             return False
+        success = False
+        for cid in self.chat_ids:
+            try:
+                url = _API_BASE.format(token=self.token)
+                payload = {
+                    "chat_id":    cid,
+                    "text":       message,
+                    "parse_mode": "HTML",
+                }
+                response = httpx.post(url, json=payload, timeout=10.0)
+                response.raise_for_status()
+                logger.debug("Telegram sent to %s (%d chars)", cid, len(message))
+                success = True
+            except Exception as exc:
+                logger.warning("Telegram failed for %s: %s", cid, exc)
+        return success
 
         try:
             url = _API_BASE.format(token=self.token)
