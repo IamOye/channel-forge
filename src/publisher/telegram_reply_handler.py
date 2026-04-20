@@ -1331,11 +1331,11 @@ class TelegramReplyHandler:
         if text == "/diagnose":
             return self.handle_diagnose()
 
-        # /diskusage
+       # /diskusage
         if text == "/diskusage":
+            return self.handle_diskusage()
         if text == "/cleanraw":
             return self.handle_cleanraw()
-            return self.handle_diskusage()
 
         # /usage
         if text == "/usage":
