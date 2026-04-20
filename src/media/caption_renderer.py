@@ -376,28 +376,42 @@ def _render_word_frame(
             "font":   fnt,
         })
 
-    total_w = sum(e["tw"] for e in entries) + WORD_GAP * (len(entries) - 1)
-    max_th = max(e["th"] for e in entries)
-
-    # Vertical position: centred at WORD_CAPTION_Y_RATIO from top
-    y_mid = int(canvas_h * WORD_CAPTION_Y_RATIO)
-    x = (canvas_w - total_w) // 2
-
-    # Draw text with stroke — NO background pill/badge of any kind
+    # --- Word wrap: split entries into lines that fit within canvas ---
+    max_line_w = int(canvas_w * 0.88)
+    lines_out: list[list[dict]] = []
+    cur_line: list[dict] = []
+    cur_w = 0
     for e in entries:
-        y_top = y_mid - max_th // 2
-
-        if e["is_cur"]:
-            fill = (*HIGHLIGHT_TEXT_COLOR, 255)   # Brighter yellow
+        word_w = e["tw"] + (WORD_GAP if cur_line else 0)
+        if cur_line and cur_w + word_w > max_line_w:
+            lines_out.append(cur_line)
+            cur_line = [e]
+            cur_w = e["tw"]
         else:
-            fill = (*WORD_TEXT_COLOR, 255)         # White
-
-        # Text with black stroke outline (scaled to canvas)
-        draw.text(
-            (x, y_top), e["text"], font=e["font"], fill=fill,
-            stroke_width=stroke_w,
-            stroke_fill=(*WORD_STROKE_COLOR, 255),
-        )
+            cur_line.append(e)
+            cur_w += word_w
+    if cur_line:
+        lines_out.append(cur_line)
+    max_th = max(e["th"] for e in entries)
+    line_h = max_th + 12
+    total_h = line_h * len(lines_out)
+    y_mid = int(canvas_h * WORD_CAPTION_Y_RATIO)
+    y_start = y_mid - total_h // 2
+    for line_idx, line_entries in enumerate(lines_out):
+        line_w = sum(e["tw"] for e in line_entries) + WORD_GAP * (len(line_entries) - 1)
+        x = (canvas_w - line_w) // 2
+        y_top = y_start + line_idx * line_h
+        for e in line_entries:
+            if e["is_cur"]:
+                fill = (*HIGHLIGHT_TEXT_COLOR, 255)
+            else:
+                fill = (*WORD_TEXT_COLOR, 255)
+            draw.text(
+                (x, y_top), e["text"], font=e["font"], fill=fill,
+                stroke_width=stroke_w,
+                stroke_fill=(*WORD_STROKE_COLOR, 255),
+            )
+            x += e["tw"] + WORD_GAP
 
         x += e["tw"] + WORD_GAP
 

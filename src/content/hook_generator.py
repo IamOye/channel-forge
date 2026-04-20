@@ -216,13 +216,34 @@ class HookGenerator:
             topic, emotion, score,
         )
 
-        message = client.messages.create(
-            model=self.model,
-            max_tokens=self.max_tokens,
-            system=_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        raw = message.content[0].text.strip()
+        # Retry with exponential backoff on overloaded / 529 errors
+        import time as _time
+        _max_attempts = 4
+        _raw = None
+        for _attempt in range(_max_attempts):
+            try:
+                message = client.messages.create(
+                    model=self.model,
+                    max_tokens=self.max_tokens,
+                    system=_SYSTEM_PROMPT,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                _raw = message.content[0].text.strip()
+                break
+            except Exception as _api_exc:
+                _err_str = str(_api_exc).lower()
+                if "overloaded" in _err_str or "529" in _err_str or "529" in repr(_api_exc):
+                    _wait = 10 * (2 ** _attempt)  # 10s, 20s, 40s, 80s
+                    logger.warning(
+                        "Anthropic overloaded (attempt %d/%d) — retrying in %ds",
+                        _attempt + 1, _max_attempts, _wait,
+                    )
+                    _time.sleep(_wait)
+                    if _attempt == _max_attempts - 1:
+                        raise
+                else:
+                    raise
+        raw = _raw
         logger.debug("Raw hook response: %s", raw)
 
         variants = self._parse_variants(raw)

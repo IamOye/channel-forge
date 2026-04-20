@@ -387,7 +387,10 @@ def run_elevenlabs_usage_check() -> None:
             "[scheduler] ElevenLabs usage: %d/%d chars (%.1f%%) — %s",
             report["monthly_total"], report["monthly_limit"], pct, report["status"],
         )
-        if pct >= 67:
+        # Notify at 67%, 85%, 95% thresholds — once per threshold crossing
+        _thresholds = [95, 85, 67]
+        _crossed = next((t for t in _thresholds if pct >= t), None)
+        if _crossed:
             logger.warning(
                 "===================================\n"
                 "ELEVENLABS WARNING: %.0f%% used\n"
@@ -398,6 +401,45 @@ def run_elevenlabs_usage_check() -> None:
                 report["chars_remaining"],
                 report["videos_remaining"],
             )
+            # Only send Telegram notification if threshold is newly crossed
+            import sqlite3 as _sq3
+            _db = _DEFAULT_DB
+            try:
+                _conn = _sq3.connect(_db)
+                _conn.execute(
+                    "CREATE TABLE IF NOT EXISTS notification_log "
+                    "(key TEXT PRIMARY KEY, value TEXT, updated_at TEXT)"
+                )
+                _key = f"elevenlabs_notified_{_crossed}"
+                _existing = _conn.execute(
+                    "SELECT value FROM notification_log WHERE key = ?", (_key,)
+                ).fetchone()
+                _month_key = datetime.now(timezone.utc).strftime("%Y-%m")
+                if not _existing or _existing[0] != _month_key:
+                    # New crossing this month — notify
+                    try:
+                        from src.notifications.telegram_notifier import TelegramNotifier
+                        import datetime as _dt
+                        _reset = (_dt.date.today().replace(day=1) +
+                                  _dt.timedelta(days=32)).replace(day=1).strftime("%d %b %Y")
+                        TelegramNotifier().notify_elevenlabs_warning(
+                            chars_used=report["monthly_total"],
+                            monthly_limit=report["monthly_limit"],
+                            pct=pct,
+                            videos_left=report["videos_remaining"],
+                            reset_date=_reset,
+                        )
+                    except Exception as _ne:
+                        logger.warning("Quota notification failed: %s", _ne)
+                    _conn.execute(
+                        "INSERT OR REPLACE INTO notification_log (key, value, updated_at) "
+                        "VALUES (?, ?, datetime('now'))",
+                        (_key, _month_key),
+                    )
+                    _conn.commit()
+                _conn.close()
+            except Exception as _dbe:
+                logger.warning("Quota dedup DB error: %s", _dbe)
     except Exception as exc:
         logger.error("[scheduler] run_elevenlabs_usage_check ERROR: %s", exc)
     finally:
