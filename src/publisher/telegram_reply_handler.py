@@ -838,6 +838,119 @@ class TelegramReplyHandler:
         return self._format_elevenlabs_usage()
 
     # ------------------------------------------------------------------
+    # Disk usage
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _fmt_bytes(n: int) -> str:
+        """Format bytes as a human-readable string (B/K/M/G/T)."""
+        f = float(n)
+        for unit in ("B", "K", "M", "G"):
+            if f < 1024:
+                return f"{f:.1f}{unit}"
+            f /= 1024
+        return f"{f:.1f}T"
+
+    def handle_diskusage(self) -> str:
+        """Handle /diskusage — report disk usage for /app/data."""
+        import subprocess
+
+        # Prefer /app/data (Railway), fall back to local data/ for dev
+        data_root = Path("/app/data") if Path("/app/data").exists() else Path("data")
+        if not data_root.exists():
+            return "❌ No data directory found (/app/data or data/)"
+
+        sections: list[str] = []
+
+        # 1. Total size of data root
+        try:
+            r = subprocess.run(
+                ["du", "-sh", str(data_root)],
+                capture_output=True, text=True, timeout=30,
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                total = r.stdout.split()[0]
+            else:
+                total = "?"
+            sections.append(f"💾 <b>Total size of {data_root}:</b> {total}")
+        except Exception as exc:
+            sections.append(f"💾 <b>Total:</b> failed — {exc}")
+
+        # 2. Breakdown by subdirectory
+        sub_lines = ["📁 <b>By subdirectory:</b>"]
+        try:
+            subdirs = sorted([p for p in data_root.iterdir() if p.is_dir()])
+            if subdirs:
+                r = subprocess.run(
+                    ["du", "-sh"] + [str(p) for p in subdirs],
+                    capture_output=True, text=True, timeout=60,
+                )
+                for line in r.stdout.strip().splitlines():
+                    parts = line.split(None, 1)
+                    if len(parts) == 2:
+                        size, path = parts
+                        sub_lines.append(f"  {size}  {Path(path).name}/")
+            else:
+                sub_lines.append("  (no subdirectories)")
+        except Exception as exc:
+            sub_lines.append(f"  error — {exc}")
+        sections.append("\n".join(sub_lines))
+
+        # 3. Leftover media files by extension
+        media_lines = ["🎬 <b>Leftover media by extension:</b>"]
+        for ext in ("mp4", "wav", "mp3", "webm"):
+            try:
+                r = subprocess.run(
+                    ["find", str(data_root), "-type", "f", "-iname", f"*.{ext}"],
+                    capture_output=True, text=True, timeout=30,
+                )
+                files = [f for f in r.stdout.splitlines() if f.strip()]
+                total_bytes = 0
+                for f in files:
+                    try:
+                        total_bytes += Path(f).stat().st_size
+                    except OSError:
+                        pass
+                media_lines.append(
+                    f"  .{ext}: {len(files)} files, {self._fmt_bytes(total_bytes)}"
+                )
+            except Exception as exc:
+                media_lines.append(f"  .{ext}: error — {exc}")
+        sections.append("\n".join(media_lines))
+
+        # 4. DB table row counts
+        db_path = data_root / "processed" / "channel_forge.db"
+        db_lines = [f"🗄️ <b>DB table rows ({db_path.name}):</b>"]
+        tables = (
+            "scored_topics",
+            "competitor_topics",
+            "manual_topics",
+            "clip_history",
+            "pipeline_results",
+        )
+        if db_path.exists():
+            try:
+                conn = sqlite3.connect(db_path)
+                try:
+                    for tbl in tables:
+                        try:
+                            n = conn.execute(
+                                f"SELECT COUNT(*) FROM {tbl}"
+                            ).fetchone()[0]
+                            db_lines.append(f"  {tbl}: {n:,}")
+                        except sqlite3.OperationalError:
+                            db_lines.append(f"  {tbl}: (table not found)")
+                finally:
+                    conn.close()
+            except Exception as exc:
+                db_lines.append(f"  error: {exc}")
+        else:
+            db_lines.append(f"  DB not found at {db_path}")
+        sections.append("\n".join(db_lines))
+
+        return "\n\n".join(sections)
+
+    # ------------------------------------------------------------------
     # Research commands
     # ------------------------------------------------------------------
 
@@ -1191,6 +1304,10 @@ class TelegramReplyHandler:
         # /diagnose
         if text == "/diagnose":
             return self.handle_diagnose()
+
+        # /diskusage
+        if text == "/diskusage":
+            return self.handle_diskusage()
 
         # /usage
         if text == "/usage":
