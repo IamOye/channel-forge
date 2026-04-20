@@ -426,7 +426,7 @@ class ProductionPipeline:
         # --- Step 5: Video build ---
         build_result = self._run_step(
             "video_build", steps, errors,
-            lambda: self._run_video_builder(topic_id, script_dict, audio_path, stock_video_paths, cta_overlay, word_timestamps),
+            lambda: self._run_format_build(topic_id, script_dict, audio_path, stock_video_paths, cta_overlay, word_timestamps, total_videos),
         )
         if build_result is None or not build_result.is_valid:
             errors.append(f"video_build failed: {getattr(build_result, 'validation_errors', [])}")
@@ -722,7 +722,37 @@ class ProductionPipeline:
                 validation_errors=["no stock media found for any b-roll phrase"],
             )
         return _MultiFetchResult(video_paths=all_paths, is_valid=True)
-
+    def _run_format_build(
+        self,
+        topic_id:          str,
+        script_dict:       dict,
+        audio_path:        str,
+        stock_video_paths: list,
+        cta_overlay:       str,
+        word_timestamps:   list | None,
+        total_videos:      int,
+    ):
+        slot = total_videos % 4
+        logger.info("[pipeline] Format slot %d (total_videos=%d)", slot, total_videos)
+        if slot in (1, 3):
+            try:
+                from src.media.kinetic_renderer import KineticRenderer
+                logger.info("[pipeline] Using KineticRenderer for slot %d", slot)
+                return KineticRenderer().build(
+                    topic_id=topic_id,
+                    script_dict=script_dict,
+                    audio_path=audio_path,
+                    word_timestamps=word_timestamps,
+                    cta_overlay=cta_overlay,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[pipeline] KineticRenderer failed (%s) — falling back to VideoBuilder", exc
+                )
+        return self._run_video_builder(
+            topic_id, script_dict, audio_path,
+            stock_video_paths, cta_overlay, word_timestamps,
+        )
     def _run_video_builder(
         self,
         topic_id: str,
