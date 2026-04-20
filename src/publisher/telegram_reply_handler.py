@@ -1275,7 +1275,8 @@ class TelegramReplyHandler:
                         msg_text = msg.get("text", "")
 
                         # Only handle messages from our authorised chat
-                        if str(chat.get("id")) != str(self.chat_id):
+                        _allowed = [c.strip() for c in str(self.chat_id).split(",")]
+                        if str(chat.get("id")) not in _allowed:
                             continue
 
                         if not msg_text:
