@@ -1184,18 +1184,28 @@ class ProductionPipeline:
     def _cleanup_raw_files(self, topic_id: str) -> None:
         """Delete temporary raw media files for topic_id after successful upload."""
         import glob as _glob
-
+        import os as _os
+        raw_dir = Path("/app/data/raw") if Path("/app/data/raw").exists() else Path("data/raw")
         patterns = [
-            f"data/raw/{topic_id}_voice.mp3",
-            f"data/raw/{topic_id}_words.json",
-            f"data/raw/{topic_id}_stock_*.mp4",
-            f"data/raw/{topic_id}_photo_*.jpg",
-            f"data/raw/{topic_id}_ken_burns_*.mp4",
-            f"data/raw/{topic_id}_kb*_photo_*.jpg",
+            str(raw_dir / f"{topic_id}_voice.mp3"),
+            str(raw_dir / f"{topic_id}_words.json"),
+            str(raw_dir / f"{topic_id}_stock_*.mp4"),
+            str(raw_dir / f"{topic_id}_photo_*.jpg"),
+            str(raw_dir / f"{topic_id}_ken_burns_*.mp4"),
+            str(raw_dir / f"{topic_id}_illust_kb_*.mp4"),
+            str(raw_dir / f"{topic_id}_kb*_photo_*.jpg"),
+            str(raw_dir / f"{topic_id}_*.mp4"),
+            str(raw_dir / f"{topic_id}_*.jpg"),
+            str(raw_dir / f"{topic_id}_*.mp3"),
+            str(raw_dir / f"{topic_id}_*.json"),
         ]
         deleted = 0
+        seen = set()
         for pattern in patterns:
             for path in _glob.glob(pattern):
+                if path in seen:
+                    continue
+                seen.add(path)
                 try:
                     Path(path).unlink(missing_ok=True)
                     deleted += 1
@@ -1203,6 +1213,8 @@ class ProductionPipeline:
                     logger.warning("[production] Could not delete %s: %s", path, exc)
         if deleted:
             logger.info("[production] Cleaned up %d raw file(s) for topic_id=%s", deleted, topic_id)
+        else:
+            logger.info("[production] No raw files found to clean for topic_id=%s", topic_id)
 
     def _get_total_videos_produced(self) -> int:
         """Count rows in production_results to determine CTA rotation."""
