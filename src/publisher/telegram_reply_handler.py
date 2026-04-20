@@ -668,6 +668,21 @@ class TelegramReplyHandler:
             return f"❌ Failed: {exc}"
         finally:
             conn.close()
+    def handle_cleartopics(self) -> str:
+        """Handle /cleartopics -- clear all QUEUED entries from manual_topics."""
+        conn = self._get_conn()
+        try:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM manual_topics WHERE status = 'QUEUED'"
+            ).fetchone()[0]
+            conn.execute("DELETE FROM manual_topics WHERE status = 'QUEUED'")
+            conn.commit()
+            return f"Cleared {count} QUEUED topic(s). USED topics unaffected."
+        except Exception as exc:
+            return f"Failed: {exc}"
+        finally:
+            conn.close()
+
 
     def handle_queue(self) -> str:
         """Handle /queue — show videos with status='pending' awaiting upload."""
@@ -1165,6 +1180,9 @@ class TelegramReplyHandler:
         # /clearpending
         if text == "/clearpending":
             return self.handle_clearpending()
+        # /cleartopics
+        if text == "/cleartopics":
+            return self.handle_cleartopics()
 
         # /queue
         if text == "/queue":
@@ -1176,6 +1194,9 @@ class TelegramReplyHandler:
 
         # /usage
         if text == "/usage":
+            return self.handle_usage()
+        # /quota (alias for /usage)
+        if text == "/quota":
             return self.handle_usage()
 
         # Research commands
