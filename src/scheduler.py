@@ -447,6 +447,71 @@ def run_elevenlabs_usage_check() -> None:
         logger.info("[scheduler] run_elevenlabs_usage_check END (%.1fs)", elapsed)
 
 
+
+def run_youtube_quota_check() -> None:
+    """Check YouTube API quota daily and notify once per threshold crossing."""
+    import sqlite3 as _sq3
+    from datetime import date as _date
+    start = datetime.now(timezone.utc)
+    logger.info("[scheduler] run_youtube_quota_check START %s", start.isoformat())
+    try:
+        today_str = _date.today().isoformat()
+        db = _DEFAULT_DB
+        units_used = 0
+        try:
+            conn = _sq3.connect(db)
+            row = conn.execute(
+                "SELECT COALESCE(SUM(units_used),0) FROM youtube_quota_usage WHERE date=?",
+                (today_str,),
+            ).fetchone()
+            units_used = int(row[0] or 0) if row else 0
+            conn.close()
+        except Exception as db_exc:
+            logger.warning("[youtube_quota] DB query failed: %s", db_exc)
+
+        daily_limit = 10_000
+        pct = units_used / daily_limit * 100 if daily_limit > 0 else 0.0
+        uploads_left = max(0, (daily_limit - units_used) // 1600)
+        logger.info("[youtube_quota] %d/%d units used (%.1f%%)", units_used, daily_limit, pct)
+
+        # Notify at 67%, 85%, 95% — once per threshold per day
+        _thresholds = [95, 85, 67]
+        _crossed = next((t for t in _thresholds if pct >= t), None)
+        if _crossed:
+            try:
+                conn = _sq3.connect(db)
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS notification_log "
+                    "(key TEXT PRIMARY KEY, value TEXT, updated_at TEXT)"
+                )
+                _key = f"youtube_quota_notified_{_crossed}"
+                _existing = conn.execute(
+                    "SELECT value FROM notification_log WHERE key=?", (_key,)
+                ).fetchone()
+                if not _existing or _existing[0] != today_str:
+                    from src.notifications.telegram_notifier import TelegramNotifier
+                    if _crossed >= 95:
+                        TelegramNotifier().notify_youtube_quota_exceeded(queued_videos=0)
+                    else:
+                        TelegramNotifier().notify_youtube_quota_warning(
+                            units_used=units_used,
+                            uploads_left=uploads_left,
+                        )
+                    conn.execute(
+                        "INSERT OR REPLACE INTO notification_log (key, value, updated_at) "
+                        "VALUES (?, ?, datetime('now'))",
+                        (_key, today_str),
+                    )
+                    conn.commit()
+                conn.close()
+            except Exception as ne:
+                logger.warning("[youtube_quota] Notification error: %s", ne)
+    except Exception as exc:
+        logger.error("[scheduler] run_youtube_quota_check ERROR: %s", exc)
+    finally:
+        elapsed = (datetime.now(timezone.utc) - start).total_seconds()
+        logger.info("[scheduler] run_youtube_quota_check END (%.1fs)", elapsed)
+
 def run_competitor_research() -> None:
     """Scrape competitor channels and trending finance topics (daily at 07:30 WAT)."""
     start = datetime.now(timezone.utc)
@@ -1135,6 +1200,15 @@ def build_scheduler(timezone_name: str | None = None) -> BlockingScheduler:
         misfire_grace_time=300,
     )
 
+    # --- YouTube quota check: daily at 20:00 WAT (end of day review) ---
+    scheduler.add_job(
+        run_youtube_quota_check,
+        trigger=CronTrigger(hour=19, minute=0, timezone=tz),
+        id="youtube_quota_check",
+        name="YouTube Quota Check",
+        replace_existing=True,
+        misfire_grace_time=300,
+    )
     # --- Competitor research: daily at 06:30 UTC = 07:30 WAT (before 08:00 quota reset) ---
     scheduler.add_job(
         run_competitor_research,

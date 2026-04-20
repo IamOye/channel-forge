@@ -253,6 +253,7 @@ class RedditScraper:
             "[reddit] scrape_finance_subreddits complete: %d topics saved (category=%s)",
             saved_count, category or "all",
         )
+        self._sync_to_gsheet(all_topics)
         return all_topics
 
     # ------------------------------------------------------------------
@@ -493,6 +494,48 @@ class RedditScraper:
     # ------------------------------------------------------------------
     # DB storage
     # ------------------------------------------------------------------
+
+    def _sync_to_gsheet(self, topics: list) -> None:
+        """Write scraped Reddit topics to the Reddit Topics GSheet tab."""
+        if not topics:
+            return
+        try:
+            import os as _os
+            from src.crawler.gsheet_topic_sync import get_gsheet_client
+            import gspread as _gspread
+            from datetime import date as _date
+            sheet_id = _os.getenv("GOOGLE_SHEET_ID", "")
+            creds_b64 = _os.getenv("GOOGLE_CREDENTIALS_B64", "")
+            if not sheet_id or not creds_b64:
+                return
+            _, spreadsheet = get_gsheet_client(sheet_id, creds_b64)
+            try:
+                ws = spreadsheet.worksheet("Reddit Topics")
+            except _gspread.WorksheetNotFound:
+                ws = spreadsheet.add_worksheet(title="Reddit Topics", rows=1000, cols=9)
+            existing_headers = ws.row_values(1)
+            if not existing_headers or existing_headers[0] != "Source":
+                ws.update("A1:I1", [["Source", "Channel", "Original Title", "Topic",
+                    "Views", "Category", "Score", "Date Scraped", "Processed"]])
+            today = _date.today().isoformat()
+            rows = []
+            for t in topics:
+                rows.append([
+                    getattr(t, "source", "REDDIT"),
+                    getattr(t, "subreddit", ""),
+                    getattr(t, "keyword", ""),
+                    getattr(t, "keyword", ""),
+                    getattr(t, "upvotes", 0),
+                    getattr(t, "category", "money"),
+                    round(getattr(t, "score", 0), 1),
+                    today,
+                    "",
+                ])
+            if rows:
+                ws.append_rows(rows, value_input_option="USER_ENTERED")
+                logger.info("[reddit] Wrote %d topics to Reddit Topics GSheet tab", len(rows))
+        except Exception as exc:
+            logger.warning("[reddit] GSheet sync failed (non-fatal): %s", exc)
 
     def _save_to_db(self, topics: list[RedditTopic]) -> int:
         """

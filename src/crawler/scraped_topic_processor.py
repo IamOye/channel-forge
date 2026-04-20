@@ -325,6 +325,20 @@ def _mark_rows_processed(ws, sheet_rows: list[int], flag: str = "YES") -> None:
 # Main processor
 # ---------------------------------------------------------------------------
 
+
+def _read_reddit_tab(spreadsheet) -> list[dict]:
+    """Read unprocessed rows from Reddit Topics GSheet tab."""
+    try:
+        import gspread as _gspread
+        try:
+            ws = spreadsheet.worksheet("Reddit Topics")
+        except _gspread.WorksheetNotFound:
+            return []
+        return _read_unprocessed_rows(ws)
+    except Exception as exc:
+        logger.warning("[processor] Failed to read Reddit Topics tab: %s", exc)
+        return []
+
 class ScrapedTopicProcessor:
     """
     Promotes raw scraped topics into the production pipeline.
@@ -383,10 +397,18 @@ class ScrapedTopicProcessor:
 
         _ensure_processed_header(ws)
 
-        # Read unprocessed rows
+        # Read unprocessed rows from Scraped Topics tab
         raw_rows = _read_unprocessed_rows(ws)
+
+        # Also read from Reddit Topics tab
+        reddit_rows = _read_reddit_tab(spreadsheet)
+        raw_rows = raw_rows + reddit_rows
+
         stats["total_read"] = len(raw_rows)
-        logger.info("[processor] Read %d unprocessed rows from Scraped Topics tab", len(raw_rows))
+        logger.info(
+            "[processor] Read %d unprocessed rows (scraped=%d, reddit=%d)",
+            len(raw_rows), len(raw_rows) - len(reddit_rows), len(reddit_rows),
+        )
 
         if not raw_rows:
             logger.info("[processor] No new rows to process")
