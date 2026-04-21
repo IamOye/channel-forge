@@ -734,7 +734,8 @@ class ProductionPipeline:
     ):
         slot = total_videos % 4
         logger.info("[pipeline] Format slot %d (total_videos=%d)", slot, total_videos)
-        if slot in (1, 3):
+
+        if slot == 1:
             try:
                 from src.media.kinetic_renderer import KineticRenderer
                 logger.info("[pipeline] Using KineticRenderer for slot %d", slot)
@@ -749,6 +750,40 @@ class ProductionPipeline:
                 logger.warning(
                     "[pipeline] KineticRenderer failed (%s) — falling back to VideoBuilder", exc
                 )
+
+        elif slot == 2:
+            try:
+                from src.media.slides_renderer import SlidesRenderer
+                logger.info("[pipeline] Using SlidesRenderer for slot %d", slot)
+                return SlidesRenderer().build(
+                    topic_id=topic_id,
+                    script_dict=script_dict,
+                    audio_path=audio_path,
+                    word_timestamps=word_timestamps,
+                    cta_overlay=cta_overlay,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[pipeline] SlidesRenderer failed (%s) — falling back to VideoBuilder", exc
+                )
+
+        elif slot == 3:
+            try:
+                from src.media.kinetic_renderer import KineticRenderer
+                logger.info("[pipeline] Using KineticRenderer for slot %d", slot)
+                return KineticRenderer().build(
+                    topic_id=topic_id,
+                    script_dict=script_dict,
+                    audio_path=audio_path,
+                    word_timestamps=word_timestamps,
+                    cta_overlay=cta_overlay,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[pipeline] KineticRenderer failed (%s) — falling back to VideoBuilder", exc
+                )
+
+        # Slot 0 or any fallback
         return self._run_video_builder(
             topic_id, script_dict, audio_path,
             stock_video_paths, cta_overlay, word_timestamps,

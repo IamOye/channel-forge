@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1080">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    width: 1080px;
+    height: 1920px;
+    background: #000000;
+    overflow: hidden;
+    font-family: 'Bebas Neue', 'Oswald', sans-serif;
+    color: #F5F5F5;
+  }
+
+  /* ── Grid background ── */
+  #grid {
+    position: absolute;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(13,32,16,0.18) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(13,32,16,0.18) 1px, transparent 1px);
+    background-size: 60px 60px;
+    background-position: var(--gx, 0px) var(--gy, 0px);
+    transition: background-position 0.05s linear;
+  }
+
+  /* ── Vignette ── */
+  #vignette {
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(
+      ellipse at center,
+      transparent 40%,
+      rgba(0,0,0,0.7) 100%
+    );
+    pointer-events: none;
+  }
+
+  /* ── Scene container ── */
+  #scene {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 80px 60px;
+  }
+
+  /* ── Flash overlay ── */
+  #flash {
+    position: absolute;
+    inset: 0;
+    background: #000;
+    opacity: 0;
+    pointer-events: none;
+    z-index: 100;
+  }
+
+  /* ── Typography ── */
+  .word {
+    display: inline-block;
+    line-height: 1.1;
+    transform-origin: center center;
+    will-change: transform, opacity;
+  }
+
+  .hero {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 180px;
+    color: #FFB800;
+    text-transform: uppercase;
+    letter-spacing: 4px;
+  }
+
+  .stat {
+    font-family: 'Montserrat', sans-serif;
+    font-weight: 900;
+    font-size: 220px;
+    color: #FFB800;
+    text-transform: uppercase;
+  }
+
+  .body-text {
+    font-family: 'Oswald', sans-serif;
+    font-weight: 700;
+    font-size: 80px;
+    color: #F5F5F5;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+  }
+
+  .cta-text {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 100px;
+    color: #00FF88;
+    text-transform: uppercase;
+  }
+
+  .danger {
+    color: #FF3333;
+  }
+
+  .ghost {
+    position: absolute;
+    opacity: 0.04;
+    font-size: 200px;
+    color: #FFB800;
+    font-family: 'Oswald', sans-serif;
+    font-weight: 700;
+    text-transform: uppercase;
+    pointer-events: none;
+    user-select: none;
+    top: 50%;
+    left: 50%;
+    transform: translate(-48%, -48%);
+    white-space: nowrap;
+    overflow: hidden;
+  }
+
+  /* ── Decorative line ── */
+  .sweep-line {
+    width: 0%;
+    height: 3px;
+    background: #FFB800;
+    margin: 20px 0;
+  }
+
+  /* ── Layout helpers ── */
+  .row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 16px;
+    justify-content: center;
+    width: 100%;
+  }
+
+  .col {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+  }
+
+  .left {
+    align-items: flex-start;
+    padding-left: 80px;
+  }
+
+  /* ── Glow effect ── */
+  .glow-gold { text-shadow: 0 0 40px rgba(255,184,0,0.4), 0 0 80px rgba(255,184,0,0.2); }
+  .glow-green { text-shadow: 0 0 40px rgba(0,255,136,0.4), 0 0 80px rgba(0,255,136,0.15); }
+
+  /* ── CTA underline ── */
+  .underline-anim {
+    width: 0%;
+    height: 4px;
+    background: #00FF88;
+    border-radius: 2px;
+  }
+
+  /* ── Bell icon ── */
+  .bell-icon {
+    font-size: 80px;
+    display: inline-block;
+  }
+
+  /* ── Cursor blink ── */
+  .cursor {
+    display: inline-block;
+    width: 6px;
+    height: 1em;
+    background: #F5F5F5;
+    vertical-align: text-bottom;
+    margin-left: 4px;
+  }
+</style>
+</head>
+<body>
+  <div id="grid"></div>
+  <div id="vignette"></div>
+  <div id="ghost" class="ghost"></div>
+  <div id="scene"></div>
+  <div id="flash"></div>
+
+<script>
+// ═══════════════════════════════════════════════
+// SCENE DATA — injected by Python
+// ═══════════════════════════════════════════════
+const SCENES = window.__SCENES__ || [];
+const TOTAL_DURATION = window.__DURATION__ || 50;
+
+// ═══════════════════════════════════════════════
+// GRID DRIFT
+// ═══════════════════════════════════════════════
+function updateGrid(t) {
+  const grid = document.getElementById('grid');
+  const speed = 1.5;
+  let dx = speed, dy = 0;
+  if (t < 7)         { dx = speed;        dy = 0; }
+  else if (t < 20)   { dx = speed * 0.7;  dy = speed * 0.7; }
+  else if (t < 35)   { dx = -speed * 0.7; dy = speed * 0.7; }
+  else if (t < 43)   { dx = 0;            dy = speed; }
+  else               { dx = 0;            dy = -speed; }
+
+  const gx = (t * dx) % 60;
+  const gy = (t * dy) % 60;
+  grid.style.setProperty('--gx', gx + 'px');
+  grid.style.setProperty('--gy', gy + 'px');
+}
+
+// ═══════════════════════════════════════════════
+// EASING
+// ═══════════════════════════════════════════════
+function easeOut(t) { return 1 - Math.pow(1 - Math.min(t, 1), 3); }
+function easeOutBounce(t) {
+  const n1 = 7.5625, d1 = 2.75;
+  t = Math.min(t, 1);
+  if (t < 1/d1) return n1*t*t;
+  if (t < 2/d1) { t -= 1.5/d1;  return n1*t*t + 0.75; }
+  if (t < 2.5/d1){ t -= 2.25/d1; return n1*t*t + 0.9375; }
+  t -= 2.625/d1; return n1*t*t + 0.984375;
+}
+
+// ═══════════════════════════════════════════════
+// FLASH FRAMES
+// ═══════════════════════════════════════════════
+const FLASH_TIMES = [7.0, 20.0, 35.0, 43.0];
+const FLASH_DUR = 8/30;
+
+function getFlashOpacity(t) {
+  for (const ft of FLASH_TIMES) {
+    if (Math.abs(t - ft) < FLASH_DUR) {
+      return 1.0;
+    }
+  }
+  return 0;
+}
+
+// ═══════════════════════════════════════════════
+// COLD OPEN (0 – 1.2s)
+// ═══════════════════════════════════════════════
+function renderColdOpen(scene, t, hookType) {
+  const container = document.createElement('div');
+  container.className = 'col';
+  container.style.position = 'relative';
+  container.style.width = '100%';
+  container.style.height = '100%';
+  container.style.display = 'flex';
+  container.style.alignItems = 'center';
+  container.style.justifyContent = 'center';
+
+  if (hookType === 'A') {
+    // Sweeping line
+    const line = document.createElement('div');
+    const progress = Math.min(t / 0.8, 1.0);
+    line.style.cssText = `
+      width: ${progress * 960}px;
+      height: 3px;
+      background: #F5F5F5;
+      border-radius: 2px;
+    `;
+    container.appendChild(line);
+
+    if (t > 0.9) {
+      const fade = Math.min((t - 0.9) / 0.3, 1.0);
+      const dots = document.createElement('div');
+      dots.className = 'hero glow-gold';
+      dots.style.opacity = fade;
+      dots.style.position = 'absolute';
+      dots.textContent = '...';
+      container.appendChild(dots);
+    }
+  } else if (hookType === 'B') {
+    if (t > 0.1) {
+      const num = document.createElement('div');
+      num.className = 'stat glow-gold';
+      num.textContent = '?';
+      container.appendChild(num);
+    }
+  } else if (hookType === 'C') {
+    const chars = Math.floor(t * 20);
+    const text = 'WHY?'.slice(0, chars);
+    const el = document.createElement('div');
+    el.className = 'hero';
+    el.textContent = text;
+    const cursor = document.createElement('span');
+    cursor.className = 'cursor';
+    el.appendChild(cursor);
+    container.appendChild(el);
+  }
+
+  return container;
+}
+
+// ═══════════════════════════════════════════════
+// WORD ELEMENT RENDERER
+// ═══════════════════════════════════════════════
+function makeWordEl(word, animT) {
+  const el = document.createElement('div');
+  const frac = Math.min(animT / 0.25, 1.0);
+
+  // Class
+  const cls = word.role === 'HERO' ? 'hero' :
+               word.role === 'STAT' ? 'stat' :
+               word.role === 'CTA'  ? 'cta-text' : 'body-text';
+  el.className = `word ${cls}`;
+  if (word.role === 'HERO' || word.role === 'STAT') el.classList.add('glow-gold');
+  if (word.role === 'CTA') el.classList.add('glow-green');
+  if (word.danger) el.classList.add('danger');
+
+  el.textContent = word.text.toUpperCase();
+
+  // Animation
+  if (word.anim === 'SLAM') {
+    const ease = easeOutBounce(frac);
+    const yOff = (1 - ease) * -120;
+    const scale = 1 + (1 - frac) * 0.3;
+    el.style.transform = `translateY(${yOff}px) scale(${scale})`;
+    el.style.opacity = Math.min(frac * 3, 1);
+
+  } else if (word.anim === 'PUNCH') {
+    let scale = frac < 0.7 ? (frac / 0.7) * 1.1 : 1.1 - ((frac - 0.7) / 0.3) * 0.1;
+    el.style.transform = `scale(${Math.max(scale, 0.01)})`;
+    el.style.opacity = Math.min(frac * 4, 1);
+
+  } else if (word.anim === 'SLIDE_L') {
+    const xOff = (1 - easeOut(frac)) * -600;
+    el.style.transform = `translateX(${xOff}px)`;
+    el.style.opacity = Math.min(frac * 2, 1);
+
+  } else if (word.anim === 'SLIDE_R') {
+    const xOff = (1 - easeOut(frac)) * 600;
+    el.style.transform = `translateX(${xOff}px)`;
+    el.style.opacity = Math.min(frac * 2, 1);
+
+  } else if (word.anim === 'TYPEWRITER') {
+    const nChars = Math.max(1, Math.floor(frac * word.text.length));
+    el.textContent = word.text.toUpperCase().slice(0, nChars);
+
+  } else if (word.anim === 'FADE_RISE') {
+    const yOff = (1 - easeOut(frac)) * 20;
+    el.style.transform = `translateY(${yOff}px)`;
+    el.style.opacity = easeOut(frac);
+  }
+
+  return el;
+}
+
+// ═══════════════════════════════════════════════
+// SCENE RENDERER
+// ═══════════════════════════════════════════════
+function renderSceneContent(scene, localT) {
+  const container = document.createElement('div');
+  container.className = 'col';
+
+  // Ghost echo
+  const ghost = document.getElementById('ghost');
+  ghost.textContent = scene.ghost || '';
+
+  // Layout type
+  const layout = scene.layout || 'centre';
+
+  if (layout === 'left') {
+    container.classList.add('left');
+  }
+
+  // Render word groups
+  const words = scene.words || [];
+  const row = document.createElement('div');
+  row.className = layout === 'left' ? 'col left' : 'col';
+
+  for (const word of words) {
+    const wordStart = word.start - scene.start;
+    const animT = localT - wordStart;
+    if (animT < -0.1) continue; // not yet
+
+    const el = makeWordEl(word, Math.max(animT, 0));
+    row.appendChild(el);
+  }
+
+  container.appendChild(row);
+
+  // CTA underline
+  if (scene.type === 'CTA') {
+    const line = document.createElement('div');
+    line.className = 'underline-anim';
+    const underlineFrac = Math.min(Math.max((localT - 0.5) / 0.3, 0), 1);
+    line.style.width = (underlineFrac * 400) + 'px';
+    line.style.height = '4px';
+    line.style.background = '#00FF88';
+    line.style.borderRadius = '2px';
+    line.style.marginTop = '8px';
+    container.appendChild(line);
+  }
+
+  // Sweep line between major sections
+  if (scene.showSweep && localT > 0.2) {
+    const sweep = document.createElement('div');
+    const sweepFrac = Math.min((localT - 0.2) / 0.4, 1.0);
+    sweep.style.cssText = `
+      width: ${sweepFrac * 960}px;
+      height: 2px;
+      background: rgba(255,184,0,0.4);
+      border-radius: 1px;
+      margin: 16px 0;
+    `;
+    container.appendChild(sweep);
+  }
+
+  return container;
+}
+
+// ═══════════════════════════════════════════════
+// MAIN RENDER FUNCTION — called by Playwright
+// ═══════════════════════════════════════════════
+window.renderFrame = function(t) {
+  updateGrid(t);
+
+  // Flash
+  const flash = document.getElementById('flash');
+  flash.style.opacity = getFlashOpacity(t);
+
+  const sceneEl = document.getElementById('scene');
+  sceneEl.innerHTML = '';
+
+  // Cold open
+  const hookType = window.__HOOK_TYPE__ || 'A';
+  if (t < 1.2) {
+    sceneEl.appendChild(renderColdOpen(null, t, hookType));
+    return { t, scene: 'cold_open' };
+  }
+
+  // Find active scene
+  let activeScene = null;
+  for (const scene of SCENES) {
+    if (t >= scene.start && t < scene.end) {
+      activeScene = scene;
+      break;
+    }
+  }
+
+  if (!activeScene) {
+    // Black between scenes
+    return { t, scene: 'gap' };
+  }
+
+  const localT = t - activeScene.start;
+  sceneEl.appendChild(renderSceneContent(activeScene, localT));
+
+  return { t, scene: activeScene.type };
+};
+
+// Initial render
+window.renderFrame(0);
+</script>
+</body>
+</html>
