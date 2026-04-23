@@ -20,6 +20,7 @@ import math
 import os
 import re
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -381,6 +382,7 @@ class KineticRenderer:
         # Build ffmpeg command
         cmd = [
             "ffmpeg", "-y",
+            "-loglevel", "warning",
             "-f", "rawvideo",
             "-vcodec", "rawvideo",
             "-s", f"{W}x{H}",
@@ -408,7 +410,7 @@ class KineticRenderer:
 
         cmd += [
             "-c:v", "libx264",
-            "-preset", "fast",
+            "-preset", "ultrafast",
             "-crf", "23",
             "-c:a", "aac",
             "-b:a", "128k",
@@ -419,7 +421,33 @@ class KineticRenderer:
 
         logger.info("[kinetic] Rendering %d frames → %s", total_frames, output_path.name)
 
-        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+        logger.info("[kinetic] ffmpeg cmd: %s", " ".join(cmd))
+
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            bufsize=0,
+        )
+
+        # Drain stderr continuously so ffmpeg never blocks on a full pipe.
+        stderr_chunks = []
+
+        def _drain_stderr():
+            try:
+                while True:
+                    chunk = proc.stderr.read(4096)
+                    if not chunk:
+                        break
+                    stderr_chunks.append(chunk)
+            except Exception:
+                pass
+
+        stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
+        stderr_thread.start()
+
+        failed_frame = None
+        write_error = None
 
         try:
             for frame_i in range(total_frames):
@@ -433,15 +461,65 @@ class KineticRenderer:
                     fonts=fonts,
                     W=W, H=H,
                 )
-                proc.stdin.write(frame.tobytes())
+                try:
+                    proc.stdin.write(frame.tobytes())
+                except (BrokenPipeError, OSError, ValueError) as exc:
+                    failed_frame = frame_i
+                    write_error = exc
+                    break
 
-            proc.stdin.close()
-            _, stderr = proc.communicate(timeout=120)
+            try:
+                proc.stdin.close()
+            except (BrokenPipeError, OSError, ValueError):
+                pass
+
+            try:
+                proc.wait(timeout=120)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+
+            stderr_thread.join(timeout=5)
+            stderr_text = b"".join(stderr_chunks).decode("utf-8", errors="replace")
+            stderr_tail = stderr_text[-2000:] if stderr_text else "<empty>"
+
+            if write_error is not None:
+                logger.error(
+                    "[kinetic] ffmpeg died at frame %d/%d (%.1fs). "
+                    "write_err=%r. ffmpeg stderr tail:\n%s",
+                    failed_frame,
+                    total_frames,
+                    (failed_frame or 0) / FPS,
+                    write_error,
+                    stderr_tail,
+                )
+                raise RuntimeError(
+                    f"ffmpeg died at frame {failed_frame}/{total_frames}: "
+                    f"write_err={write_error!r}; "
+                    f"stderr_tail={stderr_text[-500:] or '<empty>'}"
+                )
+
             if proc.returncode != 0:
-                raise RuntimeError(f"ffmpeg error: {stderr.decode()[-500:]}")
+                logger.error(
+                    "[kinetic] ffmpeg exit %d. stderr tail:\n%s",
+                    proc.returncode, stderr_tail,
+                )
+                raise RuntimeError(
+                    f"ffmpeg exit {proc.returncode}: "
+                    f"stderr_tail={stderr_text[-500:] or '<empty>'}"
+                )
+
+            if stderr_text.strip():
+                logger.warning(
+                    "[kinetic] ffmpeg warnings:\n%s",
+                    stderr_text[-1500:],
+                )
 
         except Exception:
-            proc.kill()
+            try:
+                proc.kill()
+            except Exception:
+                pass
             raise
 
     def _make_frame(
