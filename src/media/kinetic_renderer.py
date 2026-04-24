@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 logger = logging.getLogger(__name__)
 
@@ -229,8 +229,13 @@ class KineticRenderer:
         # Identify CTA start time — last 8 seconds
         cta_start = duration - 8.0
         events: list[WordEvent] = []
-        anim_cycle = ["SLAM", "SLIDE_L", "PUNCH", "SLIDE_R", "FADE_RISE", "TYPEWRITER"]
+        anim_cycle = ["SLAM", "SLIDE_L", "PUNCH", "SLIDE_R", "FADE_RISE"]
         cycle_i = 0
+
+        next_starts = []
+        for i in range(len(wts)):
+            nxt = float(wts[i+1].get("start_time", duration)) if i+1 < len(wts) else duration
+            next_starts.append(nxt)
 
         for i, wt in enumerate(wts):
             text  = wt.get("text", "").strip().strip(".,!?;:")
@@ -239,13 +244,16 @@ class KineticRenderer:
             if not text:
                 continue
 
+            end = min(end, next_starts[i] - 0.03)
+            end = max(end, start + 0.15)    # guarantee ≥0.15s visibility
+
             role, colour, font_path, font_size, sfx = self._classify_word(
                 text, start, cta_start
             )
 
             # Animation type
             if role == "HERO":
-                anim = "SLAM"
+                anim = "SPLIT"
             elif role == "STAT":
                 anim = "PUNCH"
             elif role == "CTA":
@@ -254,16 +262,13 @@ class KineticRenderer:
                 anim = anim_cycle[cycle_i % len(anim_cycle)]
                 cycle_i += 1
 
-            # Vertical position varies to avoid stacking
-            y_frac = 0.42 + (i % 5) * 0.06
-
             events.append(WordEvent(
                 text=text, start=start, end=end,
                 role=role, anim=anim, colour=colour,
                 font_path=font_path, font_size=font_size,
                 sfx=sfx,
                 x_align="CENTRE",
-                y_frac=min(y_frac, 0.82),
+                y_frac=0.5,
             ))
 
         return events
@@ -281,23 +286,22 @@ class KineticRenderer:
         for i, word in enumerate(words):
             text  = word.strip(".,!?;:")
             start = i * interval
-            end   = start + interval * 0.9
+            end   = start + interval * 0.85
             role, colour, font_path, font_size, sfx = self._classify_word(
                 text, start, cta_start
             )
-            anim = "SLAM" if role == "HERO" else "PUNCH" if role == "STAT" \
+            anim = "SPLIT" if role == "HERO" else "PUNCH" if role == "STAT" \
                 else "FADE_RISE" if role == "CTA" \
                 else anim_cycle[cycle_i % len(anim_cycle)]
             if role not in ("HERO", "STAT", "CTA"):
                 cycle_i += 1
 
-            y_frac = 0.42 + (i % 5) * 0.06
             events.append(WordEvent(
                 text=text, start=start, end=end,
                 role=role, anim=anim, colour=colour,
                 font_path=font_path, font_size=font_size,
                 sfx=sfx, x_align="CENTRE",
-                y_frac=min(y_frac, 0.82),
+                y_frac=0.5,
             ))
         return events
 
@@ -308,18 +312,18 @@ class KineticRenderer:
         lower = text.lower()
 
         if start >= cta_start:
-            return ("CTA", C_GREEN, F_BEBAS, 100, None)
+            return ("CTA", C_GREEN, F_MONTSERRAT, 170, None)
 
         if STAT_PATTERN.match(text):
-            return ("STAT", C_GOLD, F_MONTSERRAT, 200, SFX_IMPACT)
+            return ("STAT", C_GOLD, F_MONTSERRAT, 300, SFX_IMPACT)
 
         if lower in HERO_WORDS:
-            return ("HERO", C_GOLD, F_BEBAS, 160, SFX_IMPACT)
+            return ("HERO", C_GOLD, F_MONTSERRAT, 280, SFX_IMPACT)
 
         if lower in MONEY_WORDS:
-            return ("BODY", C_WHITE, F_OSWALD, 80, SFX_CASH)
+            return ("BODY", C_WHITE, F_OSWALD, 150, SFX_CASH)
 
-        return ("BODY", C_WHITE, F_ROBOTO, 72, None)
+        return ("BODY", C_WHITE, F_ROBOTO, 130, None)
 
     # ------------------------------------------------------------------
     # Hook type detection
@@ -543,21 +547,16 @@ class KineticRenderer:
         # 2. Vignette
         self._draw_vignette(img, W, H)
 
-        # 3. Cold open hook animation
-        if t < 1.2:
-            self._draw_hook_intro(draw, t, hook_type, W, H, fonts)
-            return np.array(img, dtype=np.uint8)
-
-        # 4. Segment flash (8-frame black between major scenes)
+        # 3. Segment flash (8-frame black between major scenes)
         if self._is_flash_frame(t):
             return np.zeros((H, W, 4), dtype=np.uint8)
 
-        # 5. Ghost echo layer — previous word at low opacity
+        # 4. Ghost echo layer — previous word at low opacity
         self._draw_ghost_echo(draw, t, events, W, H, fonts)
 
-        # 6. Active word animations
+        # 5. Active word animations
         for ev in events:
-            if ev.start - 0.05 <= t <= ev.end + 0.3:
+            if ev.start - 0.05 <= t <= ev.end + 0.02:
                 self._draw_word_event(draw, img, ev, t, W, H, fonts)
 
         return np.array(img, dtype=np.uint8)
@@ -719,6 +718,18 @@ class KineticRenderer:
         base_x = W // 2
         base_y = int(H * ev.y_frac)
 
+        if ev.anim == "SPLIT":
+            # HERO words: negative-space band reveal. Accent bg on top (black text),
+            # black bg on bottom (accent text). Band wipes open from center.
+            self._draw_negative_split_hero(
+                img, ev.text.upper(), font,
+                cx=base_x, cy=base_y,
+                W=W, H=H,
+                anim_frac=frac,
+                accent=(r, g, b, 255),
+            )
+            return
+
         if ev.anim == "SLAM":
             # Drop from above with overshoot
             if frac < 1.0:
@@ -734,11 +745,11 @@ class KineticRenderer:
             )
 
         elif ev.anim == "PUNCH":
-            # Scale from 0 → 110% → 100%
+            # Scale from 0 → 130% → 100%
             if frac < 0.7:
-                scale = frac / 0.7 * 1.1
+                scale = frac / 0.7 * 1.3
             else:
-                scale = 1.1 - (frac - 0.7) / 0.3 * 0.1
+                scale = 1.3 - (frac - 0.7) / 0.3 * 0.3
             self._draw_scaled_text(
                 draw, img, ev.text.upper(), font, ev.font_size,
                 base_x, base_y, (r, g, b, alpha), max(scale, 0.01)
@@ -833,6 +844,71 @@ class KineticRenderer:
                     anchor="mm",
                 )
 
+    def _draw_negative_split_hero(
+        self,
+        img:       Image.Image,
+        text:      str,
+        font:      ImageFont.FreeTypeFont,
+        cx:        int,
+        cy:        int,
+        W:         int,
+        H:         int,
+        anim_frac: float,
+        accent:    tuple,
+        band_h_mult: float = 1.8,
+    ) -> None:
+        """
+        Negative-space split band for HERO words.
+        Top half: accent background, black text. Bottom half: black background, accent text.
+        Band spans full canvas width and wipes open from centre outward.
+        """
+        bb = font.getbbox(text)
+        text_h = bb[3] - bb[1]
+
+        band_h = max(1, int(text_h * band_h_mult))
+        band_y0 = cy - band_h // 2
+        split_y_local = band_h // 2
+
+        # Ease-out cubic reveal
+        ease = 1.0 - (1.0 - min(max(anim_frac, 0.0), 1.0)) ** 3
+        reveal_w = max(2, int(W * ease))
+        reveal_x0 = (W - reveal_w) // 2
+
+        black = (0, 0, 0, 255)
+
+        # Full-width band panel with split backgrounds
+        panel = Image.new("RGBA", (W, band_h), (0, 0, 0, 0))
+        pd = ImageDraw.Draw(panel)
+        pd.rectangle([0, 0, W, split_y_local], fill=accent)
+        pd.rectangle([0, split_y_local, W, band_h], fill=black)
+
+        cx_panel = W // 2
+
+        # Top-half text in BLACK — mask alpha to top half then composite
+        tl = Image.new("RGBA", (W, band_h), (0, 0, 0, 0))
+        ImageDraw.Draw(tl).text(
+            (cx_panel, band_h // 2), text, font=font, fill=black, anchor="mm"
+        )
+        top_rect = Image.new("L", (W, band_h), 0)
+        ImageDraw.Draw(top_rect).rectangle([0, 0, W, split_y_local], fill=255)
+        tl.putalpha(ImageChops.multiply(tl.split()[-1], top_rect))
+        panel.alpha_composite(tl)
+
+        # Bottom-half text in ACCENT — same pattern
+        bl = Image.new("RGBA", (W, band_h), (0, 0, 0, 0))
+        ImageDraw.Draw(bl).text(
+            (cx_panel, band_h // 2), text, font=font, fill=accent, anchor="mm"
+        )
+        bot_rect = Image.new("L", (W, band_h), 0)
+        ImageDraw.Draw(bot_rect).rectangle([0, split_y_local, W, band_h], fill=255)
+        bl.putalpha(ImageChops.multiply(bl.split()[-1], bot_rect))
+        panel.alpha_composite(bl)
+
+        # Crop to reveal window and composite onto main canvas
+        cropped = panel.crop((reveal_x0, 0, reveal_x0 + reveal_w, band_h))
+        paste_y = max(0, band_y0)
+        img.alpha_composite(cropped, (reveal_x0, paste_y))
+
     # ------------------------------------------------------------------
     # Easing functions
     # ------------------------------------------------------------------
@@ -863,7 +939,7 @@ class KineticRenderer:
 
     def _is_flash_frame(self, t: float) -> bool:
         flash_times = [7.0, 20.0, 35.0, 43.0]
-        flash_duration = 8 / FPS
+        flash_duration = 3 / FPS
         return any(abs(t - ft) < flash_duration for ft in flash_times)
 
     def _is_impact_moment(self, t: float) -> bool:
@@ -890,6 +966,15 @@ class KineticRenderer:
             ("roboto_64", F_ROBOTO, 64),
             ("roboto_56", F_ROBOTO, 56),
             ("roboto_52", F_ROBOTO, 52),
+            ("bebas_280",  F_BEBAS,      280),
+            ("mont_320",   F_MONTSERRAT, 320),
+            ("mont_300",   F_MONTSERRAT, 300),
+            ("mont_280",   F_MONTSERRAT, 280),
+            ("mont_170",   F_MONTSERRAT, 170),
+            ("oswald_160", F_OSWALD,     160),
+            ("oswald_150", F_OSWALD,     150),
+            ("roboto_130", F_ROBOTO,     130),
+            ("roboto_120", F_ROBOTO,     120),
         ]
         for key, path, size in specs:
             try:
@@ -932,8 +1017,10 @@ class KineticRenderer:
         sfx_inputs:   list[str],
         duration:     float,
     ) -> tuple[str, str]:
+        loudnorm = "loudnorm=I=-14:TP=-1.5:LRA=7"
+
         if not sfx_inputs:
-            return "", "[1:a]"
+            return (f"[1:a]{loudnorm}[aout]", "[aout]")
 
         # Input 0 = video frames, Input 1 = voice, Inputs 2+ = SFX
         parts: list[str] = []
@@ -950,8 +1037,9 @@ class KineticRenderer:
 
         n_inputs = 1 + len(sfx_schedule)
         parts.append(
-            f"{mix_inputs}amix=inputs={n_inputs}:normalize=0[aout]"
+            f"{mix_inputs}amix=inputs={n_inputs}:normalize=0[amix]"
         )
+        parts.append(f"[amix]{loudnorm}[aout]")
         return ";".join(parts), "[aout]"
 
     def _audio_duration(self, audio_path: Path) -> float:
