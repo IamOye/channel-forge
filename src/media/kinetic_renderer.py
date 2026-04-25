@@ -85,6 +85,44 @@ EXCITED_WORDS = {
     "explode", "skyrocket", "crush", "win", "winning",
 }
 
+# Keyword -> (icon_name, sfx_const). Triggers icon render + SFX override
+# for HERO / STAT / MONEY classifications only. Plain BODY words matching
+# this dict get NO icon (prevents visual overload).
+ICON_WORDS = {
+    # Negative / cautionary
+    "never":   ("cross",        SFX_IMPACT),
+    "myth":    ("cross",        SFX_IMPACT),
+    "lie":     ("cross",        SFX_IMPACT),
+    "poor":    ("empty_wallet", SFX_WHOOSH),
+    "broke":   ("empty_wallet", SFX_WHOOSH),
+    "loss":    ("chart_down",   SFX_WHOOSH),
+    "debt":    ("chain",        SFX_IMPACT),
+    "trap":    ("chain",        SFX_IMPACT),
+
+    # Positive / aspirational
+    "wealthy": ("crown",        SFX_IMPACT),
+    "rich":    ("crown",        SFX_IMPACT),
+    "freedom": ("unlocked",     SFX_RISER),
+    "truth":   ("eye",          SFX_IMPACT),
+    "secret":  ("lock",         SFX_IMPACT),
+
+    # Money actions
+    "money":   ("dollar",       SFX_CASH),
+    "cash":    ("dollar",       SFX_CASH),
+    "bank":    ("building",     SFX_CASH),
+    "invest":  ("chart_up",     SFX_RISER),
+    "profit":  ("chart_up",     SFX_RISER),
+    "income":  ("wallet",       SFX_CASH),
+    "pay":     ("wallet",       SFX_CASH),
+    "salary":  ("wallet",       SFX_CASH),
+
+    # Abstract
+    "system":  ("building",     SFX_IMPACT),
+    "time":    ("clock",        SFX_IMPACT),
+    "home":    ("home",         SFX_IMPACT),
+    "house":   ("home",         SFX_IMPACT),
+}
+
 
 # ---------------------------------------------------------------------------
 # BuildResult — identical interface to VideoBuilder.BuildResult
@@ -129,6 +167,7 @@ class WordEvent:
     sfx:        str | None  # path to SFX file or None
     x_align:    str         # LEFT / CENTRE / RIGHT
     y_frac:     float       # 0.0–1.0 vertical position
+    icon_name:  str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -297,6 +336,17 @@ class KineticRenderer:
                 anim = filtered[cycle_i % len(filtered)]
                 cycle_i += 1
 
+            # Icon lookup: applies to HERO, STAT, and BODY-classified MONEY_WORDS only.
+            # Plain BODY words get no icon even if text matches ICON_WORDS.
+            is_icon_eligible = (
+                role in ("HERO", "STAT")
+                or (role == "BODY" and lower in MONEY_WORDS)
+            )
+            icon_name = None
+            if is_icon_eligible and lower in ICON_WORDS:
+                icon_name, icon_sfx = ICON_WORDS[lower]
+                sfx = icon_sfx   # override role-default SFX with icon-specific SFX
+
             events.append(WordEvent(
                 text=text, start=start, end=end,
                 role=role, anim=anim, colour=colour,
@@ -304,6 +354,7 @@ class KineticRenderer:
                 sfx=sfx,
                 x_align="CENTRE",
                 y_frac=0.5,
+                icon_name=icon_name,
             ))
 
         return events
@@ -352,12 +403,24 @@ class KineticRenderer:
                 anim = filtered[cycle_i % len(filtered)]
                 cycle_i += 1
 
+            # Icon lookup: applies to HERO, STAT, and BODY-classified MONEY_WORDS only.
+            # Plain BODY words get no icon even if text matches ICON_WORDS.
+            is_icon_eligible = (
+                role in ("HERO", "STAT")
+                or (role == "BODY" and lower in MONEY_WORDS)
+            )
+            icon_name = None
+            if is_icon_eligible and lower in ICON_WORDS:
+                icon_name, icon_sfx = ICON_WORDS[lower]
+                sfx = icon_sfx   # override role-default SFX with icon-specific SFX
+
             events.append(WordEvent(
                 text=text, start=start, end=end,
                 role=role, anim=anim, colour=colour,
                 font_path=font_path, font_size=font_size,
                 sfx=sfx, x_align="CENTRE",
                 y_frac=0.5,
+                icon_name=icon_name,
             ))
         return events
 
@@ -805,6 +868,23 @@ class KineticRenderer:
         base_x = W // 2
         base_y = int(H * ev.y_frac)
 
+        # Render icon above the word/band (if this event has one)
+        if ev.icon_name:
+            icon_size_px = max(100, min(200, int(ev.font_size * 0.6)))
+            if ev.anim == "SPLIT":
+                icon_cy = base_y - int(ev.font_size * 1.0) - 80
+            else:
+                icon_cy = base_y - int(ev.font_size * 0.5) - 60
+            icon_cx = base_x
+            # Pop-in entrance: scale 0 -> 1.15 -> 1.0 over 0.12s (matches Patch C entry timing)
+            icon_frac = min(max((t - ev.start) / 0.12, 0.0), 1.0)
+            if icon_frac < 0.7:
+                icon_scale = (icon_frac / 0.7) * 1.15
+            else:
+                icon_scale = 1.15 - ((icon_frac - 0.7) / 0.3) * 0.15
+            scaled_px = max(10, int(icon_size_px * max(icon_scale, 0.01)))
+            self._draw_icon(img, ev.icon_name, icon_cx, icon_cy, scaled_px, (r, g, b, 255))
+
         if ev.anim == "SPLIT":
             # HERO words: negative-space band reveal. Accent bg on top (black text),
             # black bg on bottom (accent text). Band wipes open from center.
@@ -983,6 +1063,283 @@ class KineticRenderer:
                     fill=(r, g, b, alpha),
                     anchor="mm",
                 )
+
+    def _draw_icon(
+        self,
+        img:   Image.Image,
+        name:  str,
+        cx:    int,
+        cy:    int,
+        size:  int,
+        color: tuple,
+    ) -> None:
+        """Dispatch to per-icon drawer. Silently no-ops on unknown name."""
+        method = getattr(self, f"_icon_{name}", None)
+        if method is not None:
+            method(img, cx, cy, size, color)
+
+    def _icon_dollar(self, img, cx, cy, size, color):
+        try:
+            font = ImageFont.truetype(F_MONTSERRAT, int(size * 1.1))
+        except Exception:
+            font = ImageFont.load_default()
+        ImageDraw.Draw(img).text((cx, cy), "$", font=font, fill=color, anchor="mm")
+
+    def _icon_crown(self, img, cx, cy, size, color):
+        d = ImageDraw.Draw(img)
+        s = size // 2
+        pts = [
+            (cx - s,             cy + int(s * 0.4)),
+            (cx - int(s * 0.9),  cy - int(s * 0.1)),
+            (cx - int(s * 0.55), cy + int(s * 0.15)),
+            (cx,                 cy - int(s * 0.6)),
+            (cx + int(s * 0.55), cy + int(s * 0.15)),
+            (cx + int(s * 0.9),  cy - int(s * 0.1)),
+            (cx + s,             cy + int(s * 0.4)),
+        ]
+        d.polygon(pts, fill=color)
+        d.rectangle(
+            [cx - s, cy + int(s * 0.45), cx + s, cy + int(s * 0.7)],
+            fill=color,
+        )
+
+    def _icon_chart_up(self, img, cx, cy, size, color):
+        d = ImageDraw.Draw(img)
+        s = size // 2
+        w = max(4, size // 15)
+        pts = [
+            (cx - s,             cy + int(s * 0.5)),
+            (cx - int(s * 0.5),  cy + int(s * 0.1)),
+            (cx - int(s * 0.1),  cy + int(s * 0.25)),
+            (cx + int(s * 0.4),  cy - int(s * 0.3)),
+            (cx + s,             cy - int(s * 0.6)),
+        ]
+        d.line(pts, fill=color, width=w, joint="curve")
+        ax, ay = cx + s, cy - int(s * 0.6)
+        a = max(8, size // 8)
+        d.polygon([(ax, ay), (ax - a, ay), (ax, ay + a)], fill=color)
+
+    def _icon_chart_down(self, img, cx, cy, size, color):
+        d = ImageDraw.Draw(img)
+        s = size // 2
+        w = max(4, size // 15)
+        pts = [
+            (cx - s,             cy - int(s * 0.5)),
+            (cx - int(s * 0.5),  cy - int(s * 0.1)),
+            (cx - int(s * 0.1),  cy - int(s * 0.25)),
+            (cx + int(s * 0.4),  cy + int(s * 0.3)),
+            (cx + s,             cy + int(s * 0.6)),
+        ]
+        d.line(pts, fill=color, width=w, joint="curve")
+        ax, ay = cx + s, cy + int(s * 0.6)
+        a = max(8, size // 8)
+        d.polygon([(ax, ay), (ax - a, ay), (ax, ay - a)], fill=color)
+
+    def _icon_lock(self, img, cx, cy, size, color):
+        """Closed padlock with keyhole."""
+        d = ImageDraw.Draw(img)
+        s = size // 2
+        w = max(6, size // 12)
+        body_top    = cy - int(s * 0.05)
+        body_bottom = cy + int(s * 0.85)
+        body_x0     = cx - int(s * 0.65)
+        body_x1     = cx + int(s * 0.65)
+        d.rounded_rectangle(
+            [body_x0, body_top, body_x1, body_bottom],
+            radius=int(s * 0.12), fill=color,
+        )
+        shackle_x0 = cx - int(s * 0.4)
+        shackle_x1 = cx + int(s * 0.4)
+        shackle_top = cy - int(s * 0.7)
+        d.rounded_rectangle(
+            [shackle_x0, shackle_top, shackle_x1, body_top + int(s * 0.3)],
+            radius=int(s * 0.3), outline=color, width=w,
+        )
+        # Mask shackle's bottom by redrawing body
+        d.rounded_rectangle(
+            [body_x0, body_top, body_x1, body_bottom],
+            radius=int(s * 0.12), fill=color,
+        )
+        kh_r = max(4, size // 18)
+        d.ellipse(
+            [cx - kh_r, cy + int(s * 0.25) - kh_r, cx + kh_r, cy + int(s * 0.25) + kh_r],
+            fill=(0, 0, 0, 255),
+        )
+
+    def _icon_unlocked(self, img, cx, cy, size, color):
+        """Open padlock: body + partially detached shackle."""
+        d = ImageDraw.Draw(img)
+        s = size // 2
+        w = max(6, size // 12)
+        body_top    = cy - int(s * 0.05)
+        body_bottom = cy + int(s * 0.85)
+        body_x0     = cx - int(s * 0.65)
+        body_x1     = cx + int(s * 0.65)
+        d.rounded_rectangle(
+            [body_x0, body_top, body_x1, body_bottom],
+            radius=int(s * 0.12), fill=color,
+        )
+        leg_x = cx + int(s * 0.35)
+        d.rectangle(
+            [leg_x, cy - int(s * 0.4), leg_x + w, body_top],
+            fill=color,
+        )
+        bend_x0 = cx - int(s * 0.15)
+        bend_x1 = leg_x + w
+        bend_top = cy - int(s * 0.7)
+        bend_bottom = bend_top + int(s * 0.45)
+        d.rounded_rectangle(
+            [bend_x0, bend_top, bend_x1, bend_bottom],
+            radius=int(s * 0.22), outline=color, width=w,
+        )
+        # Mask the lower stroke of the bend
+        d.rectangle(
+            [bend_x0 - w, bend_bottom - w + 1, bend_x1 + w, bend_bottom + w],
+            fill=(0, 0, 0, 255),
+        )
+        kh_r = max(4, size // 18)
+        d.ellipse(
+            [cx - kh_r, cy + int(s * 0.25) - kh_r, cx + kh_r, cy + int(s * 0.25) + kh_r],
+            fill=(0, 0, 0, 255),
+        )
+
+    def _icon_clock(self, img, cx, cy, size, color):
+        d = ImageDraw.Draw(img)
+        s = size // 2
+        w = max(4, size // 15)
+        d.ellipse([cx - s, cy - s, cx + s, cy + s], outline=color, width=w)
+        d.line([(cx, cy), (cx, cy - int(s * 0.55))], fill=color, width=w)
+        d.line([(cx, cy), (cx + int(s * 0.4), cy + int(s * 0.15))], fill=color, width=w)
+        dot = max(4, size // 20)
+        d.ellipse([cx - dot, cy - dot, cx + dot, cy + dot], fill=color)
+
+    def _icon_eye(self, img, cx, cy, size, color):
+        """Pointed eye outline + filled iris + black pupil."""
+        d = ImageDraw.Draw(img)
+        s = size // 2
+        w = max(6, size // 12)
+        top_pts = [
+            (cx - s,             cy),
+            (cx - int(s * 0.55), cy - int(s * 0.4)),
+            (cx,                 cy - int(s * 0.5)),
+            (cx + int(s * 0.55), cy - int(s * 0.4)),
+            (cx + s,             cy),
+        ]
+        bot_pts = [
+            (cx + s,             cy),
+            (cx + int(s * 0.55), cy + int(s * 0.4)),
+            (cx,                 cy + int(s * 0.5)),
+            (cx - int(s * 0.55), cy + int(s * 0.4)),
+            (cx - s,             cy),
+        ]
+        d.line(top_pts, fill=color, width=w, joint="curve")
+        d.line(bot_pts, fill=color, width=w, joint="curve")
+        iris_r = int(s * 0.32)
+        d.ellipse([cx - iris_r, cy - iris_r, cx + iris_r, cy + iris_r], fill=color)
+        pupil_r = int(s * 0.12)
+        d.ellipse(
+            [cx - pupil_r, cy - pupil_r, cx + pupil_r, cy + pupil_r],
+            fill=(0, 0, 0, 255),
+        )
+
+    def _icon_home(self, img, cx, cy, size, color):
+        d = ImageDraw.Draw(img)
+        s = size // 2
+        roof = [
+            (cx - s, cy - int(s * 0.05)),
+            (cx,     cy - s),
+            (cx + s, cy - int(s * 0.05)),
+        ]
+        d.polygon(roof, fill=color)
+        d.rectangle(
+            [cx - int(s * 0.8), cy - int(s * 0.05), cx + int(s * 0.8), cy + int(s * 0.8)],
+            fill=color,
+        )
+
+    def _icon_wallet(self, img, cx, cy, size, color):
+        d = ImageDraw.Draw(img)
+        s = size // 2
+        w = max(4, size // 18)
+        d.rounded_rectangle(
+            [cx - s, cy - int(s * 0.45), cx + s, cy + int(s * 0.55)],
+            radius=int(s * 0.12), outline=color, width=w,
+        )
+        d.rounded_rectangle(
+            [cx + int(s * 0.25), cy - int(s * 0.1), cx + s + w // 2, cy + int(s * 0.2)],
+            radius=int(s * 0.06), fill=color,
+        )
+        dot = max(4, size // 24)
+        d.ellipse(
+            [cx + int(s * 0.72) - dot, cy + int(s * 0.05) - dot,
+             cx + int(s * 0.72) + dot, cy + int(s * 0.05) + dot],
+            fill=(0, 0, 0, 255),
+        )
+
+    def _icon_chain(self, img, cx, cy, size, color):
+        """Two interlocking ellipses (horizontal + vertical aspect)."""
+        d = ImageDraw.Draw(img)
+        s = size // 2
+        w = max(5, size // 16)
+        h_w, h_h = int(s * 0.55), int(s * 0.3)
+        h_cx, h_cy = cx - int(s * 0.3), cy - int(s * 0.15)
+        d.ellipse(
+            [h_cx - h_w, h_cy - h_h, h_cx + h_w, h_cy + h_h],
+            outline=color, width=w,
+        )
+        v_w, v_h = int(s * 0.3), int(s * 0.55)
+        v_cx, v_cy = cx + int(s * 0.3), cy + int(s * 0.15)
+        d.ellipse(
+            [v_cx - v_w, v_cy - v_h, v_cx + v_w, v_cy + v_h],
+            outline=color, width=w,
+        )
+
+    def _icon_cross(self, img, cx, cy, size, color):
+        d = ImageDraw.Draw(img)
+        s = size // 2
+        w = max(6, size // 10)
+        d.line([(cx - s, cy - s), (cx + s, cy + s)], fill=color, width=w)
+        d.line([(cx + s, cy - s), (cx - s, cy + s)], fill=color, width=w)
+
+    def _icon_empty_wallet(self, img, cx, cy, size, color):
+        """Wallet outline with a dashed line through middle (empty)."""
+        d = ImageDraw.Draw(img)
+        s = size // 2
+        w = max(4, size // 18)
+        d.rounded_rectangle(
+            [cx - s, cy - int(s * 0.45), cx + s, cy + int(s * 0.55)],
+            radius=int(s * 0.12), outline=color, width=w,
+        )
+        dash_len = max(6, size // 14)
+        gap = max(4, size // 20)
+        x = cx - int(s * 0.75)
+        end = cx + int(s * 0.75)
+        while x < end:
+            x2 = min(x + dash_len, end)
+            d.line([(x, cy + int(s * 0.1)), (x2, cy + int(s * 0.1))], fill=color, width=w)
+            x = x2 + gap
+
+    def _icon_building(self, img, cx, cy, size, color):
+        """Building with 3x3 window grid + door."""
+        d = ImageDraw.Draw(img)
+        s = size // 2
+        d.rectangle(
+            [cx - int(s * 0.75), cy - s, cx + int(s * 0.75), cy + s],
+            fill=color,
+        )
+        win = max(6, size // 10)
+        gap_x = (int(s * 1.5) - 3 * win) // 4
+        gap_y = int(s * 0.5) // 4
+        for row in range(3):
+            for col in range(3):
+                x0 = cx - int(s * 0.75) + gap_x + col * (win + gap_x)
+                y0 = cy - int(s * 0.85) + row * (win + gap_y)
+                d.rectangle([x0, y0, x0 + win, y0 + win], fill=(0, 0, 0, 255))
+        door_w = max(10, size // 6)
+        door_h = max(15, size // 4)
+        d.rectangle(
+            [cx - door_w // 2, cy + s - door_h, cx + door_w // 2, cy + s],
+            fill=(0, 0, 0, 255),
+        )
 
     def _draw_negative_split_hero(
         self,
