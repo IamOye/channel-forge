@@ -607,10 +607,13 @@ class KineticRenderer:
         if self._is_flash_frame(t):
             return np.zeros((H, W, 4), dtype=np.uint8)
 
-        # 4. Ghost echo layer — previous word at low opacity
-        self._draw_ghost_echo(draw, t, events, W, H, fonts)
+        # 4. Ghost echo DISABLED (Patch C.1): conflicts with hard-clip safety net.
+        # The previous-word echo was rendering at >50% effective opacity and showing
+        # as a second word on every frame, defeating the one-word-per-frame guarantee.
+        # Method _draw_ghost_echo is left in place for potential future revival with
+        # corrected alpha (target: alpha=8/255, currently miscalibrated).
 
-        # 5. Active word animations — hard-clip: at most ONE word per frame.
+        # 4. Active word animations — hard-clip: at most ONE word per frame.
         # If multiple events overlap, pick the one whose start is closest to t but
         # not in the future. This is the safety net that guarantees no stacking.
         active = [ev for ev in events if ev.start - 0.02 <= t <= ev.end]
