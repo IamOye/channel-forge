@@ -76,6 +76,14 @@ HERO_WORDS    = {
 STAT_PATTERN  = re.compile(r"^\d[\d,\.%kKmMbB]*$")
 MONEY_WORDS   = {"money", "cash", "salary", "income", "wealth", "pay",
                  "wage", "invest", "profit", "debt", "bank"}
+NEGATIVE_WORDS = {
+    "broke", "poor", "fail", "lose", "loss", "lost", "dead", "die",
+    "trap", "stuck", "bankrupt", "scam", "fake", "wrong", "lie", "myth",
+}
+EXCITED_WORDS = {
+    "wow", "boom", "yes", "incredible", "amazing", "huge", "massive",
+    "explode", "skyrocket", "crush", "win", "winning",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -229,7 +237,6 @@ class KineticRenderer:
         # Identify CTA start time — last 8 seconds
         cta_start = duration - 8.0
         events: list[WordEvent] = []
-        anim_cycle = ["SLAM", "SLIDE_L", "PUNCH", "SLIDE_R", "FADE_RISE"]
         cycle_i = 0
 
         next_starts = []
@@ -238,28 +245,56 @@ class KineticRenderer:
             next_starts.append(nxt)
 
         for i, wt in enumerate(wts):
-            text  = wt.get("text", "").strip().strip(".,!?;:")
+            raw_text = wt.get("text", "").strip()
+            text  = raw_text.strip(".,!?;:")
             start = float(wt.get("start_time", 0.0))
             end   = float(wt.get("end_time",   start + 0.4))
             if not text:
                 continue
 
             end = min(end, next_starts[i] - 0.03)
-            end = max(end, start + 0.15)    # guarantee ≥0.15s visibility
+            end = max(end, start + 0.08)    # guarantee ≥0.08s visibility
 
             role, colour, font_path, font_size, sfx = self._classify_word(
                 text, start, cta_start
             )
 
-            # Animation type
-            if role == "HERO":
+            # Rule-based animation selection
+            lower = text.lower()
+            last_anim = events[-1].anim if events else None
+            is_hook = start < 3.0
+            is_cta = role == "CTA"
+            is_negative = lower in NEGATIVE_WORDS
+            is_excited = lower in EXCITED_WORDS or raw_text.endswith("!")
+            is_question = raw_text.endswith("?")
+
+            if is_negative:
+                anim = "GLITCH"
+            elif role == "HERO":
                 anim = "SPLIT"
             elif role == "STAT":
                 anim = "PUNCH"
-            elif role == "CTA":
-                anim = "FADE_RISE"
+            elif is_cta:
+                # CTA prefers slow REVEAL_WIPE; alternate with FADE_RISE for variety
+                anim = "REVEAL_WIPE" if last_anim != "REVEAL_WIPE" else "FADE_RISE"
+            elif is_excited:
+                anim = "BOUNCE"
+            elif is_question:
+                anim = "REVEAL_WIPE"
+            elif role == "BODY" and lower in MONEY_WORDS:
+                # MONEY-classified BODY: zoom-burst for emphasis
+                anim = "ZOOM_BURST"
+            elif is_hook:
+                # Hook 0-3s: aggressive impact only
+                candidates = ["PUNCH", "SLAM", "ZOOM_BURST"]
+                anim = next((c for c in candidates if c != last_anim), candidates[0])
             else:
-                anim = anim_cycle[cycle_i % len(anim_cycle)]
+                # Mid-video BODY: cycle through varied palette, avoid repetition
+                candidates = ["SLIDE_L", "SLAM", "SLIDE_R", "FADE_RISE", "BOUNCE", "TYPEWRITER"]
+                # Filter out last_anim
+                filtered = [c for c in candidates if c != last_anim]
+                # Use cycle_i to round-robin across remaining candidates
+                anim = filtered[cycle_i % len(filtered)]
                 cycle_i += 1
 
             events.append(WordEvent(
@@ -280,7 +315,6 @@ class KineticRenderer:
         interval = duration / len(words)
         cta_start = duration - 8.0
         events: list[WordEvent] = []
-        anim_cycle = ["SLAM", "SLIDE_L", "PUNCH", "SLIDE_R", "FADE_RISE"]
         cycle_i = 0
 
         for i, word in enumerate(words):
@@ -290,10 +324,32 @@ class KineticRenderer:
             role, colour, font_path, font_size, sfx = self._classify_word(
                 text, start, cta_start
             )
-            anim = "SPLIT" if role == "HERO" else "PUNCH" if role == "STAT" \
-                else "FADE_RISE" if role == "CTA" \
-                else anim_cycle[cycle_i % len(anim_cycle)]
-            if role not in ("HERO", "STAT", "CTA"):
+
+            lower = text.lower()
+            last_anim = events[-1].anim if events else None
+            is_hook = start < 3.0
+            is_negative = lower in NEGATIVE_WORDS
+            is_excited = lower in EXCITED_WORDS
+
+            if is_negative:
+                anim = "GLITCH"
+            elif role == "HERO":
+                anim = "SPLIT"
+            elif role == "STAT":
+                anim = "PUNCH"
+            elif role == "CTA":
+                anim = "REVEAL_WIPE" if last_anim != "REVEAL_WIPE" else "FADE_RISE"
+            elif is_excited:
+                anim = "BOUNCE"
+            elif role == "BODY" and lower in MONEY_WORDS:
+                anim = "ZOOM_BURST"
+            elif is_hook:
+                candidates = ["PUNCH", "SLAM", "ZOOM_BURST"]
+                anim = next((c for c in candidates if c != last_anim), candidates[0])
+            else:
+                candidates = ["SLIDE_L", "SLAM", "SLIDE_R", "FADE_RISE", "BOUNCE", "TYPEWRITER"]
+                filtered = [c for c in candidates if c != last_anim]
+                anim = filtered[cycle_i % len(filtered)]
                 cycle_i += 1
 
             events.append(WordEvent(
@@ -554,10 +610,14 @@ class KineticRenderer:
         # 4. Ghost echo layer — previous word at low opacity
         self._draw_ghost_echo(draw, t, events, W, H, fonts)
 
-        # 5. Active word animations
-        for ev in events:
-            if ev.start - 0.05 <= t <= ev.end + 0.02:
-                self._draw_word_event(draw, img, ev, t, W, H, fonts)
+        # 5. Active word animations — hard-clip: at most ONE word per frame.
+        # If multiple events overlap, pick the one whose start is closest to t but
+        # not in the future. This is the safety net that guarantees no stacking.
+        active = [ev for ev in events if ev.start - 0.02 <= t <= ev.end]
+        if active:
+            # Pick the event whose start is most recently before t (or just after)
+            best = min(active, key=lambda e: abs(t - e.start))
+            self._draw_word_event(draw, img, best, t, W, H, fonts)
 
         return np.array(img, dtype=np.uint8)
 
@@ -694,6 +754,23 @@ class KineticRenderer:
                     anchor="mm",
                 )
 
+    def _render_text_layer(
+        self,
+        text: str,
+        font: ImageFont.FreeTypeFont,
+        color: tuple,
+        pad: int = 40,
+    ) -> Image.Image:
+        """Render text into a tight-bbox RGBA layer, centered."""
+        bb = font.getbbox(text)
+        tw = (bb[2] - bb[0]) + pad * 2
+        th = (bb[3] - bb[1]) + pad * 2
+        layer = Image.new("RGBA", (tw, th), (0, 0, 0, 0))
+        ImageDraw.Draw(layer).text(
+            (tw // 2, th // 2), text, font=font, fill=color, anchor="mm"
+        )
+        return layer
+
     def _draw_word_event(
         self,
         draw:   ImageDraw.Draw,
@@ -706,9 +783,16 @@ class KineticRenderer:
     ) -> None:
         anim_t = t - ev.start
         total  = max(ev.end - ev.start, 0.1)
-        frac   = min(anim_t / 0.25, 1.0)   # 0→1 in first 0.25s
+        frac   = min(anim_t / 0.12, 1.0)   # 0→1 in first 0.12s
 
-        font = self._get_font(ev.font_path, ev.font_size, fonts)
+        # Width-clamp: ensure word fits in 88% of canvas width
+        effective_size = self._size_for_width(
+            ev.text.upper(), ev.font_path, ev.font_size, int(W * 0.88)
+        )
+        font = self._get_font(ev.font_path, effective_size, fonts)
+        if not font:
+            # Fallback: try at requested size
+            font = self._get_font(ev.font_path, ev.font_size, fonts)
         if not font:
             return
 
@@ -728,6 +812,59 @@ class KineticRenderer:
                 anim_frac=frac,
                 accent=(r, g, b, 255),
             )
+            return
+
+        if ev.anim == "GLITCH":
+            layer = self._render_text_layer(ev.text.upper(), font, (r, g, b, alpha))
+            lw, lh = layer.size
+            settle = max(0.0, 1.0 - frac)
+            offset = int(settle * 18)
+            if offset > 0:
+                cyan = self._render_text_layer(ev.text.upper(), font, (0, 255, 255, 200))
+                mag  = self._render_text_layer(ev.text.upper(), font, (255, 0, 255, 200))
+                img.alpha_composite(cyan, (base_x - lw // 2 - offset, base_y - lh // 2))
+                img.alpha_composite(mag,  (base_x - lw // 2 + offset, base_y - lh // 2))
+            img.alpha_composite(layer, (base_x - lw // 2, base_y - lh // 2))
+            return
+
+        if ev.anim == "BOUNCE":
+            import math
+            if frac < 1.0:
+                scale = 1.0 + 0.4 * math.exp(-3.5 * frac) * math.sin(math.pi * 4.5 * frac + math.pi / 2)
+                rot_deg = 8.0 * math.exp(-3.0 * frac) * math.sin(math.pi * 5.0 * frac)
+            else:
+                scale, rot_deg = 1.0, 0.0
+            scale = max(0.05, scale)
+            layer = self._render_text_layer(ev.text.upper(), font, (r, g, b, alpha))
+            new_w, new_h = max(1, int(layer.width * scale)), max(1, int(layer.height * scale))
+            layer = layer.resize((new_w, new_h), Image.LANCZOS)
+            layer = layer.rotate(rot_deg, resample=Image.BICUBIC, expand=True)
+            img.alpha_composite(layer, (base_x - layer.width // 2, base_y - layer.height // 2))
+            return
+
+        if ev.anim == "REVEAL_WIPE":
+            layer = self._render_text_layer(ev.text.upper(), font, (r, g, b, alpha))
+            lw, lh = layer.size
+            ease = 1.0 - (1.0 - min(frac, 1.0)) ** 3
+            reveal_px = max(1, int(lw * ease))
+            cropped = layer.crop((0, 0, reveal_px, lh))
+            img.alpha_composite(cropped, (base_x - lw // 2, base_y - lh // 2))
+            return
+
+        if ev.anim == "ZOOM_BURST":
+            if frac >= 1.0:
+                scale, opacity = 1.0, 1.0
+            else:
+                ease = 1.0 - (1.0 - frac) ** 2
+                scale = 2.2 - 1.2 * ease
+                opacity = ease
+            layer = self._render_text_layer(ev.text.upper(), font, (r, g, b, alpha))
+            new_w, new_h = max(1, int(layer.width * scale)), max(1, int(layer.height * scale))
+            layer = layer.resize((new_w, new_h), Image.LANCZOS)
+            if opacity < 1.0:
+                alpha_ch = layer.split()[-1].point(lambda v: int(v * opacity))
+                layer.putalpha(alpha_ch)
+            img.alpha_composite(layer, (base_x - layer.width // 2, base_y - layer.height // 2))
             return
 
         if ev.anim == "SLAM":
@@ -985,6 +1122,29 @@ class KineticRenderer:
                 except Exception:
                     fonts[key] = ImageFont.load_default()
         return fonts
+
+    def _size_for_width(
+        self,
+        text: str,
+        font_path: str,
+        requested_size: int,
+        max_width_px: int,
+    ) -> int:
+        """
+        Returns the largest font size <= requested_size such that the rendered
+        text fits in max_width_px. Caps at min size 60 to prevent invisible text.
+        """
+        size = requested_size
+        while size >= 60:
+            try:
+                font = ImageFont.truetype(font_path, size)
+                bb = font.getbbox(text)
+                if (bb[2] - bb[0]) <= max_width_px:
+                    return size
+            except Exception:
+                return requested_size
+            size -= 10
+        return 60
 
     def _get_font(
         self, font_path: str, size: int, fonts: dict
