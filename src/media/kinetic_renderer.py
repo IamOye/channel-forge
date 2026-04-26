@@ -396,6 +396,13 @@ class KineticRenderer:
                 icon_name=icon_name,
             ))
 
+            if role == "HERO" or icon_name:
+                logger.info(
+                    f"[kinetic-routing] text={text!r:15} role={role:5} anim={anim:12} "
+                    f"size={font_size} color={colour} icon={icon_name} "
+                    f"font_path={font_path.split('/')[-1]}"
+                )
+
         return events
 
     def _events_evenly_spaced(self, full_text: str, duration: float) -> list[WordEvent]:
@@ -767,16 +774,7 @@ class KineticRenderer:
         # 1. Paste cached gradient (replaces pure-black canvas)
         img.paste(self._gradient_cache, (0, 0))
 
-        # 2. Grid overlay (existing behavior, kept for now)
-        d = ImageDraw.Draw(img)
-        gs = 60
-        grid_color = (13, 32, 16, 50)
-        for x in range(0, W, gs):
-            d.line([(x, 0), (x, H)], fill=grid_color, width=1)
-        for y in range(0, H, gs):
-            d.line([(0, y), (W, y)], fill=grid_color, width=1)
-
-        # 3. Particles drifted by t. Particle positions wrap around canvas edges.
+        # 2. Particles drifted by t. Particle positions wrap around canvas edges.
         particle_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         pd = ImageDraw.Draw(particle_layer)
         for p in self._particles:
@@ -1607,6 +1605,13 @@ class KineticRenderer:
         sfx_inputs:   list[str],
         duration:     float,
     ) -> tuple[str, str]:
+        logger.info(
+            f"[kinetic-audio] building filter: sfx_count={len(sfx_schedule)} "
+            f"sfx_inputs_unique={len(sfx_inputs)} duration={duration:.2f}"
+        )
+        for ts, sfx_path in sfx_schedule:
+            logger.info(f"[kinetic-audio]   sfx hit: t={ts:.2f}s path={sfx_path.split('/')[-1]}")
+
         loudnorm = "loudnorm=I=-14:TP=-1.5:LRA=7"
 
         if not sfx_inputs:
