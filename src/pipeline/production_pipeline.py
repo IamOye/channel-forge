@@ -735,11 +735,23 @@ class ProductionPipeline:
         slot = total_videos % 4
         logger.info("[pipeline] Format slot %d (total_videos=%d)", slot, total_videos)
 
+        # Pre-compute style preset for kinetic slots (1, 3). Classifier hits
+        # Anthropic once per render; falls back to DEFAULT_STYLE on any error.
+        style_preset = None
+        if slot in (1, 3):
+            from src.media.style_classifier import classify_script_style
+            parts_order = ["hook", "statement", "twist", "landing", "question", "cta"]
+            script_text = " ".join(
+                script_dict.get(p, "") for p in parts_order
+                if script_dict.get(p, "").strip()
+            )
+            style_preset = classify_script_style(script_text)
+
         if slot == 1:
             try:
                 from src.media.kinetic_renderer import KineticRenderer
                 logger.info("[pipeline] Using KineticRenderer for slot %d", slot)
-                return KineticRenderer().build(
+                return KineticRenderer(style_preset=style_preset).build(
                     topic_id=topic_id,
                     script_dict=script_dict,
                     audio_path=audio_path,
@@ -771,7 +783,7 @@ class ProductionPipeline:
             try:
                 from src.media.kinetic_renderer import KineticRenderer
                 logger.info("[pipeline] Using KineticRenderer for slot %d", slot)
-                return KineticRenderer().build(
+                return KineticRenderer(style_preset=style_preset).build(
                     topic_id=topic_id,
                     script_dict=script_dict,
                     audio_path=audio_path,

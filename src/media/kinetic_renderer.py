@@ -183,6 +183,39 @@ class Particle:
     opacity: int      # 0-255, baseline alpha
 
 
+@dataclass
+class StylePreset:
+    """All visual knobs a style mode can tweak.
+
+    Future presets (high-energy, minimal-clean, dark-cinematic) will set
+    these fields differently. Default preset matches current Patch E.
+    """
+    name: str
+
+    # Particle system
+    particle_count: int = 50
+    particle_color: tuple = (255, 184, 0, 255)          # gold
+    particle_size_range: tuple = (2.0, 5.0)
+    particle_speed_multiplier: float = 1.0              # 1.0 = current pace
+
+    # Gradient
+    gradient_max_brightness: int = 28                   # 0-255 corner brightness
+    gradient_enabled: bool = True
+
+    # Typography
+    hero_color: tuple = (255, 184, 0, 255)              # C_GOLD
+    body_color: tuple = (245, 245, 245, 255)            # C_WHITE
+    cta_color: tuple = (0, 255, 136, 255)               # C_GREEN
+    hero_size_multiplier: float = 1.0                   # scales 280pt HERO base
+
+    # Animation
+    flash_frame_duration: int = 3                       # frames at FPS=30
+    entry_animation_duration: float = 0.12              # seconds
+
+
+DEFAULT_STYLE = StylePreset(name="default")
+
+
 def _init_particles() -> list:
     """Generate a deterministic 50-particle pool. Called once per render."""
     import random
@@ -200,6 +233,24 @@ def _init_particles() -> list:
     return particles
 
 
+def _init_particles_from_preset(preset: "StylePreset") -> list:
+    """Generate particle pool sized + colored per preset."""
+    import random
+    rng = random.Random(PARTICLE_SEED)
+    particles = []
+    speed = preset.particle_speed_multiplier
+    for _ in range(preset.particle_count):
+        particles.append(Particle(
+            x=rng.uniform(0, CANVAS_W),
+            y=rng.uniform(0, CANVAS_H),
+            vx=rng.uniform(-9, 9) * speed,
+            vy=rng.uniform(-15, -3) * speed,
+            size=rng.uniform(*preset.particle_size_range),
+            opacity=rng.randint(20, 60),
+        ))
+    return particles
+
+
 # ---------------------------------------------------------------------------
 # KineticRenderer
 # ---------------------------------------------------------------------------
@@ -209,7 +260,8 @@ class KineticRenderer:
     Drop-in replacement for VideoBuilder — same build() interface.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, style_preset: StylePreset | None = None) -> None:
+        self._style = style_preset if style_preset is not None else DEFAULT_STYLE
         self._gradient_cache: Image.Image | None = None
         self._particles: list = []
 
@@ -742,7 +794,7 @@ class KineticRenderer:
         if self._gradient_cache is None:
             self._gradient_cache = self._build_gradient_cache()
         if not self._particles:
-            self._particles = _init_particles()
+            self._particles = _init_particles_from_preset(self._style)
 
     def _build_gradient_cache(self) -> Image.Image:
         """Pre-render the radial gradient once. Static across the entire video.
