@@ -339,7 +339,7 @@ class KineticRenderer:
             # Icon lookup: applies to HERO, STAT, and BODY-classified MONEY_WORDS only.
             # Plain BODY words get no icon even if text matches ICON_WORDS.
             is_icon_eligible = (
-                role in ("HERO", "STAT")
+                role in ("HERO", "STAT", "CTA")
                 or (role == "BODY" and lower in MONEY_WORDS)
             )
             icon_name = None
@@ -406,7 +406,7 @@ class KineticRenderer:
             # Icon lookup: applies to HERO, STAT, and BODY-classified MONEY_WORDS only.
             # Plain BODY words get no icon even if text matches ICON_WORDS.
             is_icon_eligible = (
-                role in ("HERO", "STAT")
+                role in ("HERO", "STAT", "CTA")
                 or (role == "BODY" and lower in MONEY_WORDS)
             )
             icon_name = None
