@@ -52,7 +52,10 @@ C_GREEN       = (0,  255, 136, 255)
 C_GREY        = (51,  51,  51, 255)
 C_GRID        = (13,  32,  16, 255)
 
-ASSETS        = Path("assets")
+# Anchor asset paths to the project root (parent of src/), not CWD.
+# On Railway, CWD may not be the project root.
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+ASSETS        = _PROJECT_ROOT / "assets"
 FONTS_DIR     = ASSETS / "fonts"
 SFX_DIR       = ASSETS / "sfx"
 
@@ -69,6 +72,28 @@ SFX_WHOOSH1   = str(SFX_DIR / "whoosh1.mp3")
 SFX_CASH      = str(SFX_DIR / "cash.mp3")
 SFX_CASH1     = str(SFX_DIR / "cash1.mp3")
 SFX_RISER     = str(SFX_DIR / "riser.mp3")
+
+# Deploy-time SFX availability check. Surfaces missing assets in startup logs
+# rather than silently producing video with no SFX.
+_SFX_PATHS = [SFX_IMPACT, SFX_WHOOSH, SFX_WHOOSH1, SFX_CASH, SFX_CASH1, SFX_RISER]
+_missing = [p for p in _SFX_PATHS if not Path(p).exists()]
+if _missing:
+    logger.warning(
+        "[kinetic-deploy] SFX assets missing: %s (resolved from project root %s)",
+        [Path(p).name for p in _missing], _PROJECT_ROOT,
+    )
+else:
+    logger.info("[kinetic-deploy] all 6 SFX assets present at %s", SFX_DIR)
+
+_FONT_PATHS = [F_BEBAS, F_MONTSERRAT, F_OSWALD, F_ROBOTO]
+_missing_fonts = [p for p in _FONT_PATHS if not Path(p).exists()]
+if _missing_fonts:
+    logger.warning(
+        "[kinetic-deploy] font assets missing: %s",
+        [Path(p).name for p in _missing_fonts],
+    )
+else:
+    logger.info("[kinetic-deploy] all 4 font assets present at %s", FONTS_DIR)
 
 # Word classification triggers
 HERO_WORDS    = {
@@ -779,8 +804,13 @@ class KineticRenderer:
         # not in the future. This is the safety net that guarantees no stacking.
         active = [ev for ev in events if ev.start - 0.02 <= t <= ev.end]
         if active:
-            # Pick the event whose start is most recently before t (or just after)
-            best = min(active, key=lambda e: abs(t - e.start))
+            # Hard-clip with priority: HERO > STAT > CTA > BODY beats temporal proximity.
+            # Within the same priority tier, prefer the event whose start is closest to t.
+            ROLE_PRIORITY = {"HERO": 0, "STAT": 1, "CTA": 2, "BODY": 3}
+            best = min(
+                active,
+                key=lambda e: (ROLE_PRIORITY.get(e.role, 9), abs(t - e.start)),
+            )
             self._draw_word_event(draw, img, best, t, W, H, fonts)
 
         return np.array(img, dtype=np.uint8)
@@ -812,7 +842,11 @@ class KineticRenderer:
         dx = xs - cx
         dy = ys - cy
         r_norm = np.sqrt(dx * dx + dy * dy) / max_r
-        v = (28.0 * (r_norm ** 2)).astype(np.uint8)
+        v_float = 28.0 * (r_norm ** 2)
+        # Dither: blue-noise-ish offset breaks banding without visible noise
+        rng = np.random.RandomState(PARTICLE_SEED)  # reuse existing seed for determinism
+        dither = rng.uniform(-0.5, 0.5, v_float.shape)
+        v = np.clip(np.round(v_float + dither), 0, 255).astype(np.uint8)
         rgb = np.stack([v, v, v, np.full_like(v, 255)], axis=-1)
         return Image.fromarray(rgb, "RGBA")
 
