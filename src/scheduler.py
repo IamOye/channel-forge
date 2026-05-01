@@ -158,6 +158,42 @@ def log_disk_usage() -> None:
             except Exception as exc:
                 logger.warning("[disk-usage] du failed for %s: %s", candidate, exc)
 
+        # Drill into /app/data — this is where the volume is mounted and where
+        # the 4.1G accumulation lives. Show us the subdirectories.
+        data_root = Path("/app/data")
+        if data_root.exists():
+            for subdir in data_root.iterdir():
+                if not subdir.is_dir():
+                    continue
+                try:
+                    # Get total size and top entries within this subdir
+                    size_result = subprocess.run(
+                        ["du", "-sh", str(subdir)],
+                        capture_output=True, text=True, timeout=60,
+                    )
+                    size_line = size_result.stdout.strip()
+                    logger.info("[disk-usage] %s", size_line)
+
+                    # Now show what's inside, top 10 by size
+                    children = list(subdir.iterdir())
+                    if not children:
+                        continue
+                    inner_result = subprocess.run(
+                        ["du", "-sh", "--", *[str(c) for c in children]],
+                        capture_output=True, text=True, timeout=60,
+                    )
+                    lines = sorted(
+                        (l for l in inner_result.stdout.strip().split("\n") if l),
+                        reverse=True,
+                    )[:10]
+                    logger.info("[disk-usage]   contents of %s:", subdir)
+                    for line in lines:
+                        logger.info("[disk-usage]     %s", line)
+                except subprocess.TimeoutExpired:
+                    logger.warning("[disk-usage] du timed out for %s", subdir)
+                except Exception as exc:
+                    logger.warning("[disk-usage] du failed for %s: %s", subdir, exc)
+
     except Exception as exc:
         logger.error("[disk-usage] inspection failed: %s", exc)
 
