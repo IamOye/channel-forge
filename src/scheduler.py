@@ -20,6 +20,8 @@ Usage:
 
 import logging
 import os
+import shutil
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -115,6 +117,51 @@ def seed_scored_topics_if_empty(db_path: Path | None = None) -> int:
         return 0
 
 
+def log_disk_usage() -> None:
+    """One-shot diagnostic: emit disk usage summary to logs. Diagnostic only."""
+    try:
+        for mount_point in ["/", "/app", "/data", "/tmp"]:
+            p = Path(mount_point)
+            if not p.exists():
+                continue
+            try:
+                total, used, free = shutil.disk_usage(p)
+                pct = (used / total) * 100 if total else 0
+                logger.info(
+                    "[disk-usage] %s: %.2f GB used / %.2f GB total (%.1f%%)",
+                    mount_point, used / 1e9, total / 1e9, pct,
+                )
+            except Exception as exc:
+                logger.warning("[disk-usage] disk_usage failed for %s: %s", mount_point, exc)
+
+        for candidate in ["/app", "/data", "/tmp"]:
+            p = Path(candidate)
+            if not p.exists():
+                continue
+            try:
+                children = list(p.iterdir())
+                if not children:
+                    continue
+                result = subprocess.run(
+                    ["du", "-sh", "--", *[str(c) for c in children]],
+                    capture_output=True, text=True, timeout=60,
+                )
+                lines = sorted(
+                    (l for l in result.stdout.strip().split("\n") if l),
+                    reverse=True,
+                )[:10]
+                logger.info("[disk-usage] top entries in %s:", candidate)
+                for line in lines:
+                    logger.info("[disk-usage]   %s", line)
+            except subprocess.TimeoutExpired:
+                logger.warning("[disk-usage] du timed out for %s", candidate)
+            except Exception as exc:
+                logger.warning("[disk-usage] du failed for %s: %s", candidate, exc)
+
+    except Exception as exc:
+        logger.error("[disk-usage] inspection failed: %s", exc)
+
+
 def run_startup_tasks(db_path: Path | None = None) -> None:
     """
     Run once immediately when the scheduler process starts.
@@ -203,6 +250,16 @@ def run_startup_tasks(db_path: Path | None = None) -> None:
             conn.close()
     except Exception as exc:
         logger.debug("[startup] manual_topics check failed: %s", exc)
+
+    log_disk_usage()
+
+    # One-shot: run the weekly cleanup at this boot to recover from the
+    # 92% volume condition. After this patch validates and disk drops back
+    # to a healthy level, this line should be REMOVED in a follow-up commit.
+    try:
+        weekly_disk_cleanup()
+    except Exception as exc:
+        logger.warning("[startup] one-shot cleanup failed: %s", exc)
 
     logger.info("[scheduler] Startup tasks complete")
     # Notification 8 — scheduler started
@@ -608,6 +665,51 @@ def run_reddit_scraper() -> None:
         logger.info("[scheduler] run_reddit_scraper END (%.1fs)", elapsed)
 
 
+def weekly_disk_cleanup() -> None:
+    """Sweep stragglers from crashed renders. Runs weekly via scheduler."""
+    import shutil
+    import time
+
+    SWEEP_PATHS = [
+        Path("/tmp"),                     # ffmpeg intermediate outputs
+        Path("/app/output/frames"),       # if frames are written here
+        Path("/data/temp"),               # if temp is on the volume
+    ]
+    # Files older than this are eligible for deletion. Anything younger
+    # might still be in use by a running render.
+    AGE_THRESHOLD_HOURS = 24
+    cutoff = time.time() - (AGE_THRESHOLD_HOURS * 3600)
+
+    # Match patterns we created. Don't touch anything else.
+    FRAME_DIR_PATTERNS = ["topic_*", "render_*", "frames_*"]
+    TEMP_FILE_PATTERNS = ["*.mp4.tmp", "*.png", "*_frames"]
+
+    # Whitelist: never touch these paths even if they match patterns
+    NEVER_DELETE = {"/data/db", "/data/credentials", "/data/queue.json"}
+
+    total_freed = 0
+    for sweep_root in SWEEP_PATHS:
+        if not sweep_root.exists():
+            continue
+        for pattern in FRAME_DIR_PATTERNS:
+            for entry in sweep_root.glob(pattern):
+                try:
+                    if str(entry) in NEVER_DELETE:
+                        continue
+                    if entry.stat().st_mtime > cutoff:
+                        continue   # too recent, may be in use
+                    if entry.is_dir():
+                        size = sum(f.stat().st_size for f in entry.rglob("*") if f.is_file())
+                        shutil.rmtree(entry)
+                        logger.info("[weekly-cleanup] removed dir %s (%.1f MB)",
+                                    entry, size / 1e6)
+                        total_freed += size
+                except Exception as exc:
+                    logger.warning("[weekly-cleanup] skip %s: %s", entry, exc)
+
+    logger.info("[weekly-cleanup] total freed: %.1f MB", total_freed / 1e6)
+
+
 def run_weekly_disk_cleanup() -> None:
     """Delete output files older than 7 days to prevent Railway disk from filling up."""
     import glob
@@ -632,6 +734,12 @@ def run_weekly_disk_cleanup() -> None:
                 except Exception as exc:
                     logger.warning("[scheduler] Could not delete %s: %s", path, exc)
         logger.info("[scheduler] Disk cleanup complete: %d file(s) removed", deleted)
+
+        # Additional sweep: orphaned frame caches in /tmp from crashed renders
+        try:
+            weekly_disk_cleanup()
+        except Exception as exc:
+            logger.warning("[scheduler] weekly_disk_cleanup sweep failed: %s", exc)
     except Exception as exc:
         logger.error("[scheduler] run_weekly_disk_cleanup ERROR: %s", exc)
     finally:
