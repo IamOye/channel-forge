@@ -618,7 +618,7 @@ def weekly_disk_cleanup() -> None:
     # Skip the sweep entirely if the volume is under 50% used. This avoids
     # deleting files unnecessarily on a healthy disk.
     try:
-        usage = shutil.disk_usage("/app")
+        usage = shutil.disk_usage("/app/data")
         used_pct = usage.used / usage.total * 100
         if used_pct < 50.0:
             logger.info(
