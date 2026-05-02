@@ -343,7 +343,11 @@ class PexelsFetcher:
                 "4-5:  Generic street level footage, non-specific scenes.\n"
                 "1-3:  Animals, food, sports, children, anything unrelated.\n\n"
                 f"Clips to rate:\n{json.dumps(clip_descriptions, indent=2)}\n\n"
-                'Return JSON array only: [{"clip_id": "x", "score": y, "reason": "z"}]'
+                "Respond with valid JSON only. No explanation, no preamble, no apology text.\n"
+                "If you cannot score a clip, assign it a score of 0.\n"
+                "Never respond with prose. If your response is not valid JSON it will be discarded entirely.\n"
+                "Return a JSON object with clip IDs as keys and integer scores 0-10 as values.\n"
+                'Example of required output format: {"clip_id_1": 7, "clip_id_2": 3, "clip_id_3": 0}'
             )
             response = client.messages.create(
                 model="claude-haiku-4-5-20251001",
@@ -355,8 +359,15 @@ class PexelsFetcher:
                 lines = raw.split("\n")
                 raw = "\n".join(lines[1:-1]) if lines[-1].strip() == "```" else "\n".join(lines[1:])
             raw = raw.strip()
-            scores_data = json.loads(raw)
-            score_map = {str(item["clip_id"]): item["score"] for item in scores_data}
+            try:
+                scores_data = json.loads(raw)
+                score_map = {str(k): int(v) for k, v in scores_data.items()}
+            except (json.JSONDecodeError, AttributeError, TypeError, ValueError) as e:
+                logger.warning(
+                    "[pexels] Claude returned non-JSON response, assigning default scores"
+                    " | error: %s | raw: %.200s", e, raw,
+                )
+                score_map = {c["clip_id"]: 0 for c in candidates}
             filtered = [
                 c for c in candidates
                 if score_map.get(c["clip_id"], 0) >= _MIN_RELEVANCE_SCORE
@@ -366,9 +377,6 @@ class PexelsFetcher:
                 len(candidates), len(filtered),
             )
             return filtered
-        except json.JSONDecodeError as e:
-            logger.warning("[pexels] Relevance scoring JSON parse failed: %s | raw: %.200s", e, raw)
-            return candidates
         except Exception as exc:
             logger.warning("[pexels] Relevance scoring failed (returning all): %s", exc)
             return candidates
