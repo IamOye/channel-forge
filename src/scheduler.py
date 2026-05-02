@@ -702,46 +702,85 @@ def run_reddit_scraper() -> None:
 
 
 def weekly_disk_cleanup() -> None:
-    """Sweep stragglers from crashed renders. Runs weekly via scheduler."""
+    """Purge raw media files from /app/data/raw/ before they fill the Railway volume."""
     import shutil
     import time
 
+    # --- Disk headroom guard -------------------------------------------
+    # Skip the sweep entirely if the volume is under 50% used. This avoids
+    # deleting files unnecessarily on a healthy disk.
+    try:
+        usage = shutil.disk_usage("/app")
+        used_pct = usage.used / usage.total * 100
+        if used_pct < 50.0:
+            logger.info(
+                "[weekly-cleanup] volume healthy (%.1f%% used), skipping", used_pct
+            )
+            return
+        logger.info("[weekly-cleanup] volume %.1f%% used — proceeding with sweep", used_pct)
+    except Exception as exc:
+        logger.warning("[weekly-cleanup] disk_usage check failed: %s — proceeding anyway", exc)
+
+    # --- Targets ----------------------------------------------------------
     SWEEP_PATHS = [
-        Path("/tmp"),                     # ffmpeg intermediate outputs
-        Path("/app/output/frames"),       # if frames are written here
-        Path("/data/temp"),               # if temp is on the volume
+        Path("/app/data/raw"),   # primary: Pexels b-roll + voiceover intermediates
+        Path("/tmp"),            # ffmpeg scratch space
     ]
-    # Files older than this are eligible for deletion. Anything younger
-    # might still be in use by a running render.
+
+    # Only delete media files we produced. Never touch databases or credentials.
+    FILE_PATTERNS = ["*.mp4", "*.mp3", "*.wav", "manual_*.mp4"]
+
     AGE_THRESHOLD_HOURS = 24
     cutoff = time.time() - (AGE_THRESHOLD_HOURS * 3600)
 
-    # Match patterns we created. Don't touch anything else.
-    FRAME_DIR_PATTERNS = ["topic_*", "render_*", "frames_*"]
-    TEMP_FILE_PATTERNS = ["*.mp4.tmp", "*.png", "*_frames"]
-
-    # Whitelist: never touch these paths even if they match patterns
-    NEVER_DELETE = {"/data/db", "/data/credentials", "/data/queue.json"}
-
     total_freed = 0
+
     for sweep_root in SWEEP_PATHS:
         if not sweep_root.exists():
             continue
-        for pattern in FRAME_DIR_PATTERNS:
+
+        # Log before-size for this subtree
+        try:
+            before_bytes = sum(
+                f.stat().st_size for f in sweep_root.rglob("*") if f.is_file()
+            )
+            logger.info(
+                "[weekly-cleanup] %s before: %.1f MB", sweep_root, before_bytes / 1e6
+            )
+        except Exception:
+            before_bytes = 0
+
+        dir_freed = 0
+        for pattern in FILE_PATTERNS:
             for entry in sweep_root.glob(pattern):
+                # NEVER DELETE .db FILES
+                if entry.suffix == ".db":
+                    continue
                 try:
-                    if str(entry) in NEVER_DELETE:
-                        continue
                     if entry.stat().st_mtime > cutoff:
-                        continue   # too recent, may be in use
-                    if entry.is_dir():
-                        size = sum(f.stat().st_size for f in entry.rglob("*") if f.is_file())
-                        shutil.rmtree(entry)
-                        logger.info("[weekly-cleanup] removed dir %s (%.1f MB)",
-                                    entry, size / 1e6)
-                        total_freed += size
+                        continue  # file is < 24 h old — may still be in use
+                    size = entry.stat().st_size
+                    entry.unlink()
+                    logger.info(
+                        "[weekly-cleanup] deleted %s (%.1f MB)", entry, size / 1e6
+                    )
+                    dir_freed += size
                 except Exception as exc:
                     logger.warning("[weekly-cleanup] skip %s: %s", entry, exc)
+
+        # Log after-size for this subtree
+        try:
+            after_bytes = sum(
+                f.stat().st_size for f in sweep_root.rglob("*") if f.is_file()
+            )
+            logger.info(
+                "[weekly-cleanup] %s after: %.1f MB (freed %.1f MB)",
+                sweep_root, after_bytes / 1e6, dir_freed / 1e6,
+            )
+        except Exception:
+            pass
+
+        total_freed += dir_freed
 
     logger.info("[weekly-cleanup] total freed: %.1f MB", total_freed / 1e6)
 
