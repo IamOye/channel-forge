@@ -465,10 +465,16 @@ class PixabayFetcher:
                     len(paths), video.pixabay_id, output_path,
                 )
 
-        # 4. Fallback from curated library if fewer than 2 clips found (FIX 3)
+        # 4a. Targeted fallback: broaden progressively when primary returns < count clips
+        if len(paths) < count:
+            paths = self._targeted_topic_fallback(
+                topic_id, topic, paths, seen_ids, count, db_path=db_path,
+            )
+
+        # 4b. Last-resort curated fallback if still very short
         if len(paths) < 2:
             logger.warning(
-                "[pixabay] Only %d clip(s) after main search — filling from fallback library",
+                "[pixabay] Only %d clip(s) after targeted fallback — filling from curated library",
                 len(paths),
             )
             paths = self._fill_from_fallback(topic_id, paths, seen_ids, count, db_path=db_path)
@@ -554,6 +560,89 @@ class PixabayFetcher:
                 "[pixabay] Relevance scoring failed (returning all clips): %s", exc
             )
             return clips
+
+    # ------------------------------------------------------------------
+    # Targeted topic fallback (FIX 1)
+    # ------------------------------------------------------------------
+
+    def _targeted_topic_fallback(
+        self,
+        topic_id: str,
+        topic: str,
+        existing_paths: list[str],
+        seen_ids: set[int],
+        target_count: int,
+        db_path: "Path | str | None" = None,
+    ) -> list[str]:
+        """Retry with progressively broader queries when primary returns < target_count clips.
+
+        Fallback sequence (tried in order until target_count is reached):
+          1. First 2-3 meaningful keywords extracted from the topic string.
+          2. Category keyword ("money", "business", "city") inferred from topic content.
+          3. Final: "city aerial" — always returns results on Pixabay.
+        """
+        paths = list(existing_paths)
+
+        # Tier 1: extract first 2-3 meaningful words from topic
+        _STOP = {
+            "how", "the", "a", "an", "to", "of", "in", "for", "and", "or",
+            "that", "which", "who", "what", "when", "where", "why", "is",
+            "are", "was", "were", "be", "been", "with", "at", "by", "from",
+            "on", "as", "but", "not", "only", "do", "does", "did", "about",
+        }
+        words = [w for w in topic.lower().split() if w not in _STOP and len(w) > 2]
+        keyword_query = " ".join(words[:3]) if words else ""
+
+        # Tier 2: category keyword inferred from topic content
+        _CATEGORY_MAP = [
+            ("money",    ["money", "financial", "finance", "wealth", "rich", "poor",
+                          "bank", "debt", "invest", "salary", "income", "cash"]),
+            ("business", ["business", "career", "job", "work", "office", "company",
+                          "professional", "entrepreneur", "startup"]),
+            ("city",     ["city", "urban", "street", "downtown", "skyline"]),
+        ]
+        topic_lower = topic.lower()
+        category_query = "finance"  # default if nothing matches
+        for cat_kw, signals in _CATEGORY_MAP:
+            if any(sig in topic_lower for sig in signals):
+                category_query = cat_kw
+                break
+
+        fallback_sequence: list[str] = []
+        if keyword_query:
+            fallback_sequence.append(keyword_query)
+        fallback_sequence.append(category_query)
+        fallback_sequence.append("city aerial")
+
+        for query in fallback_sequence:
+            if len(paths) >= target_count:
+                break
+            logger.info(
+                "[pixabay] Primary query returned %d clips — trying fallback: %r",
+                len(paths), query,
+            )
+            added = 0
+            try:
+                for video in self._query_api(query):
+                    if len(paths) >= target_count:
+                        break
+                    if video.pixabay_id in seen_ids:
+                        continue
+                    if _clip_already_used(db_path, "pixabay", str(video.pixabay_id)):
+                        continue
+                    output_path = self.output_dir / f"{topic_id}_stock_{len(paths)}.mp4"
+                    if self._download_verified(video.download_url, output_path):
+                        seen_ids.add(video.pixabay_id)
+                        paths.append(str(output_path))
+                        added += 1
+                        _clip_history_record(
+                            db_path, "pixabay", str(video.pixabay_id), query, topic_id,
+                        )
+            except Exception as exc:
+                logger.warning("[pixabay] Targeted fallback %r failed: %s", query, exc)
+            logger.info("[pixabay] Fallback %r returned %d clips", query, added)
+
+        return paths
 
     # ------------------------------------------------------------------
     # Fallback clip library (FIX 3)

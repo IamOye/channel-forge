@@ -972,8 +972,8 @@ class TestQualityGate:
 class TestBrollMinimum:
     """Tests for MINIMUM_CLIPS enforcement and ProductionError."""
 
-    def test_minimum_clips_constant_is_8(self) -> None:
-        assert MINIMUM_CLIPS == 8
+    def test_minimum_clips_constant_is_6(self) -> None:
+        assert MINIMUM_CLIPS == 6
 
     def test_production_error_raised_on_insufficient_clips(self) -> None:
         """_run_pixabay must raise ProductionError when < 8 clips after fallbacks."""

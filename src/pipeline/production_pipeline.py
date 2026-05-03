@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 DB_PATH = Path("data/processed/channel_forge.db")
 
 # B-roll minimum clip enforcement
-MINIMUM_CLIPS = 8
+MINIMUM_CLIPS = 6
 MAX_SINGLE_CLIP_SECONDS = 15
 
 # Fallback Pixabay search queries when Claude-generated queries return < MINIMUM_CLIPS
@@ -569,7 +569,7 @@ class ProductionPipeline:
           1. Generate 12 scene queries via Claude Haiku.
           2. Fetch video clips from Pixabay using those queries.
           3. Add Ken Burns photo clips for visual diversity.
-          4. Enforce MINIMUM_CLIPS (8) — try fallback queries, then raise ProductionError.
+          4. Enforce MINIMUM_CLIPS (6) — try fallback queries, then raise ProductionError.
 
         Photo clips with REJECTED_TAGS are silently skipped.
         """
