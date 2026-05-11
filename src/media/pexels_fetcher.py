@@ -343,11 +343,10 @@ class PexelsFetcher:
                 "4-5:  Generic street level footage, non-specific scenes.\n"
                 "1-3:  Animals, food, sports, children, anything unrelated.\n\n"
                 f"Clips to rate:\n{json.dumps(clip_descriptions, indent=2)}\n\n"
-                "Respond with valid JSON only. No explanation, no preamble, no apology text.\n"
-                "If you cannot score a clip, assign it a score of 0.\n"
-                "Never respond with prose. If your response is not valid JSON it will be discarded entirely.\n"
-                "Return a JSON object with clip IDs as keys and integer scores 0-10 as values.\n"
-                'Example of required output format: {"clip_id_1": 7, "clip_id_2": 3, "clip_id_3": 0}'
+                "Respond with valid JSON only. No explanation, no preamble, no markdown.\n"
+                "Return a JSON object mapping each clip_id to an integer score 0-10.\n"
+                'Example (use actual clip_id values from the list above, not placeholders):\n'
+                '{"3471234": 8, "5829043": 6, "1047382": 3}'
             )
             response = client.messages.create(
                 model="claude-haiku-4-5-20251001",
@@ -355,22 +354,25 @@ class PexelsFetcher:
                 messages=[{"role": "user", "content": prompt}],
             )
             raw = response.content[0].text.strip()
-            if raw.startswith("```"):
-                lines = raw.split("\n")
-                raw = "\n".join(lines[1:-1]) if lines[-1].strip() == "```" else "\n".join(lines[1:])
-            raw = raw.strip()
+            raw = self._extract_json_object(raw)
             try:
                 scores_data = json.loads(raw)
+                # Unwrap one level of nesting if Claude returned {"scores": {...}}
+                if isinstance(scores_data, dict) and len(scores_data) == 1:
+                    only_val = next(iter(scores_data.values()))
+                    if isinstance(only_val, dict):
+                        scores_data = only_val
                 score_map = {str(k): int(v) for k, v in scores_data.items()}
             except (json.JSONDecodeError, AttributeError, TypeError, ValueError) as e:
                 logger.warning(
-                    "[pexels] Claude returned non-JSON response, assigning default scores"
+                    "[pexels] Claude returned unparseable response (bypassing filter)"
                     " | error: %s | raw: %.200s", e, raw,
                 )
-                score_map = {c["clip_id"]: 0 for c in candidates}
+                # Pass all candidates through rather than silently killing the clip pool
+                return candidates
             filtered = [
                 c for c in candidates
-                if score_map.get(c["clip_id"], 0) >= _MIN_RELEVANCE_SCORE
+                if score_map.get(c["clip_id"], _MIN_RELEVANCE_SCORE) >= _MIN_RELEVANCE_SCORE
             ]
             logger.info(
                 "[pexels] Relevance scoring: %d clips → %d passed",
@@ -380,6 +382,32 @@ class PexelsFetcher:
         except Exception as exc:
             logger.warning("[pexels] Relevance scoring failed (returning all): %s", exc)
             return candidates
+
+    @staticmethod
+    def _extract_json_object(raw: str) -> str:
+        """Extract a JSON object from a response that may contain prose or markdown fences.
+
+        Tries in order:
+          1. Strip a markdown code fence (```[lang] ... ```)
+          2. Find the first {...} span with a regex (handles leading/trailing prose)
+        Returns the original string if no extraction succeeds.
+        """
+        import re
+        raw = raw.strip()
+        # Strategy 1: strip markdown fence
+        if raw.startswith("```"):
+            lines = raw.split("\n")
+            start = 1  # skip opening fence line (```json or ```)
+            end = len(lines)
+            if lines[-1].strip() == "```":
+                end -= 1
+            raw = "\n".join(lines[start:end]).strip()
+        # Strategy 2: if the result still doesn't start with {, grab the first {...} block
+        if not raw.startswith("{"):
+            m = re.search(r"\{.*\}", raw, re.DOTALL)
+            if m:
+                raw = m.group(0)
+        return raw
 
     @staticmethod
     def _download_file(url: str, output_path: Path) -> bool:
