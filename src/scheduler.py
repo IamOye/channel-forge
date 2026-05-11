@@ -631,8 +631,9 @@ def weekly_disk_cleanup() -> None:
 
     # --- Targets ----------------------------------------------------------
     SWEEP_PATHS = [
-        Path("/app/data/raw"),   # primary: Pexels b-roll + voiceover intermediates
-        Path("/tmp"),            # ffmpeg scratch space
+        Path("/app/data/raw"),    # primary: Pexels b-roll + voiceover intermediates
+        Path("/app/data/output"), # rendered MP4s already uploaded to YouTube
+        Path("/tmp"),             # ffmpeg scratch space
     ]
 
     # Only delete media files we produced. Never touch databases or credentials.
