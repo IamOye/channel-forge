@@ -195,13 +195,14 @@ class TestDetectAndAlert:
 
     @patch("src.publisher.comment_responder.anthropic.Anthropic")
     @patch("src.notifications.telegram_notifier.TelegramNotifier")
-    def test_does_not_post_to_youtube(self, mock_tg_cls, mock_api_cls, db: Path) -> None:
-        """The detect_and_alert method must never post to YouTube."""
-        mock_client = MagicMock()
-        msg = MagicMock()
-        msg.content = [MagicMock(text="Reply")]
-        mock_client.messages.create.return_value = msg
-        mock_api_cls.return_value = mock_client
+    def test_does_not_post_to_youtube_when_automode_off(self, mock_tg_cls, mock_api_cls, db: Path) -> None:
+        """detect_and_alert must not post to YouTube when automode is off."""
+        conn = sqlite3.connect(db)
+        conn.execute("UPDATE settings SET value = 'off' WHERE key = 'telegram_automode'")
+        conn.commit()
+        conn.close()
+
+        mock_api_cls.return_value = MagicMock()
         mock_tg_cls.return_value = MagicMock()
 
         with patch.object(CommentResponder, "post_reply") as mock_post:

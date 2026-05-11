@@ -511,7 +511,7 @@ class CommentResponder:
                 finally:
                     conn.close()
                 if existing:
-                    logger.debug("Comment %s already tracked — skipping", cid)
+                    logger.info("[comment] Comment %s already in DB — skipping", cid)
                     continue
             except Exception as dup_exc:
                 logger.warning(
@@ -556,6 +556,27 @@ class CommentResponder:
             except Exception as exc:
                 logger.error("Failed to save comment_state for %s: %s", cid, exc)
                 continue
+
+            # Auto-post reply when automode='on' and a valid reply was generated
+            if automode == "on" and suggested_reply:
+                if self.post_reply(cid, suggested_reply):
+                    try:
+                        conn = sqlite3.connect(target)
+                        try:
+                            conn.execute(
+                                "UPDATE comment_states SET state = 'AUTO_REPLIED', "
+                                "updated_at = datetime('now') WHERE comment_id = ?",
+                                (cid,),
+                            )
+                            conn.commit()
+                        finally:
+                            conn.close()
+                    except Exception as exc:
+                        logger.warning(
+                            "[comment] Failed to update state to AUTO_REPLIED for %s: %s",
+                            cid, exc,
+                        )
+                    logger.info("[comment] Auto-replied to YouTube comment %s", cid)
 
             # Send Telegram alert
             try:
