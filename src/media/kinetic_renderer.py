@@ -51,6 +51,8 @@ C_RED         = (255,  51,  51, 255)
 C_GREEN       = (0,  255, 136, 255)
 C_GREY        = (51,  51,  51, 255)
 C_GRID        = (13,  32,  16, 255)
+C_GLOW_WHITE  = (240, 242, 255, 255)   # near-white with faint blue tint — minimalist hero
+C_DIM_WHITE   = (160, 162, 175, 255)   # muted body text — minimalist
 
 # Anchor asset paths to the project root (parent of src/), not CWD.
 # On Railway, CWD may not be the project root.
@@ -216,6 +218,7 @@ class StylePreset:
     these fields differently. Default preset matches current Patch E.
     """
     name: str
+    mode: str = "default"            # "default" | "minimalist_kinetic"
 
     # Particle system
     particle_count: int = 50
@@ -239,6 +242,23 @@ class StylePreset:
 
 
 DEFAULT_STYLE = StylePreset(name="default")
+
+MINIMALIST_STYLE = StylePreset(
+    name="minimalist_kinetic",
+    mode="minimalist_kinetic",
+    particle_count=25,
+    particle_color=(200, 202, 215, 255),
+    particle_size_range=(1.0, 2.5),
+    particle_speed_multiplier=0.35,
+    gradient_max_brightness=0,
+    gradient_enabled=False,
+    hero_color=C_GLOW_WHITE,
+    body_color=C_DIM_WHITE,
+    cta_color=C_GLOW_WHITE,
+    hero_size_multiplier=0.9,
+    flash_frame_duration=0,
+    entry_animation_duration=0.18,
+)
 
 
 def _init_particles() -> list:
@@ -423,7 +443,21 @@ class KineticRenderer:
             is_excited = lower in EXCITED_WORDS or raw_text.endswith("!")
             is_question = raw_text.endswith("?")
 
-            if is_negative:
+            if self._style.mode == "minimalist_kinetic":
+                if is_cta:
+                    anim = "REVEAL_WIPE"
+                elif role == "HERO":
+                    anim = "CIRCLE_COMPLETE"
+                elif role == "STAT":
+                    anim = "BAR_RISE"
+                elif role == "BODY" and lower in MONEY_WORDS:
+                    anim = "LINE_DRAW"
+                else:
+                    _mcands = ["FADE_RISE", "FADE_EXPAND", "LINE_DRAW"]
+                    _mfilt  = [c for c in _mcands if c != last_anim]
+                    anim = _mfilt[cycle_i % len(_mfilt)]
+                    cycle_i += 1
+            elif is_negative:
                 anim = "GLITCH"
             elif role == "HERO":
                 anim = "SPLIT"
@@ -505,7 +539,21 @@ class KineticRenderer:
             is_negative = lower in NEGATIVE_WORDS
             is_excited = lower in EXCITED_WORDS
 
-            if is_negative:
+            if self._style.mode == "minimalist_kinetic":
+                if role == "CTA":
+                    anim = "REVEAL_WIPE"
+                elif role == "HERO":
+                    anim = "CIRCLE_COMPLETE"
+                elif role == "STAT":
+                    anim = "BAR_RISE"
+                elif role == "BODY" and lower in MONEY_WORDS:
+                    anim = "LINE_DRAW"
+                else:
+                    _mcands = ["FADE_RISE", "FADE_EXPAND", "LINE_DRAW"]
+                    _mfilt  = [c for c in _mcands if c != last_anim]
+                    anim = _mfilt[cycle_i % len(_mfilt)]
+                    cycle_i += 1
+            elif is_negative:
                 anim = "GLITCH"
             elif role == "HERO":
                 anim = "SPLIT"
@@ -554,18 +602,18 @@ class KineticRenderer:
         lower = text.lower()
 
         if start >= cta_start:
-            return ("CTA", C_GREEN, F_MONTSERRAT, 170, None)
+            return ("CTA", self._style.cta_color, F_MONTSERRAT, 170, None)
 
         if STAT_PATTERN.match(text):
-            return ("STAT", C_GOLD, F_MONTSERRAT, 300, SFX_IMPACT)
+            return ("STAT", self._style.hero_color, F_MONTSERRAT, 300, SFX_IMPACT)
 
         if lower in HERO_WORDS:
-            return ("HERO", C_GOLD, F_MONTSERRAT, 280, SFX_IMPACT)
+            return ("HERO", self._style.hero_color, F_MONTSERRAT, 280, SFX_IMPACT)
 
         if lower in MONEY_WORDS:
-            return ("BODY", C_WHITE, F_OSWALD, 150, SFX_CASH)
+            return ("BODY", self._style.body_color, F_OSWALD, 150, SFX_CASH)
 
-        return ("BODY", C_WHITE, F_ROBOTO, 130, None)
+        return ("BODY", self._style.body_color, F_ROBOTO, 130, None)
 
     # ------------------------------------------------------------------
     # Hook type detection
@@ -857,19 +905,24 @@ class KineticRenderer:
         """
         self._ensure_background_initialized()
 
+        if self._style.mode == "minimalist_kinetic":
+            self._draw_minimalist_background(img, t, W, H)
+            return
+
         # 1. Paste cached gradient (replaces pure-black canvas)
         img.paste(self._gradient_cache, (0, 0))
 
         # 2. Particles drifted by t. Particle positions wrap around canvas edges.
         particle_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         pd = ImageDraw.Draw(particle_layer)
+        pc = self._style.particle_color
         for p in self._particles:
             x = (p.x + p.vx * t) % W
             y = (p.y + p.vy * t) % H
             r = p.size
             pd.ellipse(
                 [x - r, y - r, x + r, y + r],
-                fill=(255, 184, 0, p.opacity),
+                fill=(pc[0], pc[1], pc[2], p.opacity),
             )
         img.alpha_composite(particle_layer)
 
@@ -885,6 +938,39 @@ class KineticRenderer:
                 outline=(0, 0, 0, alpha), width=1
             )
         img.alpha_composite(vignette)
+
+    def _draw_minimalist_background(
+        self, img: Image.Image, t: float, W: int, H: int
+    ) -> None:
+        """Pure-black background with ambient expanding rings and white micro-particles."""
+        draw = ImageDraw.Draw(img)
+        cx, cy = W // 2, H // 2
+
+        # Three staggered expanding ring pulses — very subtle, low alpha
+        ring_period = 4.5
+        for ring_i in range(3):
+            phase = (t / ring_period + ring_i / 3.0) % 1.0
+            ring_r = int(phase * 520)
+            alpha = int(20 * (1.0 - phase))
+            if ring_r > 5 and alpha > 0:
+                draw.ellipse(
+                    [cx - ring_r, cy - ring_r, cx + ring_r, cy + ring_r],
+                    outline=(210, 212, 230, alpha), width=1,
+                )
+
+        # White/grey micro-particles
+        particle_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        pd = ImageDraw.Draw(particle_layer)
+        pc = self._style.particle_color
+        for p in self._particles:
+            x = (p.x + p.vx * t) % W
+            y = (p.y + p.vy * t) % H
+            r = p.size
+            pd.ellipse(
+                [x - r, y - r, x + r, y + r],
+                fill=(pc[0], pc[1], pc[2], p.opacity),
+            )
+        img.alpha_composite(particle_layer)
 
     def _draw_hook_intro(
         self,
@@ -1019,8 +1105,8 @@ class KineticRenderer:
         base_x = W // 2
         base_y = int(H * ev.y_frac)
 
-        # Render icon above the word/band (if this event has one)
-        if ev.icon_name:
+        # Render icon above the word/band — suppressed in minimalist mode
+        if ev.icon_name and self._style.mode != "minimalist_kinetic":
             icon_size_px = max(100, min(200, int(ev.font_size * 0.6)))
             if ev.anim == "SPLIT":
                 icon_cy = base_y - int(ev.font_size * 1.0) - 80
@@ -1101,6 +1187,92 @@ class KineticRenderer:
             img.alpha_composite(layer, (base_x - layer.width // 2, base_y - layer.height // 2))
             return
 
+        if ev.anim == "FADE_EXPAND":
+            ease = self._ease_in_out(frac)
+            text_alpha = int(255 * ease)
+            scale = 0.82 + 0.18 * ease
+            layer = self._render_text_layer(ev.text.upper(), font, (r, g, b, text_alpha))
+            new_w = max(1, int(layer.width * scale))
+            new_h = max(1, int(layer.height * scale))
+            layer = layer.resize((new_w, new_h), Image.LANCZOS)
+            img.alpha_composite(layer, (base_x - layer.width // 2, base_y - layer.height // 2))
+            if ease > 0.5:
+                self._draw_glow_soft(draw, ev.text.upper(), font, base_x, base_y, (r, g, b))
+            return
+
+        if ev.anim == "CIRCLE_COMPLETE":
+            ease = self._ease_in_out(frac)
+            try:
+                bb_text = font.getbbox(ev.text.upper())
+                text_w_bb = max(1, bb_text[2] - bb_text[0])
+                text_h_bb = max(1, bb_text[3] - bb_text[1])
+            except Exception:
+                text_w_bb = ev.font_size * max(1, len(ev.text)) // 2
+                text_h_bb = ev.font_size
+            radius = max(text_w_bb, text_h_bb) // 2 + 40
+            arc_span = int(ease * 360)
+            if arc_span > 0:
+                draw.arc(
+                    [base_x - radius, base_y - radius,
+                     base_x + radius, base_y + radius],
+                    start=-90, end=-90 + arc_span,
+                    fill=(r, g, b, 180), width=3,
+                )
+            if ease > 0.35:
+                text_fade = min(1.0, (ease - 0.35) / 0.65)
+                draw.text(
+                    (base_x, base_y), ev.text.upper(), font=font,
+                    fill=(r, g, b, int(255 * text_fade)), anchor="mm",
+                )
+                if ease > 0.75:
+                    self._draw_glow_soft(draw, ev.text.upper(), font, base_x, base_y, (r, g, b))
+            return
+
+        if ev.anim == "BAR_RISE":
+            ease = self._ease_in_out(frac)
+            bar_full_h = 70
+            bar_h_px = max(1, int(bar_full_h * ease))
+            bar_w_px = 4
+            bar_y_bot = base_y + 50
+            draw.rectangle(
+                [base_x - bar_w_px // 2, bar_y_bot - bar_h_px,
+                 base_x + bar_w_px // 2, bar_y_bot],
+                fill=(r, g, b, 200),
+            )
+            if ease > 0.4:
+                text_fade = min(1.0, (ease - 0.4) / 0.6)
+                y_off = int((1.0 - ease) * 25)
+                draw.text(
+                    (base_x, base_y - y_off), ev.text.upper(), font=font,
+                    fill=(r, g, b, int(255 * text_fade)), anchor="mm",
+                )
+                if ease > 0.8:
+                    self._draw_glow_soft(draw, ev.text.upper(), font, base_x, base_y, (r, g, b))
+            return
+
+        if ev.anim == "LINE_DRAW":
+            ease = self._ease_in_out(frac)
+            try:
+                bb_text = font.getbbox(ev.text.upper())
+                text_w_px = max(60, bb_text[2] - bb_text[0])
+            except Exception:
+                text_w_px = ev.font_size * max(1, len(ev.text)) // 2
+            half_line = max(1, int(text_w_px * 0.55 * ease))
+            line_y = base_y + ev.font_size // 3 + 10
+            draw.line(
+                [(base_x - half_line, line_y), (base_x + half_line, line_y)],
+                fill=(r, g, b, 170), width=2,
+            )
+            if ease > 0.25:
+                text_fade = min(1.0, (ease - 0.25) / 0.75)
+                draw.text(
+                    (base_x, base_y), ev.text.upper(), font=font,
+                    fill=(r, g, b, int(255 * text_fade)), anchor="mm",
+                )
+                if ease > 0.7:
+                    self._draw_glow_soft(draw, ev.text.upper(), font, base_x, base_y, (r, g, b))
+            return
+
         if ev.anim == "SLAM":
             # Drop from above with overshoot
             if frac < 1.0:
@@ -1159,8 +1331,10 @@ class KineticRenderer:
                 fill=(r, g, b, alpha), anchor="mm",
             )
 
-        # Glow on HERO/STAT words
-        if ev.role in ("HERO", "STAT") and frac > 0.8:
+        # Glow — diffuse soft glow for all words in minimalist; HERO/STAT only in default
+        if self._style.mode == "minimalist_kinetic" and frac > 0.6:
+            self._draw_glow_soft(draw, ev.text.upper(), font, base_x, base_y, (r, g, b))
+        elif ev.role in ("HERO", "STAT") and frac > 0.8:
             self._draw_glow(draw, ev.text.upper(), font, base_x, base_y, (r, g, b))
 
     def _draw_scaled_text(
@@ -1213,6 +1387,28 @@ class KineticRenderer:
                     font=font,
                     fill=(r, g, b, alpha),
                     anchor="mm",
+                )
+
+    def _draw_glow_soft(
+        self,
+        draw:   ImageDraw.Draw,
+        text:   str,
+        font:   ImageFont.FreeTypeFont,
+        cx:     int,
+        cy:     int,
+        colour: tuple,
+    ) -> None:
+        """Diffuse 8-directional soft glow for minimalist style."""
+        r, g, b = colour[:3]
+        for offset, alpha in [(14, 5), (9, 10), (6, 18), (3, 28)]:
+            for dx, dy in [
+                (-offset, 0), (offset, 0), (0, -offset), (0, offset),
+                (-offset, -offset), (offset, offset),
+                (-offset, offset), (offset, -offset),
+            ]:
+                draw.text(
+                    (cx + dx, cy + dy), text,
+                    font=font, fill=(r, g, b, alpha), anchor="mm",
                 )
 
     def _draw_icon(
@@ -1584,11 +1780,19 @@ class KineticRenderer:
             t -= 2.625 / d1
             return n1 * t * t + 0.984375
 
+    @staticmethod
+    def _ease_in_out(t: float) -> float:
+        """Cubic ease-in-out: smooth acceleration and deceleration."""
+        t = min(max(t, 0.0), 1.0)
+        return t * t * (3.0 - 2.0 * t)
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
     def _is_flash_frame(self, t: float) -> bool:
+        if self._style.mode == "minimalist_kinetic":
+            return False
         flash_times = [7.0, 20.0, 35.0, 43.0]
         flash_duration = 3 / FPS
         return any(abs(t - ft) < flash_duration for ft in flash_times)
