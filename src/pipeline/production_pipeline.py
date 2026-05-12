@@ -749,9 +749,9 @@ class ProductionPipeline:
 
         if slot == 1:
             try:
-                from src.media.kinetic_renderer import KineticRenderer
-                logger.info("[pipeline] Using KineticRenderer for slot %d", slot)
-                return KineticRenderer(style_preset=style_preset).build(
+                from src.media.morph_renderer import MorphRenderer
+                logger.info("[pipeline] Using MorphRenderer for slot %d", slot)
+                return MorphRenderer().build(
                     topic_id=topic_id,
                     script_dict=script_dict,
                     audio_path=audio_path,
@@ -760,7 +760,7 @@ class ProductionPipeline:
                 )
             except Exception as exc:
                 logger.warning(
-                    "[pipeline] KineticRenderer failed (%s) — falling back to VideoBuilder", exc
+                    "[pipeline] MorphRenderer failed (%s) — falling back to VideoBuilder", exc
                 )
 
         elif slot == 2:
