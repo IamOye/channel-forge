@@ -486,16 +486,28 @@ class KineticRenderer:
                 anim = filtered[cycle_i % len(filtered)]
                 cycle_i += 1
 
-            # Icon lookup: applies to HERO, STAT, and BODY-classified MONEY_WORDS only.
-            # Plain BODY words get no icon even if text matches ICON_WORDS.
-            is_icon_eligible = (
-                role in ("HERO", "STAT", "CTA")
-                or (role == "BODY" and lower in MONEY_WORDS)
-            )
+            # Icon lookup — skipped in minimalist mode
             icon_name = None
-            if is_icon_eligible and lower in ICON_WORDS:
-                icon_name, icon_sfx = ICON_WORDS[lower]
-                sfx = icon_sfx   # override role-default SFX with icon-specific SFX
+            if self._style.mode == "minimalist_kinetic":
+                # Override SFX with animation-type-specific sounds
+                _mk_sfx = {
+                    "CIRCLE_COMPLETE": SFX_IMPACT,
+                    "BAR_RISE":        SFX_WHOOSH,
+                    "LINE_DRAW":       SFX_WHOOSH1,
+                    "FADE_EXPAND":     SFX_WHOOSH1,
+                    "FADE_RISE":       SFX_WHOOSH1,
+                    "REVEAL_WIPE":     SFX_WHOOSH,
+                }
+                sfx = _mk_sfx.get(anim, SFX_WHOOSH1)
+            else:
+                # Plain BODY words get no icon even if text matches ICON_WORDS.
+                is_icon_eligible = (
+                    role in ("HERO", "STAT", "CTA")
+                    or (role == "BODY" and lower in MONEY_WORDS)
+                )
+                if is_icon_eligible and lower in ICON_WORDS:
+                    icon_name, icon_sfx = ICON_WORDS[lower]
+                    sfx = icon_sfx   # override role-default SFX with icon-specific SFX
 
             events.append(WordEvent(
                 text=text, start=start, end=end,
@@ -574,16 +586,28 @@ class KineticRenderer:
                 anim = filtered[cycle_i % len(filtered)]
                 cycle_i += 1
 
-            # Icon lookup: applies to HERO, STAT, and BODY-classified MONEY_WORDS only.
-            # Plain BODY words get no icon even if text matches ICON_WORDS.
-            is_icon_eligible = (
-                role in ("HERO", "STAT", "CTA")
-                or (role == "BODY" and lower in MONEY_WORDS)
-            )
+            # Icon lookup — skipped in minimalist mode
             icon_name = None
-            if is_icon_eligible and lower in ICON_WORDS:
-                icon_name, icon_sfx = ICON_WORDS[lower]
-                sfx = icon_sfx   # override role-default SFX with icon-specific SFX
+            if self._style.mode == "minimalist_kinetic":
+                # Override SFX with animation-type-specific sounds
+                _mk_sfx = {
+                    "CIRCLE_COMPLETE": SFX_IMPACT,
+                    "BAR_RISE":        SFX_WHOOSH,
+                    "LINE_DRAW":       SFX_WHOOSH1,
+                    "FADE_EXPAND":     SFX_WHOOSH1,
+                    "FADE_RISE":       SFX_WHOOSH1,
+                    "REVEAL_WIPE":     SFX_WHOOSH,
+                }
+                sfx = _mk_sfx.get(anim, SFX_WHOOSH1)
+            else:
+                # Plain BODY words get no icon even if text matches ICON_WORDS.
+                is_icon_eligible = (
+                    role in ("HERO", "STAT", "CTA")
+                    or (role == "BODY" and lower in MONEY_WORDS)
+                )
+                if is_icon_eligible and lower in ICON_WORDS:
+                    icon_name, icon_sfx = ICON_WORDS[lower]
+                    sfx = icon_sfx   # override role-default SFX with icon-specific SFX
 
             events.append(WordEvent(
                 text=text, start=start, end=end,
@@ -600,6 +624,16 @@ class KineticRenderer:
     ) -> tuple[str, tuple, str, int, str | None]:
 
         lower = text.lower()
+
+        # Minimalist mode uses different font faces and sizes
+        if self._style.mode == "minimalist_kinetic":
+            if start >= cta_start:
+                return ("CTA", self._style.cta_color, F_MONTSERRAT, 56, SFX_WHOOSH)
+            if STAT_PATTERN.match(text):
+                return ("STAT", self._style.hero_color, F_BEBAS, 80, SFX_WHOOSH)
+            if lower in HERO_WORDS:
+                return ("HERO", self._style.hero_color, F_BEBAS, 96, SFX_IMPACT)
+            return ("BODY", self._style.body_color, F_MONTSERRAT, 64, SFX_WHOOSH1)
 
         if start >= cta_start:
             return ("CTA", self._style.cta_color, F_MONTSERRAT, 170, None)
@@ -1105,6 +1139,13 @@ class KineticRenderer:
         base_x = W // 2
         base_y = int(H * ev.y_frac)
 
+        # Minimalist kinetic: completely separate rendering pipeline
+        # Uses beat-relative progress so animations span the full word duration.
+        if self._style.mode == "minimalist_kinetic":
+            beat_frac = min(anim_t / total, 1.0)
+            self._draw_minimalist_anim(draw, img, ev, beat_frac, base_x, base_y, font, r, g, b)
+            return
+
         # Render icon above the word/band — suppressed in minimalist mode
         if ev.icon_name and self._style.mode != "minimalist_kinetic":
             icon_size_px = max(100, min(200, int(ev.font_size * 0.6)))
@@ -1391,25 +1432,333 @@ class KineticRenderer:
 
     def _draw_glow_soft(
         self,
-        draw:   ImageDraw.Draw,
-        text:   str,
-        font:   ImageFont.FreeTypeFont,
-        cx:     int,
-        cy:     int,
-        colour: tuple,
+        draw:    ImageDraw.Draw,
+        text:    str,
+        font:    ImageFont.FreeTypeFont,
+        cx:      int,
+        cy:      int,
+        colour:  tuple,
+        is_hero: bool = False,
     ) -> None:
-        """Diffuse 8-directional soft glow for minimalist style."""
+        """Diffuse 8-directional bloom glow. Renders glow only — caller draws main text."""
         r, g, b = colour[:3]
-        for offset, alpha in [(14, 5), (9, 10), (6, 18), (3, 28)]:
-            for dx, dy in [
-                (-offset, 0), (offset, 0), (0, -offset), (0, offset),
-                (-offset, -offset), (offset, offset),
-                (-offset, offset), (offset, -offset),
-            ]:
+        _dirs = [(-1,0),(1,0),(0,-1),(0,1),(-1,-1),(1,1),(-1,1),(1,-1)]
+        if is_hero:
+            for dx, dy in _dirs:
                 draw.text(
-                    (cx + dx, cy + dy), text,
+                    (cx + dx * 12, cy + dy * 12), text,
+                    font=font, fill=(r, g, b, 8), anchor="mm",
+                )
+        for offset, alpha in [(8, 12), (5, 25), (2, 45)]:
+            for dx, dy in _dirs:
+                draw.text(
+                    (cx + dx * offset, cy + dy * offset), text,
                     font=font, fill=(r, g, b, alpha), anchor="mm",
                 )
+
+    # ------------------------------------------------------------------
+    # Minimalist kinetic — dispatcher and per-animation handlers
+    # ------------------------------------------------------------------
+
+    def _draw_minimalist_anim(
+        self,
+        draw:      ImageDraw.Draw,
+        img:       Image.Image,
+        ev:        WordEvent,
+        beat_frac: float,
+        base_x:    int,
+        base_y:    int,
+        font:      "ImageFont.FreeTypeFont",
+        r:         int,
+        g:         int,
+        b:         int,
+    ) -> None:
+        """Route minimalist kinetic events to the correct per-animation handler."""
+        anim = ev.anim
+        if anim == "CIRCLE_COMPLETE":
+            self._mk_circle_complete(draw, ev, beat_frac, base_x, base_y, font, r, g, b)
+        elif anim == "BAR_RISE":
+            self._mk_bar_rise(draw, ev, beat_frac, base_x, base_y, font, r, g, b)
+        elif anim == "LINE_DRAW":
+            self._mk_line_draw(draw, ev, beat_frac, base_x, base_y, font, r, g, b)
+        elif anim == "FADE_EXPAND":
+            self._mk_fade_expand(draw, img, ev, beat_frac, base_x, base_y, font, r, g, b)
+        elif anim == "REVEAL_WIPE":
+            self._mk_reveal_wipe(draw, img, ev, beat_frac, base_x, base_y, font, r, g, b)
+        else:
+            # FADE_RISE and any unrecognised animation
+            self._mk_fade_rise(draw, ev, beat_frac, base_x, base_y, font, r, g, b)
+
+    def _mk_bloom_text(
+        self,
+        draw:    ImageDraw.Draw,
+        text:    str,
+        font:    "ImageFont.FreeTypeFont",
+        cx:      int,
+        cy:      int,
+        r:       int,
+        g:       int,
+        b:       int,
+        alpha:   int = 255,
+        is_hero: bool = False,
+    ) -> None:
+        """Render bloom glow layers then main text, all centred at (cx, cy).
+
+        Glow is proportionally scaled by alpha so fade-ins look natural.
+        """
+        dirs = [(-1,0),(1,0),(0,-1),(0,1),(-1,-1),(1,1),(-1,1),(1,-1)]
+        if is_hero:
+            for dx, dy in dirs:
+                draw.text(
+                    (cx + dx * 12, cy + dy * 12), text,
+                    font=font, fill=(r, g, b, max(0, int(8 * alpha / 255))), anchor="mm",
+                )
+        for offset, ga in [(8, 12), (5, 25), (2, 45)]:
+            scaled_ga = max(0, int(ga * alpha / 255))
+            if scaled_ga > 0:
+                for dx, dy in dirs:
+                    draw.text(
+                        (cx + dx * offset, cy + dy * offset), text,
+                        font=font, fill=(r, g, b, scaled_ga), anchor="mm",
+                    )
+        draw.text((cx, cy), text, font=font, fill=(r, g, b, alpha), anchor="mm")
+
+    def _mk_circle_complete(
+        self,
+        draw:      ImageDraw.Draw,
+        ev:        WordEvent,
+        beat_frac: float,
+        base_x:    int,
+        base_y:    int,
+        font:      "ImageFont.FreeTypeFont",
+        r:         int,
+        g:         int,
+        b:         int,
+    ) -> None:
+        """CIRCLE_COMPLETE: arc draws 0→360° over 70% of beat; text fades in at 35%."""
+        arc_phase = min(beat_frac / 0.70, 1.0)
+        ease = self._ease_in_out(arc_phase)
+        arc_span = max(1, int(ease * 360))
+        radius = 90
+        cx, cy = base_x, base_y
+
+        # Arc glow: expanded radii at lower alpha
+        for r_off, a_off in [(6, 30), (3, 60), (1, 200)]:
+            draw.arc(
+                [cx - radius - r_off, cy - radius - r_off,
+                 cx + radius + r_off, cy + radius + r_off],
+                start=-90, end=-90 + arc_span,
+                fill=(r, g, b, a_off), width=3,
+            )
+        draw.arc(
+            [cx - radius, cy - radius, cx + radius, cy + radius],
+            start=-90, end=-90 + arc_span,
+            fill=(r, g, b, 255), width=3,
+        )
+
+        # Text appears inside circle at 35%, drifts up max 20px as arc forms
+        if arc_phase > 0.35:
+            text_alpha_f = min(1.0, (arc_phase - 0.35) / 0.65)
+            text_alpha = int(255 * text_alpha_f)
+            y_drift = int(20 * arc_phase)
+            self._mk_bloom_text(
+                draw, ev.text.upper(), font, cx, cy - y_drift,
+                r, g, b, text_alpha, is_hero=ev.role in ("HERO", "STAT"),
+            )
+
+    def _mk_bar_rise(
+        self,
+        draw:      ImageDraw.Draw,
+        ev:        WordEvent,
+        beat_frac: float,
+        base_x:    int,
+        base_y:    int,
+        font:      "ImageFont.FreeTypeFont",
+        r:         int,
+        g:         int,
+        b:         int,
+    ) -> None:
+        """BAR_RISE: bar rises 90px from below center over 60% of beat; text from 40%."""
+        bar_phase = min(beat_frac / 0.60, 1.0)
+        ease = self._ease_in_out(bar_phase)
+        bar_full_h = 90
+        bar_w = 4
+        bar_bottom = base_y + 90
+        bar_top = bar_bottom - max(1, int(bar_full_h * ease))
+        bx0 = base_x - bar_w // 2
+        bx1 = base_x + bar_w // 2
+
+        # Bar glow: expanded rectangles at lower alpha
+        for exp, a_off in [(4, 30), (2, 60), (1, 120)]:
+            draw.rectangle(
+                [bx0 - exp, bar_top - exp, bx1 + exp, bar_bottom + exp],
+                fill=(r, g, b, a_off),
+            )
+        draw.rectangle([bx0, bar_top, bx1, bar_bottom], fill=(r, g, b, 200))
+
+        # Text rises with bar from 40% bar_phase
+        if bar_phase > 0.40:
+            text_alpha_f = min(1.0, (bar_phase - 0.40) / 0.60)
+            text_alpha = int(255 * text_alpha_f)
+            y_off = int((1.0 - ease) * 25)
+            self._mk_bloom_text(
+                draw, ev.text.upper(), font, base_x, base_y - y_off,
+                r, g, b, text_alpha, is_hero=ev.role in ("HERO", "STAT"),
+            )
+
+    def _mk_line_draw(
+        self,
+        draw:      ImageDraw.Draw,
+        ev:        WordEvent,
+        beat_frac: float,
+        base_x:    int,
+        base_y:    int,
+        font:      "ImageFont.FreeTypeFont",
+        r:         int,
+        g:         int,
+        b:         int,
+    ) -> None:
+        """LINE_DRAW: line extends 200px each side over 50% of beat; text from 25%."""
+        line_phase = min(beat_frac / 0.50, 1.0)
+        ease = self._ease_in_out(line_phase)
+        ext = max(1, int(200 * ease))
+        line_y = base_y + 30
+
+        # Line glow: vertical offsets at lower alpha
+        for v_off, a_off in [(4, 40), (2, 120)]:
+            draw.line(
+                [(base_x - ext, line_y - v_off), (base_x + ext, line_y - v_off)],
+                fill=(r, g, b, a_off), width=2,
+            )
+            draw.line(
+                [(base_x - ext, line_y + v_off), (base_x + ext, line_y + v_off)],
+                fill=(r, g, b, a_off), width=2,
+            )
+        draw.line([(base_x - ext, line_y), (base_x + ext, line_y)],
+                  fill=(r, g, b, 255), width=2)
+
+        # Text appears at 25% line_phase
+        if line_phase > 0.25:
+            text_alpha_f = min(1.0, (line_phase - 0.25) / 0.75)
+            text_alpha = int(255 * text_alpha_f)
+            self._mk_bloom_text(
+                draw, ev.text.upper(), font, base_x, base_y,
+                r, g, b, text_alpha,
+            )
+
+    def _mk_fade_expand(
+        self,
+        draw:      ImageDraw.Draw,
+        img:       Image.Image,
+        ev:        WordEvent,
+        beat_frac: float,
+        base_x:    int,
+        base_y:    int,
+        font:      "ImageFont.FreeTypeFont",
+        r:         int,
+        g:         int,
+        b:         int,
+    ) -> None:
+        """FADE_EXPAND: scales 0.82→1.0 over 40% of beat, then holds."""
+        scale_phase = min(beat_frac / 0.40, 1.0)
+        ease = self._ease_in_out(scale_phase)
+        scale = 0.82 + 0.18 * ease
+        text_alpha = int(255 * ease)
+        if text_alpha <= 0:
+            return
+
+        # Draw glow first (behind scaled text)
+        is_hero = ev.role in ("HERO", "STAT")
+        dirs = [(-1,0),(1,0),(0,-1),(0,1),(-1,-1),(1,1),(-1,1),(1,-1)]
+        if is_hero:
+            for dx, dy in dirs:
+                draw.text(
+                    (base_x + dx * 12, base_y + dy * 12), ev.text.upper(),
+                    font=font, fill=(r, g, b, max(0, int(8 * ease))), anchor="mm",
+                )
+        for offset, ga in [(8, 12), (5, 25), (2, 45)]:
+            scaled_ga = max(0, int(ga * ease))
+            if scaled_ga > 0:
+                for dx, dy in dirs:
+                    draw.text(
+                        (base_x + dx * offset, base_y + dy * offset), ev.text.upper(),
+                        font=font, fill=(r, g, b, scaled_ga), anchor="mm",
+                    )
+
+        # Scale text and composite on top of glow
+        layer = self._render_text_layer(ev.text.upper(), font, (r, g, b, text_alpha))
+        new_w = max(1, int(layer.width * scale))
+        new_h = max(1, int(layer.height * scale))
+        layer = layer.resize((new_w, new_h), Image.LANCZOS)
+        x0 = base_x - new_w // 2
+        y0 = base_y - new_h // 2
+        img.alpha_composite(layer, (max(0, x0), max(0, y0)))
+
+    def _mk_reveal_wipe(
+        self,
+        draw:      ImageDraw.Draw,
+        img:       Image.Image,
+        ev:        WordEvent,
+        beat_frac: float,
+        base_x:    int,
+        base_y:    int,
+        font:      "ImageFont.FreeTypeFont",
+        r:         int,
+        g:         int,
+        b:         int,
+    ) -> None:
+        """REVEAL_WIPE: vertical sweep line moves L→R; word revealed behind it."""
+        W, H = img.size
+        wipe_phase = min(beat_frac / 0.40, 1.0)
+        ease = self._ease_in_out(wipe_phase)
+        sweep_x = int(W * ease)
+
+        # Render bloom text to a full-canvas layer, then mask to left of sweep_x
+        word_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        wd = ImageDraw.Draw(word_layer)
+        dirs = [(-1,0),(1,0),(0,-1),(0,1),(-1,-1),(1,1),(-1,1),(1,-1)]
+        for offset, ga in [(8, 12), (5, 25), (2, 45)]:
+            for dx, dy in dirs:
+                wd.text(
+                    (base_x + dx * offset, base_y + dy * offset), ev.text.upper(),
+                    font=font, fill=(r, g, b, ga), anchor="mm",
+                )
+        wd.text((base_x, base_y), ev.text.upper(), font=font,
+                fill=(r, g, b, 255), anchor="mm")
+
+        if sweep_x > 0:
+            mask = Image.new("L", (W, H), 0)
+            ImageDraw.Draw(mask).rectangle([0, 0, min(sweep_x, W - 1), H - 1], fill=255)
+            alpha_ch = word_layer.split()[-1]
+            word_layer.putalpha(ImageChops.multiply(alpha_ch, mask))
+            img.alpha_composite(word_layer)
+
+        # Vertical sweep line
+        if 0 < sweep_x < W:
+            draw.line([(sweep_x, 0), (sweep_x, H)], fill=(255, 255, 255, 150), width=2)
+
+    def _mk_fade_rise(
+        self,
+        draw:      ImageDraw.Draw,
+        ev:        WordEvent,
+        beat_frac: float,
+        base_x:    int,
+        base_y:    int,
+        font:      "ImageFont.FreeTypeFont",
+        r:         int,
+        g:         int,
+        b:         int,
+    ) -> None:
+        """FADE_RISE: fades in while rising 20px, over first 50% of beat."""
+        ease = self._ease_in_out(min(beat_frac / 0.50, 1.0))
+        text_alpha = int(255 * ease)
+        if text_alpha <= 0:
+            return
+        y_offset = int((1.0 - ease) * 20)
+        self._mk_bloom_text(
+            draw, ev.text.upper(), font, base_x, base_y - y_offset,
+            r, g, b, text_alpha, is_hero=ev.role in ("HERO", "STAT"),
+        )
 
     def _draw_icon(
         self,
@@ -1830,6 +2179,11 @@ class KineticRenderer:
             ("oswald_150", F_OSWALD,     150),
             ("roboto_130", F_ROBOTO,     130),
             ("roboto_120", F_ROBOTO,     120),
+            # Minimalist kinetic sizes
+            ("bebas_96",   F_BEBAS,       96),
+            ("bebas_80",   F_BEBAS,       80),
+            ("mont_64",    F_MONTSERRAT,  64),
+            ("mont_56",    F_MONTSERRAT,  56),
         ]
         for key, path, size in specs:
             try:
