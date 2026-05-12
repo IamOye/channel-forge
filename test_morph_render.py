@@ -123,8 +123,8 @@ def main() -> None:
     if result.is_valid:
         rendered = Path(result.output_path)
         if rendered.exists() and rendered != OUTPUT_PATH:
-            rendered.rename(OUTPUT_PATH)
-            log.info("Renamed %s -> %s", rendered.name, OUTPUT_PATH.name)
+            rendered.replace(OUTPUT_PATH)
+            log.info("Moved %s -> %s", rendered.name, OUTPUT_PATH.name)
         out = OUTPUT_PATH
         size_mb = out.stat().st_size / 1_048_576
         log.info("SUCCESS -- %s  (%.2f MB)  render_time=%.1fs", out, size_mb, elapsed)

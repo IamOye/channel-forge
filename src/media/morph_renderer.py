@@ -2,7 +2,7 @@
 morph_renderer.py — MorphRenderer
 
 Semantic morph video renderer for ChannelForge YouTube Shorts (1080x1920).
-Produces a 5-beat storyboard with cross-fade icon morphs, safe-zone captions,
+Produces a 5-beat storyboard with sequential-fade icon morphs, safe-zone captions,
 motion accents, and SFX/VO audio pipeline.
 Drop-in interface replacement for KineticRenderer.build().
 """
@@ -23,7 +23,7 @@ from PIL import Image, ImageDraw, ImageFont
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Layout / path constants — borrowed from kinetic_renderer
+# Layout / path constants
 # ---------------------------------------------------------------------------
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 _ASSETS       = _PROJECT_ROOT / "assets"
@@ -37,6 +37,8 @@ OUTPUT_DIR = Path("data/output")
 
 F_BEBAS      = str(_FONTS_DIR / "BebasNeue-Regular.ttf")
 F_MONTSERRAT = str(_FONTS_DIR / "Montserrat-ExtraBold.ttf")
+SFX_CASH     = str(_SFX_DIR / "cash.mp3")
+SFX_CASH1    = str(_SFX_DIR / "cash1.mp3")
 SFX_IMPACT   = str(_SFX_DIR / "impact.mp3")
 SFX_WHOOSH   = str(_SFX_DIR / "whoosh.mp3")
 SFX_WHOOSH1  = str(_SFX_DIR / "whoosh1.mp3")
@@ -47,8 +49,8 @@ SFX_RISER    = str(_SFX_DIR / "riser.mp3")
 # ---------------------------------------------------------------------------
 MORPH_DURATION    = 0.40
 HOLD_DURATION     = 1.00
-ICON_SIZE         = 140       # bounding radius (px) — inside ICON_RADIUS=180 safe zone
-CAPTION_UPPER_OFF = -220      # offset from canvas cy
+ICON_SIZE         = 140
+CAPTION_UPPER_OFF = -220
 CAPTION_LOWER_OFF = +220
 ZOOM_PEAK         = 1.30
 ZOOM_RISE_S       = 0.40
@@ -112,10 +114,47 @@ _ACTION_VERBS = frozenset({
     "start", "begin", "open", "scale", "balance",
 })
 
+# ---------------------------------------------------------------------------
+# SFX semantic mapping — (sfx_path, volume)
+# ---------------------------------------------------------------------------
+_SFX_MAP: dict[str, tuple[str, float]] = {
+    "coffee_mug":       (SFX_WHOOSH1, 0.70),
+    "coin":             (SFX_CASH,    0.90),
+    "dollar_bill":      (SFX_CASH,    0.90),
+    "dollar_bill_down": (SFX_CASH1,   0.85),
+    "brain":            (SFX_WHOOSH1, 0.45),
+    "house":            (SFX_WHOOSH,  0.60),
+    "clock":            (SFX_IMPACT,  0.40),
+    "bar_chart":        (SFX_WHOOSH,  0.80),
+    "car":              (SFX_WHOOSH,  0.90),
+    "door_handle":      (SFX_WHOOSH1, 0.65),
+    "eye":              (SFX_WHOOSH1, 0.50),
+    "heart":            (SFX_WHOOSH1, 0.55),
+    "padlock":          (SFX_IMPACT,  0.60),
+    "key":              (SFX_CASH1,   0.50),
+    "balance_scale":    (SFX_IMPACT,  0.45),
+    "smartphone":       (SFX_WHOOSH1, 0.60),
+    "sprout":           (SFX_WHOOSH1, 0.40),
+    "chain_links":      (SFX_IMPACT,  0.55),
+    "zoom_emphasis":    (SFX_IMPACT,  0.50),
+    "cta_lead":         (SFX_RISER,   0.60),
+    "fallback":         (SFX_WHOOSH1, 0.60),
+}
+_TICK_VOL = 10 ** (-18 / 20)  # -18 dB ≈ 0.126
+
 
 # ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------
+@dataclass
+class SfxCue:
+    t:     float
+    path:  str
+    vol:   float
+    icon:  str
+    phase: str
+
+
 @dataclass
 class BuildResult:
     topic_id:          str
@@ -159,12 +198,12 @@ class BeatPlan:
 # ---------------------------------------------------------------------------
 class MorphRenderer:
     """
-    Semantic morph renderer. Produces 1080x1920 YouTube Shorts with cross-fade
+    Semantic morph renderer. Produces 1080x1920 YouTube Shorts with sequential-fade
     icon morphs, safe-zone captions, glow, and motion accents.
     """
 
     def __init__(self) -> None:
-        pass
+        self._fonts: dict = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -200,9 +239,14 @@ class MorphRenderer:
                 i, b.beat_name, b.anchor, b.source_shape, b.target_icon,
                 b.start_t, b.end_t, b.is_pan_beat,
             )
+
+        # Log SFX cues (FIX 6)
         logger.info("[morph] === SFX SCHEDULE (%d cues) ===", len(sfx_schedule))
-        for ts, path in sfx_schedule:
-            logger.info("[morph]   t=%.2fs  %s", ts, Path(path).name)
+        for cue in sfx_schedule:
+            logger.info(
+                "[sfx] t=%.3fs icon=%-18s asset=%-14s vol=%.2f phase=%s",
+                cue.t, cue.icon, Path(cue.path).name, cue.vol, cue.phase,
+            )
 
         try:
             self._render(output_path, audio_path, duration, beats, sfx_schedule)
@@ -255,6 +299,7 @@ class MorphRenderer:
         return beats
 
     def _extract_anchor(self, text: str) -> str:
+        # FIX 4: scan ALL words in priority order — financial, then action verbs, then any match
         words = [w.lower().strip(".,!?;:") for w in text.split()]
         for priority in (_FINANCIAL, _ACTION_VERBS, None):
             for w in words:
@@ -268,8 +313,8 @@ class MorphRenderer:
     def _lookup_morph(self, anchor: str) -> tuple[str, str, str]:
         for kws, src, tgt in _MORPH_TABLE:
             if anchor in kws:
-                return src, tgt, "cross_fade"
-        return "circle", "coin", "cross_fade"
+                return src, tgt, "sequential_fade"
+        return "circle", "coin", "sequential_fade"
 
     # ------------------------------------------------------------------
     # Audio
@@ -285,53 +330,88 @@ class MorphRenderer:
         except Exception:
             return 50.0
 
-    def _build_sfx_schedule(self, beats: list[BeatPlan], duration: float) -> list[tuple[float, str]]:
-        schedule: list[tuple[float, str]] = []
-        per_sec: dict[int, int] = {}
+    def _build_sfx_schedule(self, beats: list[BeatPlan], duration: float) -> list[SfxCue]:
+        # FIX 6: fire at phase 3 start (icon_land), soft tick at morph resolved, zoom at peak
+        schedule: list[SfxCue] = []
+        _fb_path,   _fb_vol   = _SFX_MAP["fallback"]
+        _zoom_path, _zoom_vol = _SFX_MAP["zoom_emphasis"]
+        _cta_path,  _cta_vol  = _SFX_MAP["cta_lead"]
 
-        def _add(t: float, path: str) -> None:
+        # Collect all candidate cues without gap enforcement, then sort chronologically
+        candidates: list[SfxCue] = []
+
+        def _candidate(t: float, path: str, vol: float, icon: str, phase: str) -> None:
             if not Path(path).exists():
                 return
             if t < 0.2 or t > duration - 0.2:
                 return
-            bkt = int(t)
-            if per_sec.get(bkt, 0) >= 3:
-                return
-            schedule.append((t, path))
-            per_sec[bkt] = per_sec.get(bkt, 0) + 1
+            candidates.append(SfxCue(t=t, path=path, vol=vol, icon=icon, phase=phase))
 
         cta = next((b for b in beats if b.beat_name == "cta"), None)
         if cta:
-            _add(max(0.2, cta.start_t - 0.8), SFX_RISER)
+            _candidate(max(0.2, cta.start_t - 0.8), _cta_path, _cta_vol, "riser", "cta_lead")
 
         for beat in beats:
-            _add(beat.start_t + 0.05, SFX_WHOOSH1)
-            _add(beat.start_t + MORPH_DURATION + beat.zoom_t, SFX_IMPACT)
+            icon = beat.target_icon
+            sfx_path, sfx_vol = _SFX_MAP.get(icon, (_fb_path, _fb_vol))
+            brain_delay = 0.080 if icon == "brain" else 0.0
 
-        return sorted(schedule, key=lambda x: x[0])
+            icon_land_t = beat.start_t + 0.5 * MORPH_DURATION + brain_delay
+            _candidate(icon_land_t, sfx_path, sfx_vol, icon, "icon_land")
+
+            tick_t = beat.start_t + MORPH_DURATION
+            _candidate(tick_t, SFX_WHOOSH1, _TICK_VOL, icon, "tick")
+
+            zoom_peak_t = beat.start_t + MORPH_DURATION + beat.zoom_t + ZOOM_RISE_S
+            _candidate(zoom_peak_t, _zoom_path, _zoom_vol, icon, "zoom_peak")
+
+        # Sort chronologically then apply gap (200ms) and rate (2/sec) limiting
+        candidates.sort(key=lambda c: c.t)
+        last_t: float = -9999.0
+        per_sec: dict[int, int] = {}
+        for cue in candidates:
+            if cue.t - last_t < 0.200:
+                continue
+            bkt = int(cue.t)
+            if per_sec.get(bkt, 0) >= 2:
+                continue
+            schedule.append(cue)
+            per_sec[bkt] = per_sec.get(bkt, 0) + 1
+            last_t = cue.t
+
+        return schedule
 
     def _build_audio_filter(
         self,
-        sfx_schedule: list[tuple[float, str]],
+        sfx_schedule: list[SfxCue],
         sfx_inputs:   list[str],
         duration:     float,
     ) -> tuple[str, str]:
         if not sfx_schedule:
             return "", "[1:a]"
-        loudnorm  = "loudnorm=I=-14:TP=-1.5:LRA=7"
+
+        # FIX 6: per-cue volumes, loudnorm + alimiter chain
+        loudnorm = "loudnorm=I=-14:TP=-1.5:LRA=7"
+        limiter  = ("alimiter=level_in=1:level_out=1:limit=0.707:"
+                    "attack=7:release=100:level=disabled")
         parts: list[str] = []
         mix = "[1:a]"
-        for i, (ts, sfx_path) in enumerate(sfx_schedule):
-            idx   = sfx_inputs.index(sfx_path) + 2
-            label = f"[sfx{i}]"
+
+        for i, cue in enumerate(sfx_schedule):
+            idx      = sfx_inputs.index(cue.path) + 2
+            delay_ms = int(cue.t * 1000)
+            label    = f"[sfx{i}]"
             parts.append(
-                f"[{idx}:a]adelay={int(ts*1000)}|{int(ts*1000)},"
-                f"apad=whole_dur={duration},volume=0.4{label}"
+                f"[{idx}:a]adelay={delay_ms}|{delay_ms},"
+                f"apad=whole_dur={duration},"
+                f"volume={cue.vol:.4f}{label}"
             )
             mix += label
+
         n = 1 + len(sfx_schedule)
         parts.append(f"{mix}amix=inputs={n}:normalize=0[amix]")
-        parts.append(f"[amix]{loudnorm}[aout]")
+        parts.append(f"[amix]{loudnorm}[aln]")
+        parts.append(f"[aln]{limiter}[aout]")
         return ";".join(parts), "[aout]"
 
     # ------------------------------------------------------------------
@@ -343,11 +423,11 @@ class MorphRenderer:
         audio_path:   Path,
         duration:     float,
         beats:        list[BeatPlan],
-        sfx_schedule: list[tuple[float, str]],
+        sfx_schedule: list[SfxCue],
     ) -> None:
         total_frames = int(duration * FPS)
         W, H = CANVAS_W, CANVAS_H
-        fonts = self._load_fonts()
+        self._fonts = self._load_fonts()
 
         cmd = [
             "ffmpeg", "-y", "-loglevel", "warning",
@@ -357,10 +437,10 @@ class MorphRenderer:
             "-i", str(audio_path),
         ]
         sfx_inputs: list[str] = []
-        for _, sp in sfx_schedule:
-            if sp not in sfx_inputs:
-                sfx_inputs.append(sp)
-                cmd += ["-i", sp]
+        for cue in sfx_schedule:
+            if cue.path not in sfx_inputs:
+                sfx_inputs.append(cue.path)
+                cmd += ["-i", cue.path]
 
         fc, amap = self._build_audio_filter(sfx_schedule, sfx_inputs, duration)
         if fc:
@@ -396,7 +476,7 @@ class MorphRenderer:
         failed_f  = None
         try:
             for fi in range(total_frames):
-                img = self._make_frame(fi / FPS, beats, fonts, W, H)
+                img = self._make_frame(fi / FPS, beats, self._fonts, W, H)
                 try:
                     proc.stdin.write(img.tobytes())
                 except (BrokenPipeError, OSError, ValueError) as exc:
@@ -440,31 +520,47 @@ class MorphRenderer:
         beat_idx, beat, beat_local = self._current_beat(t, beats)
         beat_dur = beat.end_t - beat.start_t
 
-        # Ghost: previous beat icon drifts upward
-        if beat_idx > 0:
-            prev_icon = beats[beat_idx - 1].target_icon
-            drift_y   = int(beat_local * 1.5)
-            r, g, b   = COLOUR_ICON[:3]
-            self._icon_raw(draw, prev_icon, cx, cy - drift_y, ICON_SIZE, (r, g, b, GHOST_ALPHA))
+        in_morph = beat_local <= MORPH_DURATION
 
-        # Morph phase or hold phase
-        if beat_local <= MORPH_DURATION:
-            frac   = beat_local / MORPH_DURATION
-            ease   = frac * frac * (3 - 2 * frac)
-            sa     = int(255 * (1.0 - ease))
-            ta     = int(255 * ease)
-            tsz    = int(ICON_SIZE * (0.7 + 0.3 * ease))
+        if in_morph:
+            # FIX 1 & FIX 2: sequential 3-phase, clear canvas, no ghost
+            self._clear_canvas(draw, W, H)
+            frac  = beat_local / MORPH_DURATION
             r, g, b = COLOUR_ICON[:3]
-            if sa > 5:
-                self._draw_prim(draw, beat.source_shape, cx, cy, ICON_SIZE, (r, g, b, sa))
-            if ta > 5:
-                if ta > 100:
-                    self._icon_glow(draw, beat.target_icon, cx, cy, tsz, r, g, b, ta)
-                else:
-                    self._icon_raw(draw, beat.target_icon, cx, cy, tsz, (r, g, b, ta))
+
+            if frac <= 0.4:
+                # Phase 1: source fades OUT alpha 255→0, target never drawn
+                alpha = int(255 * (1.0 - frac / 0.4))
+                if alpha > 0:
+                    self._draw_prim(draw, beat.source_shape, cx, cy, ICON_SIZE, (r, g, b, alpha))
+            elif frac <= 0.5:
+                # Phase 2: pure black — nothing drawn
+                pass
+            else:
+                # Phase 3: target fades IN alpha 0→255, scale 0.75→1.0 cubic ease-out
+                t_frac = (frac - 0.5) / 0.5
+                ease   = 1.0 - (1.0 - t_frac) ** 3
+                alpha  = int(255 * ease)
+                scale  = 0.75 + 0.25 * ease
+                tsz    = int(ICON_SIZE * scale)
+                if alpha > 5:
+                    if alpha > 100:
+                        self._icon_glow(draw, beat.target_icon, cx, cy, tsz, r, g, b, alpha)
+                    else:
+                        self._icon_raw(draw, beat.target_icon, cx, cy, tsz, (r, g, b, alpha))
+
             if beat_local < 0.04:
                 logger.info("[morph] beat %d: %s -> %s", beat_idx, beat.source_shape, beat.target_icon)
         else:
+            # Hold phase: FIX 2 — clear canvas, then ghost, then icon
+            self._clear_canvas(draw, W, H)
+
+            if beat_idx > 0:
+                prev_icon = beats[beat_idx - 1].target_icon
+                drift_y   = int((beat_local - MORPH_DURATION) * 1.5)
+                r, g, b   = COLOUR_ICON[:3]
+                self._icon_raw(draw, prev_icon, cx, cy - drift_y, ICON_SIZE, (r, g, b, GHOST_ALPHA))
+
             hl     = beat_local - MORPH_DURATION
             hd     = beat_dur - MORPH_DURATION
             pulse  = 1.0 + PULSE_AMP * math.sin(2 * math.pi * PULSE_HZ * t)
@@ -476,6 +572,9 @@ class MorphRenderer:
 
         self._draw_captions(draw, fonts, beat, beat_local, beat_dur, cx, cy)
         return img
+
+    def _clear_canvas(self, draw: ImageDraw.ImageDraw, W: int, H: int) -> None:
+        draw.rectangle((0, 0, W, H), fill=(0, 0, 0, 255))
 
     def _current_beat(self, t: float, beats: list[BeatPlan]) -> tuple[int, BeatPlan, float]:
         for i, b in enumerate(beats):
@@ -501,8 +600,8 @@ class MorphRenderer:
     def _pan_x(self, beat: BeatPlan, hl: float, hd: float) -> int:
         if not beat.is_pan_beat:
             return 0
-        ps = hd * 0.20
-        pe = ps + PAN_DUR_S
+        ps   = hd * 0.20
+        pe   = ps + PAN_DUR_S
         half = PAN_PX // 2
         if hl < ps:
             return -half
@@ -517,13 +616,13 @@ class MorphRenderer:
     # ------------------------------------------------------------------
     def _draw_captions(
         self,
-        draw: ImageDraw.ImageDraw,
-        fonts: dict,
-        beat: BeatPlan,
+        draw:       ImageDraw.ImageDraw,
+        fonts:      dict,
+        beat:       BeatPlan,
         beat_local: float,
-        beat_dur: float,
-        cx: int,
-        cy: int,
+        beat_dur:   float,
+        cx:         int,
+        cy:         int,
     ) -> None:
         fi_end = 0.20
         fo_st  = max(fi_end + 0.1, beat_dur - 0.15)
@@ -545,15 +644,15 @@ class MorphRenderer:
         f_anc = fonts.get("bebas_72", fonts["fallback"])
         f_sec = fonts.get("mont_48",  fonts["fallback"])
 
+        # Upper zone: anchor word in gold accent
         draw.text((cx, uy), beat.anchor.upper(), font=f_anc,
                   fill=(r_g, g_g, b_g, alpha), anchor="mm")
 
-        sec_words = [w for w in beat.text.split()
-                     if w.lower().strip(".,!?;:") != beat.anchor]
-        if sec_words:
-            lines  = self._wrap((" ".join(sec_words)), f_sec, 900)
-            lh     = 58
-            y0     = ly - (len(lines) * lh) // 2
+        # FIX 5: show complete original beat text unchanged in lower zone
+        if beat.text:
+            lines = self._wrap(beat.text, f_sec, 900)
+            lh    = 58
+            y0    = ly - (len(lines) * lh) // 2
             for j, line in enumerate(lines):
                 draw.text((cx, y0 + j * lh), line, font=f_sec,
                           fill=(r_b, g_b, b_b, alpha), anchor="mm")
@@ -603,47 +702,46 @@ class MorphRenderer:
         self, draw: ImageDraw.ImageDraw, shape: str,
         cx: int, cy: int, size: int, color: tuple,
     ) -> None:
-        lw = max(2, size // 50)
+        lw = 2  # FIX 3: exactly 2px stroke width
         s  = size
-        c  = color
 
         if shape == "circle":
-            draw.ellipse((cx-s, cy-s, cx+s, cy+s), outline=c, width=lw)
+            draw.ellipse((cx-s, cy-s, cx+s, cy+s), outline=color, width=lw)
         elif shape == "rectangle":
             h = max(4, s // 2)
-            draw.rectangle((cx-s, cy-h, cx+s, cy+h), outline=c, width=lw)
+            draw.rectangle((cx-s, cy-h, cx+s, cy+h), outline=color, width=lw)
         elif shape == "rect_tall":
             rw = max(4, int(s * 0.55))
-            draw.rectangle((cx-rw, cy-s, cx+rw, cy+s), outline=c, width=lw)
+            draw.rectangle((cx-rw, cy-s, cx+rw, cy+s), outline=color, width=lw)
         elif shape == "tri_up":
-            draw.polygon([(cx, cy-s), (cx-s, cy+s), (cx+s, cy+s)], outline=c)
+            draw.polygon([(cx, cy-s), (cx-s, cy+s), (cx+s, cy+s)], outline=color)
         elif shape == "tri_down":
-            draw.polygon([(cx, cy+s), (cx-s, cy-s), (cx+s, cy-s)], outline=c)
+            draw.polygon([(cx, cy+s), (cx-s, cy-s), (cx+s, cy-s)], outline=color)
         elif shape == "hline":
-            draw.line((cx-s, cy, cx+s, cy), fill=c, width=lw*2)
+            draw.line((cx-s, cy, cx+s, cy), fill=color, width=lw * 2)
         elif shape == "ellipse":
-            draw.ellipse((cx-s, cy-s//2, cx+s, cy+s//2), outline=c, width=lw)
+            draw.ellipse((cx-s, cy-s//2, cx+s, cy+s//2), outline=color, width=lw)
         elif shape == "dot":
             dr = max(6, s // 8)
-            draw.ellipse((cx-dr, cy-dr, cx+dr, cy+dr), fill=c)
+            draw.ellipse((cx-dr, cy-dr, cx+dr, cy+dr), fill=color)
         elif shape == "two_ovals":
             ow = max(4, int(s * 0.6))
             oh = max(4, int(s * 0.35))
-            draw.ellipse((cx-s,    cy-oh, cx-s+ow*2,    cy+oh), outline=c, width=lw)
-            draw.ellipse((cx-ow,   cy-oh, cx-ow+ow*2,   cy+oh), outline=c, width=lw)
+            draw.ellipse((cx-s,  cy-oh, cx-s+ow*2,  cy+oh), outline=color, width=lw)
+            draw.ellipse((cx-ow, cy-oh, cx-ow+ow*2, cy+oh), outline=color, width=lw)
         elif shape == "line_circle":
             cr = max(4, int(s * 0.30))
-            draw.ellipse((cx-cr, cy-s, cx+cr, cy-s+cr*2), outline=c, width=lw)
-            draw.line((cx, cy-s+cr*2, cx, cy+s), fill=c, width=lw)
+            draw.ellipse((cx-cr, cy-s, cx+cr, cy-s+cr*2), outline=color, width=lw)
+            draw.line((cx, cy-s+cr*2, cx, cy+s), fill=color, width=lw)
         elif shape == "sq_arc":
-            draw.rectangle((cx-s, cy-s//4, cx+s, cy+s//2), outline=c, width=lw)
-            draw.arc((cx-s//2, cy-s, cx+s//2, cy-s//4), start=0, end=180, fill=c, width=lw)
+            draw.rectangle((cx-s, cy-s//4, cx+s, cy+s//2), outline=color, width=lw)
+            draw.arc((cx-s//2, cy-s, cx+s//2, cy-s//4), start=0, end=180, fill=color, width=lw)
         elif shape == "two_arcs":
             hw = max(4, int(s * 0.7))
-            draw.arc((cx-hw*2+hw//2, cy-s, cx+hw//2,       cy), start=0, end=180, fill=c, width=lw)
-            draw.arc((cx-hw//2,      cy-s, cx+hw*2-hw//2,  cy), start=0, end=180, fill=c, width=lw)
+            draw.arc((cx-hw*2+hw//2, cy-s, cx+hw//2,      cy), start=0, end=180, fill=color, width=lw)
+            draw.arc((cx-hw//2,      cy-s, cx+hw*2-hw//2, cy), start=0, end=180, fill=color, width=lw)
         else:
-            draw.ellipse((cx-s, cy-s, cx+s, cy+s), outline=c, width=lw)
+            draw.ellipse((cx-s, cy-s, cx+s, cy+s), outline=color, width=lw)
 
     # ------------------------------------------------------------------
     # Icon glow + raw dispatch
@@ -666,33 +764,36 @@ class MorphRenderer:
     ) -> None:
         fn = getattr(self, f"_icon_{name}", None)
         if fn is None:
-            lw = max(2, size // 50)
-            draw.ellipse((cx-size, cy-size, cx+size, cy+size), outline=color, width=lw)
+            draw.ellipse((cx-size, cy-size, cx+size, cy+size), outline=color, width=2)
             return
         fn(draw, cx, cy, size, color)
 
     # ------------------------------------------------------------------
-    # Icon drawing methods
+    # Icon drawing methods — FIX 3: all use lw=2, ellipse() for circles
     # ------------------------------------------------------------------
     def _icon_coffee_mug(self, draw: ImageDraw.ImageDraw, cx: int, cy: int, s: int, c: tuple) -> None:
-        lw = max(2, s // 50)
-        # Mug body (squat ellipse)
-        draw.ellipse((cx-s, cy-s//2, cx+s, cy+s//2), outline=c, width=lw)
-        # Handle arc on the right
-        hr = max(4, int(s * 0.45))
-        draw.arc((cx+s-hr, cy-hr, cx+s+hr, cy+hr), start=270, end=90, fill=c, width=lw)
-        # Two steam lines above
-        ox = max(4, s // 4)
+        # FIX 3: ellipse body 90x70 relative to ICON_SIZE=140, smooth arc handle, straight steam
+        lw  = 2
+        f   = s / 140
+        rx  = max(4, int(45 * f))   # 90px wide at s=140
+        ry  = max(4, int(35 * f))   # 70px tall at s=140
+        # Body as ellipse
+        draw.ellipse((cx - rx, cy - ry, cx + rx, cy + ry), outline=c, width=lw)
+        # Handle: single arc on the right side using ellipse arc
+        hr = max(4, int(28 * f))
+        draw.arc((cx + rx - hr, cy - hr, cx + rx + hr, cy + hr),
+                 start=300, end=60, fill=c, width=lw)
+        # Two short vertical steam lines above body
+        ox  = max(4, int(14 * f))
+        yb  = cy - ry - 4
+        yt  = yb - max(8, int(22 * f))
         for x_off in (-ox, ox):
-            yb = cy - s // 2 - 4
-            yt = yb - max(8, s // 3)
-            mid = (yb + yt) // 2
-            draw.line([(cx+x_off, yb), (cx+x_off+6, mid), (cx+x_off, yt)], fill=c, width=lw)
+            draw.line([(cx + x_off, yb), (cx + x_off, yt)], fill=c, width=lw)
 
     def _icon_open_door(self, draw: ImageDraw.ImageDraw, cx: int, cy: int, s: int, c: tuple) -> None:
-        lw = max(2, s // 50)
-        rw = max(4, int(s * 0.7))
-        rh = s
+        lw  = 2
+        rw  = max(4, int(s * 0.7))
+        rh  = s
         ajar = max(2, s // 9)
         pts = [
             (cx-rw+ajar, cy-rh), (cx+rw, cy-rh),
@@ -705,52 +806,62 @@ class MorphRenderer:
         draw.ellipse((hx-hr, cy-hr, hx+hr, cy+hr), outline=c, width=lw)
 
     def _icon_dollar_bill(self, draw: ImageDraw.ImageDraw, cx: int, cy: int, s: int, c: tuple) -> None:
-        lw = max(2, s // 50)
-        h  = max(4, s // 2)
-        draw.rectangle((cx-s, cy-h, cx+s, cy+h), outline=c, width=lw)
-        pad = max(3, s // 7)
-        draw.line((cx-s+pad, cy-h+pad, cx+s-pad, cy-h+pad), fill=c, width=lw)
-        draw.line((cx-s+pad, cy+h-pad, cx+s-pad, cy+h-pad), fill=c, width=lw)
-        # $ as S-arcs + vertical stem
-        ss = max(8, s // 3)
-        draw.arc((cx-ss, cy-ss, cx+ss, cy),     start=90,  end=315, fill=c, width=lw)
-        draw.arc((cx-ss, cy,    cx+ss, cy+ss),  start=270, end=135, fill=c, width=lw)
-        draw.line((cx, cy-ss-6, cx, cy+ss+6), fill=c, width=lw)
+        # FIX 3: rectangle 120x80 at ICON_SIZE=140, $ via font or arcs, two border lines
+        lw  = 2
+        f   = s / 140
+        rw  = max(4, int(60 * f))   # 120px wide at s=140
+        rh  = max(4, int(40 * f))   # 80px tall at s=140
+        draw.rectangle((cx - rw, cy - rh, cx + rw, cy + rh), outline=c, width=lw)
+        pad = max(3, int(8 * f))
+        draw.line((cx - rw + pad, cy - rh + pad, cx + rw - pad, cy - rh + pad), fill=c, width=lw)
+        draw.line((cx - rw + pad, cy + rh - pad, cx + rw - pad, cy + rh - pad), fill=c, width=lw)
+        # $ — try font first, fall back to arcs
+        f36 = self._fonts.get("mont_36") if self._fonts else None
+        if f36:
+            try:
+                draw.text((cx, cy), "$", font=f36, fill=c, anchor="mm")
+            except Exception:
+                f36 = None
+        if not f36:
+            ss = max(8, int(s // 3 * f))
+            draw.arc((cx - ss, cy - ss, cx + ss, cy),      start=90,  end=315, fill=c, width=lw)
+            draw.arc((cx - ss, cy,      cx + ss, cy + ss), start=270, end=135, fill=c, width=lw)
+            draw.line((cx, cy - ss - 6, cx, cy + ss + 6), fill=c, width=lw)
 
     def _icon_dollar_bill_down(self, draw: ImageDraw.ImageDraw, cx: int, cy: int, s: int, c: tuple) -> None:
-        lw = max(2, s // 50)
+        lw  = 2
         cy2 = cy - s // 5
         self._icon_dollar_bill(draw, cx, cy2, int(s * 0.75), c)
-        ay  = cy + s * 3 // 4
-        asw = max(6, s // 3)
+        ay       = cy + s * 3 // 4
+        asw      = max(6, s // 3)
         stem_top = cy2 + int(s * 0.75 * 0.55)
         draw.line((cx, stem_top, cx, ay - asw), fill=c, width=lw)
-        draw.polygon([(cx, ay), (cx-asw, ay-asw), (cx+asw, ay-asw)], outline=c)
+        draw.polygon([(cx, ay), (cx - asw, ay - asw), (cx + asw, ay - asw)], outline=c)
 
     def _icon_house(self, draw: ImageDraw.ImageDraw, cx: int, cy: int, s: int, c: tuple) -> None:
-        lw = max(2, s // 50)
+        lw = 2
         bh = max(4, int(s * 0.55))
         by = cy + s - bh * 2
-        draw.rectangle((cx-s, by, cx+s, cy+s), outline=c, width=lw)
-        draw.polygon([(cx, cy-s), (cx-s-4, by+4), (cx+s+4, by+4)], outline=c)
+        draw.rectangle((cx - s, by, cx + s, cy + s), outline=c, width=lw)
+        draw.polygon([(cx, cy - s), (cx - s - 4, by + 4), (cx + s + 4, by + 4)], outline=c)
 
     def _icon_car(self, draw: ImageDraw.ImageDraw, cx: int, cy: int, s: int, c: tuple) -> None:
-        lw = max(2, s // 50)
+        lw = 2
         h  = max(4, int(s * 0.40))
         r  = max(2, int(s * 0.12))
-        draw.rounded_rectangle((cx-s, cy-h, cx+s, cy+h//2), radius=r, outline=c, width=lw)
+        draw.rounded_rectangle((cx - s, cy - h, cx + s, cy + h // 2), radius=r, outline=c, width=lw)
         cw = max(4, int(s * 0.65))
         ch = max(4, int(h * 0.8))
         rc = max(2, int(s * 0.10))
-        draw.rounded_rectangle((cx-cw, cy-h-ch, cx+cw, cy-h+lw), radius=rc, outline=c, width=lw)
+        draw.rounded_rectangle((cx - cw, cy - h - ch, cx + cw, cy - h + lw), radius=rc, outline=c, width=lw)
         wr = max(4, int(s * 0.28))
         wy = cy + h // 2
         for wx in (-int(s * 0.55), int(s * 0.55)):
-            draw.ellipse((cx+wx-wr, wy, cx+wx+wr, wy+wr*2), outline=c, width=lw)
+            draw.ellipse((cx + wx - wr, wy, cx + wx + wr, wy + wr * 2), outline=c, width=lw)
 
     def _icon_brain(self, draw: ImageDraw.ImageDraw, cx: int, cy: int, s: int, c: tuple) -> None:
-        lw = max(2, s // 50)
-        draw.ellipse((cx-s, cy-s, cx+s, cy+s), outline=c, width=lw)
+        lw   = 2
+        draw.ellipse((cx - s, cy - s, cx + s, cy + s), outline=c, width=lw)
         step = max(4, s // 4)
         pts  = [
             (cx - step, cy - s + 4),
@@ -762,8 +873,8 @@ class MorphRenderer:
         draw.line(pts, fill=c, width=lw)
 
     def _icon_clock(self, draw: ImageDraw.ImageDraw, cx: int, cy: int, s: int, c: tuple) -> None:
-        lw = max(2, s // 50)
-        draw.ellipse((cx-s, cy-s, cx+s, cy+s), outline=c, width=lw)
+        lw = 2
+        draw.ellipse((cx - s, cy - s, cx + s, cy + s), outline=c, width=lw)
         for angle_deg, length in ((-60, 0.55), (60, 0.70)):
             a  = math.radians(angle_deg)
             ex = int(cx + s * length * math.sin(a))
@@ -771,7 +882,7 @@ class MorphRenderer:
             draw.line((cx, cy, ex, ey), fill=c, width=lw + 1)
 
     def _icon_bar_chart(self, draw: ImageDraw.ImageDraw, cx: int, cy: int, s: int, c: tuple) -> None:
-        lw  = max(2, s // 50)
+        lw  = 2
         bw  = max(4, s // 3)
         gap = s // 3
         for i, h_frac in enumerate((0.45, 0.70, 1.00)):
@@ -780,25 +891,25 @@ class MorphRenderer:
             draw.rectangle((bx - bw, cy + s - h, bx + bw, cy + s), outline=c, width=lw)
 
     def _icon_arrow_down(self, draw: ImageDraw.ImageDraw, cx: int, cy: int, s: int, c: tuple) -> None:
-        lw  = max(2, s // 50)
-        sh  = max(4, s // 2)
-        tw  = max(6, int(s * 0.55))
+        lw      = 2
+        sh      = max(4, s // 2)
+        tw      = max(6, int(s * 0.55))
         stem_bot = cy - s + sh * 2
         draw.line((cx, cy - s, cx, stem_bot), fill=c, width=lw * 2)
         tip = cy + s // 2
-        draw.polygon([(cx, tip), (cx-tw, stem_bot), (cx+tw, stem_bot)], outline=c)
+        draw.polygon([(cx, tip), (cx - tw, stem_bot), (cx + tw, stem_bot)], outline=c)
 
     def _icon_smartphone(self, draw: ImageDraw.ImageDraw, cx: int, cy: int, s: int, c: tuple) -> None:
-        lw = max(2, s // 50)
+        lw = 2
         rw = max(4, int(s * 0.55))
         r  = max(2, int(s * 0.10))
-        draw.rounded_rectangle((cx-rw, cy-s, cx+rw, cy+s), radius=r, outline=c, width=lw)
+        draw.rounded_rectangle((cx - rw, cy - s, cx + rw, cy + s), radius=r, outline=c, width=lw)
         hr = max(5, int(s * 0.10))
         by = cy + s - hr * 3
-        draw.ellipse((cx-hr, by, cx+hr, by+hr*2), outline=c, width=lw)
+        draw.ellipse((cx - hr, by, cx + hr, by + hr * 2), outline=c, width=lw)
 
     def _icon_balance_scale(self, draw: ImageDraw.ImageDraw, cx: int, cy: int, s: int, c: tuple) -> None:
-        lw = max(2, s // 50)
+        lw = 2
         draw.line((cx, cy - s // 4, cx, cy + s), fill=c, width=lw)
         draw.line((cx - s, cy - s // 4, cx + s, cy - s // 4), fill=c, width=lw + 1)
         ph = max(4, s // 3)
@@ -809,66 +920,67 @@ class MorphRenderer:
             draw.line((bx - pw, cy - s // 4 + ph, bx + pw, cy - s // 4 + ph), fill=c, width=lw + 1)
 
     def _icon_coin(self, draw: ImageDraw.ImageDraw, cx: int, cy: int, s: int, c: tuple) -> None:
-        lw = max(2, s // 50)
-        draw.ellipse((cx-s, cy-s, cx+s, cy+s), outline=c, width=lw)
-        inner = max(4, int(s * 0.78))
-        draw.ellipse((cx-inner, cy-inner, cx+inner, cy+inner), outline=c, width=lw)
+        # FIX 3: two concentric ellipses — outer 80px, inner 65px at ICON_SIZE=140
+        lw    = 2
+        f     = s / 140
+        outer = max(4, int(40 * f))   # radius 40 → diameter 80 at s=140
+        inner = max(3, int(33 * f))   # radius ~32.5 → diameter 65 at s=140
+        draw.ellipse((cx - outer, cy - outer, cx + outer, cy + outer), outline=c, width=lw)
+        draw.ellipse((cx - inner, cy - inner, cx + inner, cy + inner), outline=c, width=lw)
 
     def _icon_chain_links(self, draw: ImageDraw.ImageDraw, cx: int, cy: int, s: int, c: tuple) -> None:
-        lw = max(2, s // 50)
+        lw = 2
         ow = max(4, int(s * 0.55))
         oh = max(4, int(s * 0.30))
         for ox in (-ow, 0, ow):
-            draw.ellipse((cx+ox-ow, cy-oh, cx+ox+ow, cy+oh), outline=c, width=lw)
+            draw.ellipse((cx + ox - ow, cy - oh, cx + ox + ow, cy + oh), outline=c, width=lw)
 
     def _icon_key(self, draw: ImageDraw.ImageDraw, cx: int, cy: int, s: int, c: tuple) -> None:
-        lw = max(2, s // 50)
+        lw = 2
         cr = max(4, int(s * 0.32))
-        draw.ellipse((cx-cr, cy-s, cx+cr, cy-s+cr*2), outline=c, width=lw)
-        draw.line((cx, cy-s+cr*2, cx, cy+s), fill=c, width=lw+1)
+        draw.ellipse((cx - cr, cy - s, cx + cr, cy - s + cr * 2), outline=c, width=lw)
+        draw.line((cx, cy - s + cr * 2, cx, cy + s), fill=c, width=lw + 1)
         nl = max(4, int(s * 0.30))
         for ny in (cy + int(s * 0.40), cy + int(s * 0.65)):
-            draw.line((cx, ny, cx+nl, ny), fill=c, width=lw)
+            draw.line((cx, ny, cx + nl, ny), fill=c, width=lw)
 
     def _icon_padlock(self, draw: ImageDraw.ImageDraw, cx: int, cy: int, s: int, c: tuple) -> None:
-        lw = max(2, s // 50)
+        lw = 2
         bh = max(4, int(s * 0.60))
-        draw.arc((cx-s//2, cy-s, cx+s//2, cy-s//4), start=0, end=180, fill=c, width=lw)
-        draw.rectangle((cx-s, cy-s//4, cx+s, cy+bh), outline=c, width=lw)
+        draw.arc((cx - s // 2, cy - s, cx + s // 2, cy - s // 4), start=0, end=180, fill=c, width=lw)
+        draw.rectangle((cx - s, cy - s // 4, cx + s, cy + bh), outline=c, width=lw)
 
     def _icon_eye(self, draw: ImageDraw.ImageDraw, cx: int, cy: int, s: int, c: tuple) -> None:
-        lw = max(2, s // 50)
+        lw = 2
         eh = max(4, int(s * 0.45))
-        draw.ellipse((cx-s, cy-eh, cx+s, cy+eh), outline=c, width=lw)
+        draw.ellipse((cx - s, cy - eh, cx + s, cy + eh), outline=c, width=lw)
         pr = max(5, int(s * 0.22))
-        draw.ellipse((cx-pr, cy-pr, cx+pr, cy+pr), fill=c)
+        draw.ellipse((cx - pr, cy - pr, cx + pr, cy + pr), fill=c)
 
     def _icon_heart(self, draw: ImageDraw.ImageDraw, cx: int, cy: int, s: int, c: tuple) -> None:
-        lw = max(2, s // 50)
+        lw = 2
         hw = max(4, int(s * 0.65))
-        # Two half-circles on top
-        draw.arc((cx-hw*2+hw//2, cy-s, cx+hw//2,      cy), start=0, end=180, fill=c, width=lw)
-        draw.arc((cx-hw//2,      cy-s, cx+hw*2-hw//2, cy), start=0, end=180, fill=c, width=lw)
-        # Lines converging to bottom point
-        draw.line([(cx-hw*2+hw//2, cy), (cx, cy+s)], fill=c, width=lw)
-        draw.line([(cx+hw*2-hw//2, cy), (cx, cy+s)], fill=c, width=lw)
+        draw.arc((cx - hw * 2 + hw // 2, cy - s, cx + hw // 2,      cy), start=0, end=180, fill=c, width=lw)
+        draw.arc((cx - hw // 2,          cy - s, cx + hw * 2 - hw // 2, cy), start=0, end=180, fill=c, width=lw)
+        draw.line([(cx - hw * 2 + hw // 2, cy), (cx, cy + s)], fill=c, width=lw)
+        draw.line([(cx + hw * 2 - hw // 2, cy), (cx, cy + s)], fill=c, width=lw)
 
     def _icon_sprout(self, draw: ImageDraw.ImageDraw, cx: int, cy: int, s: int, c: tuple) -> None:
-        lw = max(2, s // 50)
-        dr = max(6, int(s * 0.18))
+        lw     = 2
+        dr     = max(6, int(s * 0.18))
         seed_y = cy + s
-        draw.ellipse((cx-dr, seed_y-dr*2, cx+dr, seed_y), fill=c)
+        draw.ellipse((cx - dr, seed_y - dr * 2, cx + dr, seed_y), fill=c)
         stem_top = cy - s // 3
-        draw.line((cx, seed_y-dr*2, cx, stem_top), fill=c, width=lw)
+        draw.line((cx, seed_y - dr * 2, cx, stem_top), fill=c, width=lw)
         lw2 = max(4, int(s * 0.45))
         lh  = max(4, int(s * 0.35))
-        draw.arc((cx-lw2, stem_top-lh, cx, stem_top+lh), start=90,  end=270, fill=c, width=lw)
-        draw.arc((cx, stem_top-lh, cx+lw2, stem_top+lh), start=270, end=90,  fill=c, width=lw)
+        draw.arc((cx - lw2, stem_top - lh, cx,      stem_top + lh), start=90,  end=270, fill=c, width=lw)
+        draw.arc((cx,       stem_top - lh, cx + lw2, stem_top + lh), start=270, end=90,  fill=c, width=lw)
 
     def _icon_door_handle(self, draw: ImageDraw.ImageDraw, cx: int, cy: int, s: int, c: tuple) -> None:
-        lw = max(2, s // 50)
+        lw = 2
         rw = max(4, int(s * 0.70))
-        draw.rectangle((cx-rw, cy-s, cx+rw, cy+s), outline=c, width=lw)
+        draw.rectangle((cx - rw, cy - s, cx + rw, cy + s), outline=c, width=lw)
         hr = max(5, int(s * 0.10))
         hx = cx + rw - hr * 4
-        draw.ellipse((hx-hr, cy-hr, hx+hr, cy+hr), outline=c, width=lw)
+        draw.ellipse((hx - hr, cy - hr, hx + hr, cy + hr), outline=c, width=lw)
