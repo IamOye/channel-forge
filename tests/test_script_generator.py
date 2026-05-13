@@ -348,16 +348,14 @@ class TestScriptGeneratorGenerate:
 class TestWordCountRetry:
     @patch("src.content.script_generator.anthropic.Anthropic")
     def test_retry_triggered_when_over_120(self, mock_cls) -> None:
-        """generate() must call messages.create twice when first response > 120 words."""
+        """generate() must call messages.create twice when first response > RETRY_WORD_LIMIT."""
         long_parts = {
-            "hook":      " ".join(["word"] * 35),
-            "statement": " ".join(["word"] * 35),
-            "twist":     " ".join(["word"] * 35),
+            "hook":      " ".join(["word"] * 45),
+            "statement": " ".join(["word"] * 45),
+            "twist":     " ".join(["word"] * 45),
             "landing":   "That is the trap.",
-            "question":  "Is this still over the limit?",
+            "question":  " ".join(["word"] * 25) + " Is this over limit?",
         }
-        # Make first response exceed 120 words
-        long_parts["question"] = " ".join(["word"] * 20) + " Is this over limit?"
 
         short_parts = {
             "hook":      "This changes everything you know.",
@@ -403,11 +401,11 @@ class TestWordCountRetry:
     def test_retry_api_failure_uses_original(self, mock_cls) -> None:
         """If the retry API call fails, the original (long) result is returned."""
         long_parts = {
-            "hook":      " ".join(["word"] * 35),
-            "statement": " ".join(["word"] * 35),
-            "twist":     " ".join(["word"] * 35),
+            "hook":      " ".join(["word"] * 45),
+            "statement": " ".join(["word"] * 45),
+            "twist":     " ".join(["word"] * 45),
             "landing":   "That is the trap.",
-            "question":  " ".join(["word"] * 20) + " Is this over limit?",
+            "question":  " ".join(["word"] * 25) + " Is this over limit?",
         }
         mock_client = MagicMock()
         mock_client.messages.create.side_effect = [
@@ -426,7 +424,7 @@ class TestWordCountRetry:
     def test_parts_too_long_true_when_over_limit(self) -> None:
         from src.content.script_generator import RETRY_WORD_LIMIT
         gen = _make_generator()
-        long_parts = {p: " ".join(["word"] * 25) for p in REQUIRED_PARTS}
+        long_parts = {p: " ".join(["word"] * 32) for p in REQUIRED_PARTS}
         assert gen._parts_too_long(long_parts) is True
 
     def test_parts_too_long_false_when_under_limit(self) -> None:

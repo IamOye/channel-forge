@@ -537,6 +537,37 @@ def migrate_db(db_path: Path) -> None:
             logger.info("Migration applied: clip_history table ensured (%s)", db_path)
         except sqlite3.OperationalError:
             pass
+
+        # ElevenLabs stale-usage reset: if tracked monthly chars exceed the configured
+        # limit, the table contains phantom data from testing or a counter bug.
+        # Truncate so the 95%-guard stops blocking production.
+        try:
+            import os as _os
+            from datetime import date as _date
+            _monthly_limit = int(_os.getenv("ELEVENLABS_MONTHLY_LIMIT", "30000"))
+            _reset_day = int(_os.getenv("ELEVENLABS_RESET_DAY", "1"))
+            _today = _date.today()
+            _month_start = _today.replace(day=_reset_day)
+            if _today.day < _reset_day:
+                if _today.month == 1:
+                    _month_start = _month_start.replace(year=_today.year - 1, month=12)
+                else:
+                    _month_start = _month_start.replace(month=_today.month - 1)
+            _row = conn.execute(
+                "SELECT SUM(chars_used) FROM elevenlabs_usage WHERE date >= ?",
+                (_month_start.isoformat(),),
+            ).fetchone()
+            _tracked = int(_row[0] or 0)
+            if _tracked > _monthly_limit:
+                conn.execute("DELETE FROM elevenlabs_usage")
+                conn.commit()
+                logger.warning(
+                    "ElevenLabs stale-usage reset: tracked %d chars > limit %d — "
+                    "elevenlabs_usage table cleared (%s)",
+                    _tracked, _monthly_limit, db_path,
+                )
+        except Exception as _exc:
+            logger.debug("ElevenLabs stale-usage check skipped: %s", _exc)
     finally:
         conn.close()
 

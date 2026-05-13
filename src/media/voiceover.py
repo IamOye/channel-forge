@@ -375,7 +375,7 @@ class VoiceoverGenerator:
                 )
             elif fraction >= _WARN_67_PCT:
                 logger.warning(
-                    "[voiceover] ElevenLabs at %.1f%% monthly limit — %d chars remaining. "
+                    "[voiceover] ElevenLabs at %.0f%% monthly limit — %d chars remaining. "
                     "Approximately %d videos left this month.",
                     pct_used, chars_remaining, videos_remaining,
                 )
