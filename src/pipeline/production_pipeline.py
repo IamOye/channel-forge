@@ -749,9 +749,9 @@ class ProductionPipeline:
 
         if slot == 1:
             try:
-                from src.media.morph_renderer import MorphRenderer
-                logger.info("[pipeline] Using MorphRenderer for slot %d", slot)
-                return MorphRenderer().build(
+                from src.media.hyperframes_renderer import HyperFramesRenderer
+                logger.info("[pipeline] Using HyperFramesRenderer for slot %d", slot)
+                return HyperFramesRenderer().build(
                     topic_id=topic_id,
                     script_dict=script_dict,
                     audio_path=audio_path,
@@ -760,7 +760,7 @@ class ProductionPipeline:
                 )
             except Exception as exc:
                 logger.warning(
-                    "[pipeline] MorphRenderer failed (%s) — falling back to VideoBuilder", exc
+                    "[pipeline] HyperFramesRenderer failed (%s) — falling back to VideoBuilder", exc
                 )
 
         elif slot == 2:
