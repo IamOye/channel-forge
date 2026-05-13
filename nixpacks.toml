@@ -26,7 +26,8 @@ nixPkgs = [
 cmds = [
     "python3.11 -m venv --copies /opt/venv",
     ". /opt/venv/bin/activate && pip install -r requirements.txt",
-    ". /opt/venv/bin/activate && playwright install chromium --with-deps"
+    ". /opt/venv/bin/activate && playwright install chromium --with-deps",
+    ". /opt/venv/bin/activate && npm install -g hyperframes"
 ]
 
 [start]
