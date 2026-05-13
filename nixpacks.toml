@@ -19,7 +19,8 @@ nixPkgs = [
   "xorg.libXrandr",
   "mesa",
   "expat",
-  "xorg.libxcb"
+  "xorg.libxcb",
+  "nodejs"
 ]
 
 [phases.install]
