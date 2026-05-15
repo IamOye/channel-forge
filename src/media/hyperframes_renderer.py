@@ -36,29 +36,43 @@ BEAT_START_OFFSET = 0.1    # small delay at each beat start
 DEFAULT_DURATION  = 30.0   # fallback if audio probe fails
 
 # ---------------------------------------------------------------------------
-# Morph dictionary — identical to morph_renderer.py
+# Morph dictionary — keyword groups map to icon names
 # ---------------------------------------------------------------------------
 _MORPH_TABLE: list[tuple[tuple[str, ...], str]] = [
-    (("coffee", "serve", "barista"),                    "coffee_mug"),
-    (("retire", "retired", "freedom"),                  "open_door"),
-    (("money", "dollars", "earn", "income", "salary"),  "dollar_bill"),
-    (("spend", "spent", "cost", "pay"),                 "dollar_bill_down"),
-    (("apartment", "home", "house", "live", "lived"),   "house"),
-    (("car", "drive", "drove", "vehicle"),              "car"),
-    (("think", "thought", "mind", "brain", "smart"),    "brain"),
-    (("time", "waiting", "clock", "hours"),             "clock"),
-    (("growth", "gain", "grew", "rise", "rising"),      "bar_chart"),
-    (("loss", "drop", "losing", "fell", "down"),        "arrow_down"),
-    (("subscribe", "follow", "join"),                   "smartphone"),
-    (("scale", "balance", "decision", "compare"),       "balance_scale"),
-    (("coin", "invest", "asset", "assets"),             "coin"),
-    (("chain", "habit", "trap", "stuck"),               "chain_links"),
-    (("key", "unlock", "secret", "system"),             "key"),
-    (("lock", "risk", "hidden"),                        "padlock"),
-    (("eye", "see", "notice", "look"),                  "eye"),
-    (("heart", "want", "desire", "love"),               "heart"),
-    (("seed", "start", "begin", "born"),                "sprout"),
-    (("door", "opportunity", "open"),                   "door_handle"),
+    (("coffee", "serve", "barista"),                         "coffee_mug"),
+    (("retire", "retired", "freedom"),                       "open_door"),
+    (("money", "dollars", "earn", "income", "salary"),       "dollar_bill"),
+    (("spend", "spent", "cost", "pay"),                      "dollar_bill_down"),
+    (("apartment", "home", "house", "live", "lived"),        "house"),
+    (("car", "drive", "drove", "vehicle"),                   "car"),
+    (("think", "thought", "mind", "brain", "smart"),         "brain"),
+    (("time", "waiting", "clock", "hours"),                  "clock"),
+    (("growth", "gain", "grew", "rise", "rising"),           "bar_chart"),
+    (("loss", "drop", "losing", "fell", "down"),             "arrow_down"),
+    (("subscribe", "follow", "join"),                        "smartphone"),
+    (("scale", "balance", "decision", "compare"),            "balance_scale"),
+    (("coin", "invest", "asset", "assets"),                  "coin"),
+    (("chain", "habit", "trap", "stuck"),                    "chain_links"),
+    (("key", "unlock", "secret", "system"),                  "key"),
+    (("lock", "risk", "hidden"),                             "padlock"),
+    (("eye", "see", "notice", "look"),                       "eye"),
+    (("heart", "want", "desire", "love"),                    "heart"),
+    (("seed", "start", "begin", "born"),                     "sprout"),
+    (("door", "opportunity", "open"),                        "door_handle"),
+    # --- expanded library ---
+    (("save", "saving", "savings", "deposit"),                             "piggy_bank"),
+    (("grow", "increase", "profit", "gains"),                              "graph_rising"),
+    (("trapped", "escape", "free", "break", "broke"),                     "broken_chain"),
+    (("win", "winner", "success", "succeed", "achieve", "achievement"),   "trophy"),
+    (("protect", "safe", "safety", "security", "secure", "risky"),        "shield"),
+    (("delay", "late", "deadline", "age", "years", "months"),             "hourglass"),
+    (("wallet", "spending", "budget", "afford", "price"),                 "wallet"),
+    (("tax", "taxes", "debt", "bill", "bills", "owe", "payment"),        "receipt"),
+    (("family", "relationship", "marriage", "partner", "children", "kids"), "family"),
+    (("career", "promotion", "climb", "level", "rank", "position", "job"), "ladder"),
+    (("stable", "stability", "steady", "foundation", "grounded"),         "anchor"),
+    (("discover", "reveal", "revealed", "unlocks"),                       "lock_open"),
+    (("wealth", "rich", "wealthy", "millionaire", "status", "power", "elite"), "crown"),
 ]
 
 _FINANCIAL = frozenset({
@@ -71,6 +85,27 @@ _ACTION_VERBS = frozenset({
     "subscribe", "follow", "join", "unlock", "see",
     "start", "begin", "open", "scale", "balance",
 })
+
+# ---------------------------------------------------------------------------
+# Icon family taxonomy — used for semantic fallback when enforcing diversity
+# ---------------------------------------------------------------------------
+_ICON_FAMILIES: dict[str, frozenset[str]] = {
+    "financial":  frozenset({
+        "dollar_bill", "dollar_bill_down", "coin", "piggy_bank",
+        "wallet", "receipt", "bar_chart", "graph_rising", "arrow_down",
+    }),
+    "structural": frozenset({
+        "house", "car", "padlock", "lock_open", "key",
+        "shield", "anchor", "ladder", "crown",
+    }),
+    "temporal":   frozenset({"clock", "hourglass"}),
+    "relational": frozenset({"brain", "heart", "eye", "family", "smartphone"}),
+    "action":     frozenset({
+        "coffee_mug", "open_door", "door_handle", "chain_links",
+        "broken_chain", "balance_scale", "sprout", "trophy",
+    }),
+}
+_FAMILY_ORDER = ("financial", "structural", "temporal", "relational", "action")
 
 # ---------------------------------------------------------------------------
 # SVG icon library — viewBox="0 0 300 300", stroke #F0F2FF, no fill
@@ -286,6 +321,148 @@ ICON_SVG_MAP: dict[str, str] = {
         '<circle cx="150" cy="268" r="12" fill="#F0F2FF"/>'
         '</svg>'
     ),
+
+    # ---- expanded icon library ----
+
+    "piggy_bank": (
+        '<svg viewBox="0 0 300 300" fill="none" xmlns="http://www.w3.org/2000/svg">'
+        '<ellipse cx="148" cy="155" rx="88" ry="68" stroke="#F0F2FF" stroke-width="2.5"/>'
+        '<circle cx="210" cy="100" r="18" stroke="#F0F2FF" stroke-width="2"/>'
+        '<rect x="226" y="145" width="30" height="22" rx="8" stroke="#F0F2FF" stroke-width="2"/>'
+        '<line x1="130" y1="87" x2="162" y2="87" stroke="#F0F2FF" stroke-width="3" stroke-linecap="round"/>'
+        '<rect x="85" y="218" width="18" height="38" rx="4" stroke="#F0F2FF" stroke-width="2"/>'
+        '<rect x="115" y="218" width="18" height="38" rx="4" stroke="#F0F2FF" stroke-width="2"/>'
+        '<rect x="162" y="218" width="18" height="38" rx="4" stroke="#F0F2FF" stroke-width="2"/>'
+        '<rect x="192" y="218" width="18" height="38" rx="4" stroke="#F0F2FF" stroke-width="2"/>'
+        '<circle cx="196" cy="142" r="5" fill="#F0F2FF"/>'
+        '</svg>'
+    ),
+
+    "graph_rising": (
+        '<svg viewBox="0 0 300 300" fill="none" xmlns="http://www.w3.org/2000/svg">'
+        '<line x1="48" y1="260" x2="270" y2="260" stroke="#F0F2FF" stroke-width="2.5" stroke-linecap="round"/>'
+        '<line x1="48" y1="260" x2="48" y2="40" stroke="#F0F2FF" stroke-width="2.5" stroke-linecap="round"/>'
+        '<polyline points="68,232 108,196 148,215 192,160 238,108 268,60"'
+        ' stroke="#F0F2FF" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>'
+        '<polygon points="256,74 278,52 274,76" fill="#F0F2FF"/>'
+        '</svg>'
+    ),
+
+    "broken_chain": (
+        '<svg viewBox="0 0 300 300" fill="none" xmlns="http://www.w3.org/2000/svg">'
+        '<ellipse cx="72" cy="130" rx="50" ry="28" stroke="#F0F2FF" stroke-width="2.5"/>'
+        '<ellipse cx="106" cy="168" rx="50" ry="28" stroke="#F0F2FF" stroke-width="2.5"/>'
+        '<ellipse cx="194" cy="132" rx="50" ry="28" stroke="#F0F2FF" stroke-width="2.5"/>'
+        '<ellipse cx="228" cy="170" rx="50" ry="28" stroke="#F0F2FF" stroke-width="2.5"/>'
+        '<polyline points="132,142 142,150 130,158" stroke="#F0F2FF" stroke-width="2.5" fill="none" stroke-linecap="round"/>'
+        '<polyline points="168,142 158,150 170,158" stroke="#F0F2FF" stroke-width="2.5" fill="none" stroke-linecap="round"/>'
+        '</svg>'
+    ),
+
+    "trophy": (
+        '<svg viewBox="0 0 300 300" fill="none" xmlns="http://www.w3.org/2000/svg">'
+        '<path d="M82,75 Q80,195 150,215 Q220,195 218,75 Z" stroke="#F0F2FF" stroke-width="2.5" fill="none"/>'
+        '<path d="M82,100 C52,100 48,168 82,168" stroke="#F0F2FF" stroke-width="2.5" fill="none"/>'
+        '<path d="M218,100 C248,100 252,168 218,168" stroke="#F0F2FF" stroke-width="2.5" fill="none"/>'
+        '<line x1="150" y1="215" x2="150" y2="248" stroke="#F0F2FF" stroke-width="2.5"/>'
+        '<rect x="100" y="248" width="100" height="22" rx="4" stroke="#F0F2FF" stroke-width="2.5"/>'
+        '</svg>'
+    ),
+
+    "shield": (
+        '<svg viewBox="0 0 300 300" fill="none" xmlns="http://www.w3.org/2000/svg">'
+        '<polygon points="150,48 232,105 204,252 96,252 68,105"'
+        ' stroke="#F0F2FF" stroke-width="2.5" fill="none"/>'
+        '<polyline points="108,155 140,187 198,118"'
+        ' stroke="#F0F2FF" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" fill="none"/>'
+        '</svg>'
+    ),
+
+    "hourglass": (
+        '<svg viewBox="0 0 300 300" fill="none" xmlns="http://www.w3.org/2000/svg">'
+        '<rect x="62" y="42" width="176" height="216" rx="6" stroke="#F0F2FF" stroke-width="1.5" opacity="0.5"/>'
+        '<polygon points="72,52 228,52 150,150"'
+        ' stroke="#F0F2FF" stroke-width="2.5" fill="none" stroke-linejoin="round"/>'
+        '<polygon points="72,248 228,248 150,150"'
+        ' stroke="#F0F2FF" stroke-width="2.5" fill="none" stroke-linejoin="round"/>'
+        '<circle cx="143" cy="150" r="4" fill="#F0F2FF"/>'
+        '<circle cx="157" cy="150" r="4" fill="#F0F2FF"/>'
+        '</svg>'
+    ),
+
+    "wallet": (
+        '<svg viewBox="0 0 300 300" fill="none" xmlns="http://www.w3.org/2000/svg">'
+        '<rect x="48" y="82" width="204" height="136" rx="12" stroke="#F0F2FF" stroke-width="2.5"/>'
+        '<line x1="48" y1="150" x2="252" y2="150" stroke="#F0F2FF" stroke-width="1.5" opacity="0.6"/>'
+        '<rect x="158" y="96" width="80" height="50" rx="8" stroke="#F0F2FF" stroke-width="2"/>'
+        '<circle cx="195" cy="121" r="10" stroke="#F0F2FF" stroke-width="2"/>'
+        '</svg>'
+    ),
+
+    "receipt": (
+        '<svg viewBox="0 0 300 300" fill="none" xmlns="http://www.w3.org/2000/svg">'
+        '<polyline points="80,32 80,255 95,270 110,255 125,270 140,255 155,270 170,255 185,270 200,255 215,270 220,255 220,32 80,32"'
+        ' stroke="#F0F2FF" stroke-width="2.5" fill="none" stroke-linejoin="round"/>'
+        '<text x="98" y="78" font-family="Georgia,serif" font-size="38" fill="#F0F2FF" font-weight="bold">$</text>'
+        '<line x1="98" y1="110" x2="200" y2="110" stroke="#F0F2FF" stroke-width="2" opacity="0.7"/>'
+        '<line x1="98" y1="140" x2="200" y2="140" stroke="#F0F2FF" stroke-width="2" opacity="0.7"/>'
+        '<line x1="98" y1="170" x2="200" y2="170" stroke="#F0F2FF" stroke-width="2" opacity="0.7"/>'
+        '</svg>'
+    ),
+
+    "family": (
+        '<svg viewBox="0 0 300 300" fill="none" xmlns="http://www.w3.org/2000/svg">'
+        '<circle cx="80" cy="105" r="38" stroke="#F0F2FF" stroke-width="2.5"/>'
+        '<circle cx="172" cy="105" r="38" stroke="#F0F2FF" stroke-width="2.5"/>'
+        '<circle cx="248" cy="115" r="26" stroke="#F0F2FF" stroke-width="2.5"/>'
+        '<line x1="48" y1="148" x2="270" y2="148" stroke="#F0F2FF" stroke-width="2.5"/>'
+        '</svg>'
+    ),
+
+    "ladder": (
+        '<svg viewBox="0 0 300 300" fill="none" xmlns="http://www.w3.org/2000/svg">'
+        '<line x1="90" y1="50" x2="90" y2="254" stroke="#F0F2FF" stroke-width="2.5" stroke-linecap="round"/>'
+        '<line x1="210" y1="50" x2="210" y2="254" stroke="#F0F2FF" stroke-width="2.5" stroke-linecap="round"/>'
+        '<line x1="90" y1="90" x2="210" y2="90" stroke="#F0F2FF" stroke-width="2.5" stroke-linecap="round"/>'
+        '<line x1="90" y1="130" x2="210" y2="130" stroke="#F0F2FF" stroke-width="2.5" stroke-linecap="round"/>'
+        '<line x1="90" y1="170" x2="210" y2="170" stroke="#F0F2FF" stroke-width="2.5" stroke-linecap="round"/>'
+        '<line x1="90" y1="210" x2="210" y2="210" stroke="#F0F2FF" stroke-width="2.5" stroke-linecap="round"/>'
+        '<line x1="90" y1="250" x2="210" y2="250" stroke="#F0F2FF" stroke-width="2.5" stroke-linecap="round"/>'
+        '</svg>'
+    ),
+
+    "anchor": (
+        '<svg viewBox="0 0 300 300" fill="none" xmlns="http://www.w3.org/2000/svg">'
+        '<circle cx="150" cy="70" r="30" stroke="#F0F2FF" stroke-width="2.5"/>'
+        '<line x1="150" y1="100" x2="150" y2="222" stroke="#F0F2FF" stroke-width="2.5" stroke-linecap="round"/>'
+        '<line x1="98" y1="122" x2="202" y2="122" stroke="#F0F2FF" stroke-width="2.5" stroke-linecap="round"/>'
+        '<path d="M150,222 C122,222 80,240 78,262" stroke="#F0F2FF" stroke-width="2.5" fill="none" stroke-linecap="round"/>'
+        '<path d="M150,222 C178,222 220,240 222,262" stroke="#F0F2FF" stroke-width="2.5" fill="none" stroke-linecap="round"/>'
+        '<circle cx="78" cy="262" r="8" stroke="#F0F2FF" stroke-width="2"/>'
+        '<circle cx="222" cy="262" r="8" stroke="#F0F2FF" stroke-width="2"/>'
+        '</svg>'
+    ),
+
+    "lock_open": (
+        '<svg viewBox="0 0 300 300" fill="none" xmlns="http://www.w3.org/2000/svg">'
+        '<rect x="48" y="145" width="204" height="130" rx="10" stroke="#F0F2FF" stroke-width="2.5"/>'
+        '<circle cx="150" cy="198" r="19" stroke="#F0F2FF" stroke-width="2.5"/>'
+        '<line x1="150" y1="217" x2="150" y2="244" stroke="#F0F2FF" stroke-width="2.5"/>'
+        '<path d="M88,145 L88,90 Q88,38 150,38 Q212,38 212,90 L212,110"'
+        ' stroke="#F0F2FF" stroke-width="2.5" fill="none" stroke-linecap="round"/>'
+        '</svg>'
+    ),
+
+    "crown": (
+        '<svg viewBox="0 0 300 300" fill="none" xmlns="http://www.w3.org/2000/svg">'
+        '<polyline points="58,222 58,158 112,222 150,105 188,222 242,158 242,222"'
+        ' stroke="#F0F2FF" stroke-width="2.5" stroke-linejoin="round" fill="none"/>'
+        '<rect x="58" y="222" width="184" height="26" rx="4" stroke="#F0F2FF" stroke-width="2.5"/>'
+        '<circle cx="58" cy="158" r="9" fill="#F0F2FF"/>'
+        '<circle cx="242" cy="158" r="9" fill="#F0F2FF"/>'
+        '<circle cx="150" cy="105" r="9" fill="#F0F2FF"/>'
+        '</svg>'
+    ),
 }
 
 # Fallback icon when lookup fails
@@ -405,40 +582,110 @@ class HyperFramesRenderer:
     def _plan_beats(self, script_dict: dict[str, str]) -> list[dict]:
         """Map each of the 5 beat slots to text, anchor keyword, and icon name.
 
-        Enforces variety: no icon appears more than twice across the 5 beats.
+        Scores all keyword candidates per beat by semantic specificity
+        (smaller keyword groups = more specific = higher score). Enforces
+        strict icon diversity: each icon appears at most once across all 5 beats.
+        If all keyword-matched icons are exhausted, cascades through semantic
+        families: financial → structural → temporal → relational → action.
         """
         beats: list[dict] = []
-        icon_counts: dict[str, int] = {}
+        used_icons: set[str] = set()
+
         for name in BEAT_ORDER:
             if name == "cta":
                 text = script_dict.get("cta", "") or script_dict.get("question", "")
             else:
                 text = script_dict.get(name, "")
-            anchor = self._extract_anchor(text)
-            icon   = self._lookup_icon(anchor)
-            if icon_counts.get(icon, 0) >= 2:
-                fallback = self._pick_fallback_icon(icon, icon_counts)
-                logger.warning(
-                    "[hf] Icon '%s' would appear >2x — using '%s' for beat '%s'",
-                    icon, fallback, name,
-                )
-                icon = fallback
-            icon_counts[icon] = icon_counts.get(icon, 0) + 1
-            beats.append({"name": name, "text": text, "anchor": anchor, "icon": icon})
+
+            candidates = self._score_beat_keywords(text)
+
+            cand_str = ", ".join(
+                f"{kw}:{icon}" for _, kw, icon in candidates[:6]
+            ) or "(none)"
+
+            # Select best non-duplicate icon from scored candidates
+            selected_kw: str | None = None
+            selected_icon: str | None = None
+            for _score, kw, icon in candidates:
+                if icon not in used_icons and icon in ICON_SVG_MAP:
+                    selected_kw, selected_icon = kw, icon
+                    break
+
+            # No unique candidate found — use family-aware fallback
+            if selected_icon is None:
+                original_icon = candidates[0][2] if candidates else _FALLBACK_ICON
+                selected_kw   = candidates[0][1] if candidates else "money"
+                selected_icon = self._pick_fallback_icon(original_icon, used_icons)
+
+            # Absolute safety net
+            if selected_icon not in ICON_SVG_MAP:
+                selected_icon = _FALLBACK_ICON
+            if not selected_kw:
+                words = text.split()
+                selected_kw = words[0].lower().strip(".,!?;:") if words else "money"
+
+            logger.info(
+                "[hf] beat %d (%s): '%.40s' -> candidates: [%s] -> selected: %s (%s)",
+                len(beats), name, text, cand_str, selected_kw, selected_icon,
+            )
+
+            used_icons.add(selected_icon)
+            beats.append({
+                "name":   name,
+                "text":   text,
+                "anchor": selected_kw,
+                "icon":   selected_icon,
+            })
+
         return beats
 
-    def _pick_fallback_icon(self, excluded: str, icon_counts: dict[str, int]) -> str:
-        """Return an icon from the morph table not yet used 2+ times."""
-        for _, candidate in _MORPH_TABLE:
-            if candidate != excluded and icon_counts.get(candidate, 0) < 2 and candidate in ICON_SVG_MAP:
-                return candidate
+    def _score_beat_keywords(self, text: str) -> list[tuple[float, str, str]]:
+        """Return scored keyword candidates for the given beat text.
+
+        Score = 3.0 / len(keyword_group) so smaller (more specific) groups
+        score higher. Returns list sorted descending by score.
+        """
+        words = {w.lower().strip(".,!?;:'\"") for w in text.split()}
+        results: list[tuple[float, str, str]] = []
+        for kws, icon in _MORPH_TABLE:
+            for kw in kws:
+                if kw in words:
+                    results.append((3.0 / len(kws), kw, icon))
+        results.sort(key=lambda x: x[0], reverse=True)
+        return results
+
+    def _pick_fallback_icon(self, excluded: str, used_icons: set[str]) -> str:
+        """Return an unused icon, preferring a different semantic family.
+
+        Cascades through: financial → structural → temporal → relational → action,
+        skipping the family of the excluded icon on the first pass.
+        """
+        excluded_family: str | None = None
+        for family_name, members in _ICON_FAMILIES.items():
+            if excluded in members:
+                excluded_family = family_name
+                break
+
+        # First pass: skip excluded family to prefer semantic variety
+        for family_name in _FAMILY_ORDER:
+            if family_name == excluded_family:
+                continue
+            for candidate in _ICON_FAMILIES.get(family_name, frozenset()):
+                if candidate not in used_icons and candidate in ICON_SVG_MAP:
+                    return candidate
+
+        # Second pass: allow any unused icon including same family
         for candidate in ICON_SVG_MAP:
-            if candidate != excluded and icon_counts.get(candidate, 0) < 2:
+            if candidate not in used_icons:
                 return candidate
+
         return _FALLBACK_ICON
 
     def _extract_anchor(self, text: str) -> str:
-        """Extract the primary keyword from beat text using priority ordering."""
+        """Extract the primary keyword from beat text using priority ordering.
+
+        Kept for backward compatibility. New code uses _score_beat_keywords().
+        """
         words = [w.lower().strip(".,!?;:") for w in text.split()]
         for priority in (_FINANCIAL, _ACTION_VERBS, None):
             for w in words:
@@ -462,27 +709,32 @@ class HyperFramesRenderer:
 
     def _generate_html(self, beats: list[dict], total_duration: float) -> str:
         """
-        Build a complete HyperFrames HTML composition string.
-        BEAT_DUR is derived from total_duration / number of beats.
+        Build a complete HyperFrames HTML composition string with kinetic
+        word-reveal typography. Each beat shows a glowing icon + static gold
+        anchor word + word-by-word staggered secondary text.
         """
         n_beats  = len(beats)
         beat_dur = total_duration / n_beats
 
-        # Beat HTML blocks
+        # Beat HTML blocks — secondary text split into individual word spans
         beat_blocks: list[str] = []
         for i, beat in enumerate(beats):
             svg    = ICON_SVG_MAP.get(beat["icon"], ICON_SVG_MAP[_FALLBACK_ICON])
             anchor = _html_mod.escape(beat["anchor"].upper())
-            body   = _html_mod.escape(beat["text"])
+            words  = beat["text"].split()
+            word_spans = " ".join(
+                f'<span class="word">{_html_mod.escape(w)}</span>'
+                for w in words
+            )
             beat_blocks.append(
                 f'      <div id="icon-{i}" class="beat-icon">{svg}</div>\n'
                 f'      <div id="anchor-{i}" class="beat-anchor">{anchor}</div>\n'
-                f'      <div id="text-{i}" class="beat-text">{body}</div>'
+                f'      <div id="text-{i}" class="beat-text">{word_spans}</div>'
             )
 
         beats_html = "\n\n".join(beat_blocks)
 
-        # GSAP timeline script (curly braces escaped for f-string)
+        # GSAP timeline — icon scale-in, anchor fade-in, kinetic word stagger
         gsap_script = (
             f"      window.__timelines = window.__timelines || {{}};\n"
             f"      const tl = gsap.timeline({{ paused: true }});\n\n"
@@ -494,7 +746,8 @@ class HyperFramesRenderer:
             f"        const bs     = b * BEAT_DUR;\n"
             f"        const icon   = '#icon-'   + b;\n"
             f"        const anchor = '#anchor-' + b;\n"
-            f"        const text   = '#text-'   + b;\n"
+            f"        const words  = '#text-'   + b + ' .word';\n"
+            f"        const textEl = '#text-'   + b;\n"
             f"        const inT    = bs + {BEAT_START_OFFSET};\n"
             f"        const outT   = bs + {BEAT_START_OFFSET} + ICON_IN + ICON_HOLD;\n\n"
             f"        tl.fromTo(icon,\n"
@@ -507,16 +760,16 @@ class HyperFramesRenderer:
             f"          {{ opacity: 1, y: 0, duration: ICON_IN, ease: 'power3.out' }},\n"
             f"          inT\n"
             f"        );\n"
-            f"        tl.fromTo(text,\n"
-            f"          {{ opacity: 0, y: 24 }},\n"
-            f"          {{ opacity: 1, y: 0, duration: ICON_IN, ease: 'power3.out' }},\n"
-            f"          inT\n"
+            f"        tl.fromTo(words,\n"
+            f"          {{ opacity: 0, y: 15 }},\n"
+            f"          {{ opacity: 1, y: 0, duration: 0.3, stagger: 0.08, ease: 'power2.out' }},\n"
+            f"          inT + 0.5\n"
             f"        );\n"
             f"        tl.to(icon,\n"
             f"          {{ opacity: 0, scale: 0.8, duration: ICON_OUT, ease: 'power2.in' }},\n"
             f"          outT\n"
             f"        );\n"
-            f"        tl.to([anchor, text],\n"
+            f"        tl.to([anchor, textEl],\n"
             f"          {{ opacity: 0, duration: ICON_OUT, ease: 'power2.in' }},\n"
             f"          outT\n"
             f"        );\n"
@@ -561,13 +814,17 @@ class HyperFramesRenderer:
             "        font-family: 'Bebas Neue', Impact, sans-serif;\n"
             "        font-size: 72px; color: #f5c518;\n"
             "        letter-spacing: 0.1em; line-height: 1; opacity: 0;\n"
+            "        text-shadow: 0 0 20px rgba(245,197,24,0.6), 0 0 40px rgba(245,197,24,0.3);\n"
             "      }\n"
             "      .beat-text {\n"
             "        position: absolute; left: 80px; width: 920px;\n"
             "        text-align: center; top: 1120px;\n"
             "        font-family: 'Montserrat', Arial, sans-serif;\n"
             "        font-size: 36px; color: #a0a2af;\n"
-            "        line-height: 1.5; opacity: 0;\n"
+            "        line-height: 1.5; opacity: 1;\n"
+            "      }\n"
+            "      .word {\n"
+            "        display: inline-block; opacity: 0;\n"
             "      }\n"
             "    </style>\n"
             "  </head>\n"
