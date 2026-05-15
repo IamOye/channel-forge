@@ -781,9 +781,9 @@ class ProductionPipeline:
 
         elif slot == 3:
             try:
-                from src.media.kinetic_renderer import KineticRenderer
-                logger.info("[pipeline] Using KineticRenderer for slot %d", slot)
-                return KineticRenderer(style_preset=style_preset).build(
+                from src.media.anime_renderer import AnimeRenderer
+                logger.info("[pipeline] Using AnimeRenderer for slot 3")
+                return AnimeRenderer().build(
                     topic_id=topic_id,
                     script_dict=script_dict,
                     audio_path=audio_path,
@@ -792,7 +792,7 @@ class ProductionPipeline:
                 )
             except Exception as exc:
                 logger.warning(
-                    "[pipeline] KineticRenderer failed (%s) — falling back to VideoBuilder", exc
+                    "[pipeline] AnimeRenderer failed (%s) — falling back to VideoBuilder", exc
                 )
 
         # Slot 0 or any fallback
