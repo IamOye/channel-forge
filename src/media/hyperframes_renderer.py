@@ -379,7 +379,7 @@ class HyperFramesRenderer:
 
         try:
             html = self._generate_html(beats, duration)
-            self._render_html(html, output_path)
+            self._render_html(html, output_path, audio_path)
             elapsed = time.time() - start_ts
             logger.info("[hf] Built %s in %.1fs", output_path.name, elapsed)
             return BuildResult(
@@ -403,8 +403,12 @@ class HyperFramesRenderer:
     # ------------------------------------------------------------------
 
     def _plan_beats(self, script_dict: dict[str, str]) -> list[dict]:
-        """Map each of the 5 beat slots to text, anchor keyword, and icon name."""
+        """Map each of the 5 beat slots to text, anchor keyword, and icon name.
+
+        Enforces variety: no icon appears more than twice across the 5 beats.
+        """
         beats: list[dict] = []
+        icon_counts: dict[str, int] = {}
         for name in BEAT_ORDER:
             if name == "cta":
                 text = script_dict.get("cta", "") or script_dict.get("question", "")
@@ -412,8 +416,26 @@ class HyperFramesRenderer:
                 text = script_dict.get(name, "")
             anchor = self._extract_anchor(text)
             icon   = self._lookup_icon(anchor)
+            if icon_counts.get(icon, 0) >= 2:
+                fallback = self._pick_fallback_icon(icon, icon_counts)
+                logger.warning(
+                    "[hf] Icon '%s' would appear >2x — using '%s' for beat '%s'",
+                    icon, fallback, name,
+                )
+                icon = fallback
+            icon_counts[icon] = icon_counts.get(icon, 0) + 1
             beats.append({"name": name, "text": text, "anchor": anchor, "icon": icon})
         return beats
+
+    def _pick_fallback_icon(self, excluded: str, icon_counts: dict[str, int]) -> str:
+        """Return an icon from the morph table not yet used 2+ times."""
+        for _, candidate in _MORPH_TABLE:
+            if candidate != excluded and icon_counts.get(candidate, 0) < 2 and candidate in ICON_SVG_MAP:
+                return candidate
+        for candidate in ICON_SVG_MAP:
+            if candidate != excluded and icon_counts.get(candidate, 0) < 2:
+                return candidate
+        return _FALLBACK_ICON
 
     def _extract_anchor(self, text: str) -> str:
         """Extract the primary keyword from beat text using priority ordering."""
@@ -571,9 +593,15 @@ class HyperFramesRenderer:
     # Render
     # ------------------------------------------------------------------
 
-    def _render_html(self, html: str, output_path: Path) -> None:
+    def _render_html(
+        self,
+        html: str,
+        output_path: Path,
+        audio_path: Path | None = None,
+    ) -> None:
         """
         Write HTML to a temp HyperFrames project dir and invoke the CLI renderer.
+        If audio_path is supplied, mixes the voiceover into the visual MP4 via ffmpeg.
         Cleans up the temp dir regardless of success or failure.
         """
         tmpdir = Path(tempfile.mkdtemp(prefix="hf_morph_"))
@@ -609,10 +637,52 @@ class HyperFramesRenderer:
                     f"hyperframes render exit {result.returncode}.\n"
                     f"stdout: {stdout}\nstderr: {stderr}"
                 )
-            if not output_path.exists():
+            if not output_path.exists() or output_path.stat().st_size == 0:
                 raise RuntimeError(
-                    f"hyperframes render returned 0 but {output_path} not found."
+                    f"hyperframes render returned 0 but {output_path} not found or empty."
                 )
+
+            # Mix voiceover audio into the visual-only MP4
+            if audio_path is not None and audio_path.exists() and audio_path.stat().st_size > 0:
+                ffmpeg_exe: Path | str | None = None
+                if ffmpeg_dir:
+                    candidate = ffmpeg_dir / "ffmpeg.exe"
+                    if candidate.exists():
+                        ffmpeg_exe = candidate
+                if ffmpeg_exe is None:
+                    found = shutil.which("ffmpeg")
+                    if found:
+                        ffmpeg_exe = found
+                if ffmpeg_exe:
+                    mix_start  = time.time()
+                    tmp_mixed  = output_path.with_suffix(".mixed.mp4")
+                    mix_result = subprocess.run(
+                        [
+                            str(ffmpeg_exe),
+                            "-i",  str(output_path),
+                            "-i",  str(audio_path),
+                            "-c:v", "copy",
+                            "-c:a", "aac",
+                            "-shortest",
+                            "-map", "0:v:0",
+                            "-map", "1:a:0",
+                            "-y",
+                            str(tmp_mixed),
+                        ],
+                        capture_output=True, text=True, timeout=120,
+                    )
+                    if mix_result.returncode == 0 and tmp_mixed.exists() and tmp_mixed.stat().st_size > 0:
+                        tmp_mixed.replace(output_path)
+                        logger.info("[hf] Mixed voiceover into output (%.1fs)", time.time() - mix_start)
+                    else:
+                        logger.warning(
+                            "[hf] ffmpeg voiceover mix failed (rc=%d) — visual-only output kept",
+                            mix_result.returncode,
+                        )
+                        if tmp_mixed.exists():
+                            tmp_mixed.unlink(missing_ok=True)
+                else:
+                    logger.warning("[hf] ffmpeg not available — voiceover not mixed into output")
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
